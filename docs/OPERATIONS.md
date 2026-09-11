@@ -127,7 +127,8 @@ uv run webcodex deny JOB_ID
 | 情況 | 處理方式 |
 | --- | --- |
 | 找不到命令／工具鏈 | 在 Runner 終端機確認 PATH；安裝工具或修改 `environment` 後重啟 Runner |
-| 專案 offline | 檢查服務、URL、配對憑證、專案路徑；不要啟動共用 state 的第二個 Runner |
+| `projects_list` 成功回覆專案 offline | 檢查 Runner、URL、配對憑證、專案路徑；不要啟動共用 state 的第二個 Runner |
+| 工具看得到，但出現 developer MCP `FORBIDDEN` | 目前對話拒絕執行，Runner 狀態未確認；依 [連線診斷](CHATGPT.md#工具看得到但無法執行) 檢查用戶端與工作區權限 |
 | 401 | 確認 client、Runner 與操作員使用各自的 JSON |
 | 核准後仍未執行 | 查同一 `job_id`；桌面截圖若已過期需重新觀察 |
 | Windows JSON 引號錯誤 | 使用 UTF-8 `@args.json` |

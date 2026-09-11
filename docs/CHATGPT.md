@@ -84,3 +84,35 @@ Server 的 Bearer 驗證仍由 bridge 處理，不必為了接入而關閉本機
 > 請列出 WebCodex 專案，選擇我指定的專案建立任務。先讀取專案規則與 Git 狀態，執行相關測試；需要修改時保留其他變更，最後顯示 diff 與真實測試結果。把任務 ID、摘要與下一步保存，讓下一次對話可以延續。
 
 下次對話先使用 `task_list` 和 `task_get` 讀取同一個任務。Server 能保存工作摘要與證據，不會存取或還原 ChatGPT 的私有推理與完整對話上下文。
+
+## 工具看得到，但無法執行
+
+工具註冊、目前對話的執行權限、Runner 狀態是三個不同的檢查。看得到 schema 只代表工具 metadata 可取得，不能據此判定當前對話能呼叫工具。`projects_list` 在 Server 讀取最近的 Runner 心跳，不會建立 job，也不會直接執行 repo 操作；`online` 表示 15 秒內有心跳，不保證後續每個工具都成功。
+
+| 觀察到的證據 | 可判定的狀態 | 下一步 |
+| --- | --- | --- |
+| 只有工具名稱／schema | 工具已註冊；執行與 Runner 狀態未確認 | 呼叫一次 `projects_list` |
+| `FORBIDDEN: This conversation does not support developer MCPs` | 依錯誤訊息判讀為用戶端拒絕此對話執行；本次無法取得 Runner 狀態 | 停止重試相同呼叫，檢查下方對話與權限設定 |
+| `projects_list` 成功且 `online: true` | 已取得 Server 回覆，該 Runner 心跳有效 | 使用回傳的 project ID 建立／延續任務 |
+| `projects_list` 成功且 `online: false` | 已取得 Server 回覆，該 Runner 心跳過期 | 檢查 Runner 及其至 Server 的連線 |
+| `projects_list` 成功但清單為空 | 此 client 看不到已註冊專案 | 比對 client 的專案授權與 Runner 註冊設定；不能直接標成離線 |
+| Server 回覆 `401 Unauthorized` | Bearer 驗證失敗，Runner 狀態未確認 | 檢查所選 client 設定與憑證種類 |
+| Server 回覆 `403 Origin is not allowed` | Server 拒絕請求的 Origin，Runner 狀態未確認 | 檢查實際入口與 `public_url`；這與 developer MCP 對話限制不同 |
+| 逾時、DNS／TLS 或 transport 錯誤 | 連線未完成，Runner 狀態未確認 | 檢查發生錯誤的網路或 tunnel 路徑 |
+
+本專案不產生上述 developer MCP 錯誤字串。若用戶端在請求送出前拒絕執行，Server 無法攔截、改寫回覆或自行解除限制；工具說明只能協助用戶端正確解讀。不要將所有 `FORBIDDEN`／HTTP 403 都歸類為此案例。
+
+### Developer MCP 對話限制的排查
+
+1. 在相同 Server 與 client 設定下執行 `uv run webcodex call projects_list`；使用自訂設定時加上 `--config /absolute/path/client.json`。這能驗證 CLI → Server 的工具呼叫，不能代替 ChatGPT → MCP／tunnel 的驗證。`webcodex doctor` 僅檢查本機環境。
+2. 依官方介面確認 Settings → Security and login → Developer mode；其可用性受帳號與工作區政策影響。更新連線 metadata 後使用 Refresh，再開啟新對話並從工具選單加入該連線，重新測試 `projects_list`。[官方連線與更新步驟](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+3. 若仍被拒絕，請工作區管理者確認 plugin／MCP server 對該角色可用，以及連線的 action 權限。工具可被看到與具備執行權限是不同層次。[官方權限說明](https://learn.chatgpt.com/docs/enterprise/apps-and-connectors)
+4. 保留用戶端介面／模式、時間與完整錯誤文字，供工作區管理者或用戶端支援管道排查。若有反向代理或 tunnel 日誌，可比對請求是否到達；`projects_list` 不建立 job，因此「沒有新 job」不能當成請求未到 Server 的證據。
+
+公開文件未列出這個錯誤字串對應的所有內部條件；不能只憑它指定某個模型、方案或裝置一定不支援。更換對話是排查步驟，不保證能解除帳號或工作區限制。
+
+### 驗收案例
+
+保留「schema 可取得，但呼叫被 host 拒絕」作為用戶端驗收情境。預期回報為「工具已註冊；目前對話不允許執行；Runner 狀態未確認」，停止無效重試，且不宣稱已建立任務、讀取檔案或執行測試。
+
+本機自動測試透過真實 stdio bridge 驗證初始化指引、工具說明，以及相同工具清單下的 Runner 上線、心跳過期與無可見專案結果。ChatGPT 的 host 拒絕需要在出錯的對話環境重測，不能用本機模擬宣稱已修復。

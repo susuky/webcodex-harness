@@ -511,9 +511,27 @@ async def test_stdio_bridge_uses_the_authenticated_http_harness(harness, tmp_pat
         async with ClientSession(*streams) as client:
             initialized = await client.initialize()
             assert "task_create" in initialized.instructions
-            assert len((await client.list_tools()).tools) >= 40
+            assert "host execution blocked" in initialized.instructions
+            specs = (await client.list_tools()).tools
+            assert len(specs) >= 40
+            assert "developer MCPs" in next(
+                t.description for t in specs if t.name == "projects_list"
+            )
             projects = await call(client, "projects_list")
             assert projects["projects"][0]["id"] == "local/project"
+            assert projects["projects"][0]["online"] is True
+
+            harness.runner.stop.set()
+            await asyncio.wait_for(harness.runner_task, 10)
+            # Expire the stopped Runner's heartbeat without waiting for its 15-second lease.
+            with harness.app.state.service.store.db as db:
+                db.execute("UPDATE runners SET seen=0")
+            assert len((await client.list_tools()).tools) == len(specs)
+            offline = (await call(client, "projects_list"))["projects"]
+            assert offline[0]["id"] == "local/project" and offline[0]["online"] is False
+
+            harness.config.clients["owner"].projects = []
+            assert (await call(client, "projects_list"))["projects"] == []
 
 
 async def test_plugin_http_transport_and_runner_network(harness):
