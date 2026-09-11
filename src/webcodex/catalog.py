@@ -33,10 +33,11 @@ class Definition:
             description=self.description,
             inputSchema=self.model.model_json_schema(),
             annotations=types.ToolAnnotations(
-                readOnlyHint=self.permission == "read",
-                destructiveHint=self.permission in {"write", "execute", "git_write", "extensions"},
-                idempotentHint=self.permission == "read",
-                openWorldHint=self.permission in {"execute", "git_write", "extensions"},
+                readOnlyHint=self.permission in {"read", "computer_observe"},
+                destructiveHint=self.permission not in {"read", "computer_observe"},
+                idempotentHint=self.permission in {"read", "computer_observe"},
+                openWorldHint=self.permission
+                in {"execute", "git_write", "extensions", "computer_observe", "computer_control"},
             ),
         )
 

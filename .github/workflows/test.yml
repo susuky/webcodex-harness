@@ -24,17 +24,22 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           python-version: ${{ matrix.python }}
-      - name: Install ripgrep on Ubuntu
+      - name: Install Ubuntu tools and virtual desktop
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep xvfb xauth python3-tk xdotool
       - name: Install ripgrep on Windows
         if: runner.os == 'Windows'
         run: choco install ripgrep --yes --no-progress
-      - run: uv sync --locked
+      - run: uv sync --locked --extra computer
       - run: uv run webcodex doctor
       - run: cargo --version
       - run: rg --version
       - run: uv run pytest -q -ra
+      - name: Verify computer use on an isolated X11 desktop
+        if: runner.os == 'Linux'
+        env:
+          WEBCODEX_TEST_DESKTOP: '1'
+        run: xvfb-run -a -s '-screen 0 1280x800x24 -nolisten tcp' uv run --extra computer pytest -q tests/test_computer_live.py
       - run: uv run ruff check src tests examples
       - run: uv run ruff format --check src tests examples
       - run: uv build

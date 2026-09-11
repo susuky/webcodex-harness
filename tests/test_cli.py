@@ -38,6 +38,14 @@ async def test_cli_initialization_doctor_and_bom_arguments(tmp_path):
     assert doctor["platform"] == sys.platform
     assert doctor["command_shell"] == ("powershell" if os.name == "nt" else "bash")
     assert doctor["supported_runner"]
+    assert isinstance(doctor["computer"]["available"], bool)
+    desktop_directory = tmp_path / "desktop settings"
+    await cli(
+        "init", "--project", str(project), "--config-dir", str(desktop_directory), "--computer-use"
+    )
+    assert {"computer_observe", "computer_control"} <= load_config(
+        desktop_directory / "runner.json", RunnerConfig
+    ).permissions
     payload = tmp_path / "args.json"
     payload.write_text('\ufeff{"title":"繁體中文"}', encoding="utf-8")
     assert arguments("@" + str(payload)) == {"title": "繁體中文"}

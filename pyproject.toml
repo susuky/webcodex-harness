@@ -17,6 +17,9 @@ dependencies = [
   "pywinpty>=3,<4; sys_platform == 'win32'",
 ]
 
+[project.optional-dependencies]
+computer = ["PyAutoGUI>=0.9.54,<1", "Pillow>=11,<13"]
+
 [project.scripts]
 webcodex = "webcodex.cli:main"
 

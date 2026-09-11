@@ -12,7 +12,9 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-PERMISSIONS = {"read", "write", "execute", "git_write", "extensions"}
+DEFAULT_PERMISSIONS = {"read", "write", "execute", "git_write", "extensions"}
+COMPUTER_PERMISSIONS = {"computer_observe", "computer_control"}
+PERMISSIONS = DEFAULT_PERMISSIONS | COMPUTER_PERMISSIONS
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 
 
@@ -79,9 +81,9 @@ class StrictModel(BaseModel):
 class Client(StrictModel):
     token: str = Field(min_length=32)
     projects: list[str]
-    permissions: set[str] = Field(default_factory=lambda: set(PERMISSIONS))
+    permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
     approval_required: set[str] = Field(
-        default_factory=lambda: {"execute", "git_write", "extensions"}
+        default_factory=lambda: {"execute", "git_write", "extensions", "computer_control"}
     )
 
     @model_validator(mode="after")
@@ -126,7 +128,7 @@ class RunnerConfig(StrictModel):
     token: str = Field(min_length=32)
     state_dir: Path
     projects: dict[str, Path]
-    permissions: set[str] = Field(default_factory=lambda: set(PERMISSIONS))
+    permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
     max_concurrent_jobs: int = Field(default=4, ge=1, le=32)
     max_processes: int = Field(default=16, ge=1, le=128)
     max_output_bytes: int = Field(default=8 * 1024 * 1024, ge=4096, le=128 * 1024 * 1024)
@@ -171,7 +173,9 @@ def load_config(path: str | Path, model: type[StrictModel]):
         ) from None
 
 
-def initialize(directory: Path, project: Path, port: int, trusted: bool) -> dict:
+def initialize(
+    directory: Path, project: Path, port: int, trusted: bool, computer_use: bool = False
+) -> dict:
     directory = directory.expanduser().resolve()
     project = project.expanduser().resolve(strict=True)
     # Credentials and execution journals cannot be exposed through the project tools.
@@ -184,6 +188,8 @@ def initialize(directory: Path, project: Path, port: int, trusted: bool) -> dict
     admin, client, runner = [secrets.token_urlsafe(32) for _ in range(3)]
     url = f"http://127.0.0.1:{port}"
     policy = Client(token=client, projects=["local/project"])
+    if computer_use:
+        policy.permissions |= COMPUTER_PERMISSIONS
     if trusted:
         policy.approval_required = set()
     server = ServerConfig(
@@ -202,6 +208,8 @@ def initialize(directory: Path, project: Path, port: int, trusted: bool) -> dict
         projects={"project": project},
         environment={"WEBCODEX_PYTHON": sys.executable},
     )
+    if computer_use:
+        runner_config.permissions |= COMPUTER_PERMISSIONS
     write_private(directory / "server.json", server.model_dump(mode="json"))
     write_private(directory / "runner.json", runner_config.model_dump(mode="json"))
     write_private(directory / "client.json", {"server_url": url, "token": client})

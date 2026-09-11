@@ -55,6 +55,9 @@ def main():
     setup.add_argument(
         "--trusted", action="store_true", help="允許用戶端直接執行命令與安裝擴充，不另排人工核准"
     )
+    setup.add_argument(
+        "--computer-use", action="store_true", help="啟用整個桌面的截圖與輸入操作；預設需核准輸入"
+    )
     for name, filename in [
         ("serve", "server.json"),
         ("runner", "runner.json"),
@@ -83,7 +86,11 @@ def main():
     os.umask(0o077)
     try:
         if args.command == "init":
-            output(initialize(args.config_dir, args.project, args.port, args.trusted))
+            output(
+                initialize(
+                    args.config_dir, args.project, args.port, args.trusted, args.computer_use
+                )
+            )
         elif args.command == "serve":
             from .server import create_app
 
@@ -99,6 +106,8 @@ def main():
             config = profile(args.config)
             asyncio.run(run_bridge(config["server_url"], config["token"]))
         elif args.command == "doctor":
+            from .computer import Computer
+
             output(
                 {
                     "platform": sys.platform,
@@ -109,6 +118,7 @@ def main():
                     "command_shell": "powershell" if os.name == "nt" else "bash",
                     "terminal": "conpty" if os.name == "nt" else "pty",
                     "config_dir": str(DEFAULT_DIR),
+                    "computer": Computer().status(),
                     "tools": {
                         name: shutil.which(name)
                         for name in [

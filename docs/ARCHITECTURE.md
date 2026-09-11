@@ -16,7 +16,7 @@ Server 與 Runner 目前採 HTTPS long polling；同機開發允許 loopback HTT
 - `runner_id/project_id` 指向已登錄專案。綁定包含 canonical path、檔案系統裝置與 inode 的雜湊；更換根目錄需要建立新任務。
 - 任務與工作紀錄依用戶端身分隔離。共同獲准的專案仍是共享的真實檔案系統，並非多租戶 OS 隔離。
 
-`read`、`write`、`execute`、`git_write`、`extensions` 決定可用工具類別。`approval_required` 決定哪些 Runner 操作先進入核准佇列。即使 Server 允許，Runner 的 `permissions` 仍可進一步拒絕。
+`read`、`write`、`execute`、`git_write`、`extensions` 決定 coding 工具類別。選用的 `computer_observe`／`computer_control` 分別授予桌面觀察與輸入，預設皆不啟用。`approval_required` 決定哪些 Runner 操作先進入核准佇列。即使 Server 允許，Runner 的 `permissions` 仍可進一步拒絕。
 
 權限設定在啟動時載入。修改設定並重新啟動 Server 後，尚未交付的工作會在送給 Runner 前重查權限；撤銷的工作不執行，新增加的核准要求也會生效。已交付或執行中的作業不會因設定變更自動回溯取消。
 
@@ -69,12 +69,15 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 
 ## 模組
 
+桌面工具由同一 Runner 共用一把 thread lock，避免不同專案的輸入互相穿插；等待中的 coroutine 取消不會提早釋放正在執行原生呼叫的鎖。截圖 ID 綁定 task、最新觀察、畫面尺寸及五分鐘期限，一次輸入即消耗；可能已送出輸入的例外使用既有 `OutcomeUnknown`，不自動重送。此機制不隔離人為操作或另一個 Runner。完整契約與平台限制見 [Computer use](COMPUTER_USE.md)。
+
 | 檔案 | 職責 |
 | --- | --- |
 | `src/webcodex/server.py` | MCP／REST、驗證、權限、操作員 API、任務工具 |
 | `src/webcodex/store.py` | SQLite 工作、事件、去重、領取與恢復 |
 | `src/webcodex/runner.py` | 主動連線、journal、工具分派與結果回報 |
 | `src/webcodex/runtime.py` | Repo、Git、命令、圖片及擴充工具 |
+| `src/webcodex/computer.py` | 選用桌面後端、截圖、座標檢查與輸入序列化 |
 | `src/webcodex/filesystem.py` | 路徑邊界、檔案讀寫與雜湊檢查 |
 | `src/webcodex/processes.py` | 子程序、PTY、輸出與停止流程 |
 | `src/webcodex/windows.py` | Windows 檔案 handle、ACL、ConPTY、Job 與啟動閘門 |
@@ -87,4 +90,4 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 
 本機測試不代表 ChatGPT 帳號、Secure MCP Tunnel、公開 TLS、反向代理或第三方 MCP provider 已完成授權。這些連線必須以實際帳號、目標與執行環境逐一驗證；測試不會冒用本機現有服務憑證。
 
-Windows 11 原生、WSL2 Ubuntu 22.04 與 Ubuntu 24.04 已完成實機驗收，包含命令、終端、檔案、擴充套件與任務流程；平台版本、測試結果及未驗證範圍見 [平台驗證紀錄](PLATFORMS.md)。
+原有 coding 功能曾在 Windows 11、WSL2 Ubuntu 22.04 與 Ubuntu 24.04 驗收；這些舊紀錄不包含本次新增的桌面功能。平台版本、當次測試結果及未驗證範圍見 [平台驗證紀錄](PLATFORMS.md)。

@@ -14,6 +14,7 @@ import httpx
 from pydantic import Field
 
 from .catalog import tool
+from .computer import Computer
 from .config import RunnerConfig
 from .extensions import Extensions
 from .filesystem import MAX_FILE, Workspace, sha256
@@ -38,10 +39,12 @@ class Runtime:
         extensions: Extensions,
         task_id: str,
         job_id: str,
+        computer: Computer,
     ):
         self.config, self.workspace = config, workspace
         self.processes, self.extensions = processes, extensions
         self.task_id, self.job_id = task_id, job_id
+        self.computer = computer
 
     async def _run(self, argv: list[str], cwd: Path, stdin: str | None = None) -> str:
         process = await self.processes.start(new_id(), self.task_id, argv, cwd, 120)
@@ -93,6 +96,9 @@ class Runtime:
                 ]
             },
             "shell_is_os_sandboxed": False,
+            "computer_permissions": sorted(
+                self.config.permissions & {"computer_observe", "computer_control"}
+            ),
             "skills": self.extensions.skills(self.workspace)[0],
         }
         try:
@@ -401,6 +407,107 @@ class Runtime:
                 ]
             },
         }
+
+    @tool("computer_observe")
+    async def computer_status(self) -> dict:
+        """Check this Runner's desktop backend and desktop dimensions without capturing pixels. Requires explicit computer_observe permission; available is a backend probe, not proof that screenshot/input will succeed. Ubuntu X11 and native Windows only."""
+        return await asyncio.to_thread(self.computer.status)
+
+    @tool("computer_observe")
+    async def computer_screenshot(
+        self, max_dimension: Annotated[int, Field(ge=320, le=2560)] = 1600
+    ) -> dict:
+        """Capture the shared desktop as a native MCP JPEG (at most 1 MiB). This can show data outside the project. Returns a snapshot_id valid for one input operation within 5 minutes; a newer screenshot on this Runner invalidates it. Coordinates for input use source_width/source_height, not the resized image width/height. Images are retained in private job journals."""
+        return await asyncio.to_thread(self.computer.screenshot, self.task_id, max_dimension)
+
+    @tool("computer_control")
+    async def computer_move(self, snapshot_id: str, x: Offset, y: Offset) -> dict:
+        """Move the pointer to source-pixel coordinates on the desktop, using a fresh screenshot from this task. Consumes snapshot_id. The desktop is shared with the human and other applications, not isolated to the project."""
+        return await asyncio.to_thread(
+            self.computer.perform, self.task_id, snapshot_id, "move", x=x, y=y
+        )
+
+    @tool("computer_control")
+    async def computer_click(
+        self,
+        snapshot_id: str,
+        x: Offset,
+        y: Offset,
+        button: Literal["left", "right", "middle"] = "left",
+        clicks: Annotated[int, Field(ge=1, le=2)] = 1,
+    ) -> dict:
+        """Click at desktop source-pixel coordinates; clicks=2 double-clicks. Consumes a fresh snapshot_id from this task. Requires computer_control and its approval policy. Success means input was sent; take a new screenshot to verify the application's result."""
+        return await asyncio.to_thread(
+            self.computer.perform,
+            self.task_id,
+            snapshot_id,
+            "click",
+            x=x,
+            y=y,
+            button=button,
+            clicks=clicks,
+        )
+
+    @tool("computer_control")
+    async def computer_scroll(
+        self,
+        snapshot_id: str,
+        x: Offset,
+        y: Offset,
+        clicks: Annotated[int, Field(ge=-100, le=100)],
+    ) -> dict:
+        """Move to source-pixel coordinates and scroll vertically; positive clicks scroll up, negative down. Consumes a fresh snapshot_id from this task. Scroll units depend on the application/platform."""
+        if clicks == 0:
+            raise ValueError("Scroll clicks must be nonzero")
+        return await asyncio.to_thread(
+            self.computer.perform, self.task_id, snapshot_id, "scroll", x=x, y=y, clicks=clicks
+        )
+
+    @tool("computer_control")
+    async def computer_drag(
+        self,
+        snapshot_id: str,
+        start_x: Offset,
+        start_y: Offset,
+        x: Offset,
+        y: Offset,
+        duration: Annotated[float, Field(ge=0.2, le=3, allow_inf_nan=False)] = 0.5,
+    ) -> dict:
+        """Drag with the left button between two source-pixel coordinates, then release it. Consumes a fresh snapshot_id from this task. Re-observe after the drag to verify the result."""
+        return await asyncio.to_thread(
+            self.computer.perform,
+            self.task_id,
+            snapshot_id,
+            "drag",
+            start_x=start_x,
+            start_y=start_y,
+            x=x,
+            y=y,
+            duration=duration,
+        )
+
+    @tool("computer_control")
+    async def computer_key(
+        self,
+        snapshot_id: str,
+        keys: Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=32)]],
+            Field(min_length=1, max_length=4),
+        ],
+    ) -> dict:
+        """Press one key or a chord in the currently focused application, e.g. ['enter'] or ['ctrl','a'], then release in reverse order. Use lowercase PyAutoGUI key names. Consumes a fresh snapshot_id from this task; input can affect any application."""
+        return await asyncio.to_thread(
+            self.computer.perform, self.task_id, snapshot_id, "key", keys=keys
+        )
+
+    @tool("computer_control")
+    async def computer_type(
+        self, snapshot_id: str, text: Annotated[str, Field(min_length=1, max_length=4096)]
+    ) -> dict:
+        """Type printable Unicode into the focused application without using the clipboard. Ubuntu requires xdotool; Windows uses Unicode SendInput. Use computer_key separately for Enter/Tab. Consumes a fresh snapshot_id from this task. Text is retained in private job arguments; do not use for secrets. Success reports input dispatch, not verified application text."""
+        return await asyncio.to_thread(
+            self.computer.perform, self.task_id, snapshot_id, "text", text=text
+        )
 
     @tool("execute")
     async def fetch_url(self, url: Annotated[str, Field(max_length=8192)]) -> dict:

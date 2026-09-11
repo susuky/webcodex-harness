@@ -10,6 +10,7 @@ import sqlite3
 import httpx
 
 from .catalog import OutcomeUnknown, definitions
+from .computer import Computer
 from .config import RunnerConfig, identifier, private_dir
 from .extensions import Extensions
 from .filesystem import Workspace
@@ -56,6 +57,7 @@ class Runner:
         )
         self.db.commit()
         self.processes = Processes(config)
+        self.computer = Computer()
         self.extensions = {project: Extensions(config, project) for project in config.projects}
         self.locks = {project: asyncio.Lock() for project in config.projects}
         self.active: dict[str, asyncio.Task] = {}
@@ -91,6 +93,7 @@ class Runner:
                 self.extensions[project],
                 job["task_id"],
                 job_id,
+                self.computer,
             )
             if definition.permission in {"write", "git_write", "extensions"}:
                 async with self.locks[project]:
