@@ -1,0 +1,19 @@
+{
+  "name": "project-tools",
+  "version": "0.1.0",
+  "description": "查看專案檔案分布，並比較同一次工作中的統計變化。",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Project Tools",
+    "shortDescription": "查看專案檔案統計與變化。",
+    "longDescription": "取得目前專案的檔案統計，並比較同一工作階段中的變化。",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "幫我查看這個專案的檔案分布。"
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "project": {
+      "command": "${WEBCODEX_PYTHON}",
+      "args": ["${PLUGIN_ROOT}/server.py"]
+    }
+  }
+}
