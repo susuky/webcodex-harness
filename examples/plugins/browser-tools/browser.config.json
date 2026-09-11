@@ -1,0 +1,13 @@
+{
+  "browser": {
+    "isolated": true,
+    "launchOptions": { "channel": "chrome", "headless": true },
+    "contextOptions": {
+      "viewport": { "width": 1280, "height": 800 },
+      "serviceWorkers": "block"
+    }
+  },
+  "timeouts": { "action": 5000, "navigation": 20000 },
+  "saveSession": false,
+  "codegen": "none"
+}

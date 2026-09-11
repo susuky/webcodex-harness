@@ -31,10 +31,14 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ripgrep --yes --no-progress
       - run: uv sync --locked --extra computer
+      - name: Install optional browser provider
+        run: npm install --prefix "${{ runner.temp }}/webcodex-browser" --ignore-scripts --no-audit --no-fund --save-exact @playwright/mcp@0.0.80
       - run: uv run webcodex doctor
       - run: cargo --version
       - run: rg --version
       - run: uv run pytest -q -ra
+        env:
+          WEBCODEX_TEST_BROWSER_MCP: '${{ runner.temp }}/webcodex-browser/node_modules/@playwright/mcp/cli.js'
       - name: Verify computer use on an isolated X11 desktop
         if: runner.os == 'Linux'
         env:

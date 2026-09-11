@@ -1,0 +1,16 @@
+{
+  "name": "browser-tools",
+  "version": "0.1.0",
+  "description": "Browse pages, fill forms and extract data in a separate browser for each task.",
+  "author": { "name": "Hao-Ping Lin" },
+  "interface": {
+    "displayName": "Browser Tools",
+    "shortDescription": "Browse pages and verify web applications.",
+    "longDescription": "Inspect pages, fill forms, manage tabs and extract data through WebCodex.",
+    "developerName": "Hao-Ping Lin",
+    "category": "Developer Tools",
+    "capabilities": [],
+    "defaultPrompt": "Help me inspect and test a web page."
+  },
+  "mcpServers": "./.mcp.json"
+}

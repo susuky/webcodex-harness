@@ -12,6 +12,7 @@ An independent Python implementation inspired by [yyjeqhc/webcodex](https://gith
 - Resume saved tasks, monitor processes and approve sensitive operations.
 - Load project skills and plugins with persistent MCP connections.
 - Optionally capture and control the desktop, including Unicode text input.
+- Add browser navigation, forms, tabs and page data extraction with the optional Playwright MCP plugin.
 
 ## Quick start
 
@@ -35,6 +36,8 @@ Connect to `http://127.0.0.1:8765/mcp` using the Bearer token in the generated `
 
 Desktop tools require the optional `computer` dependencies and explicit permissions. Follow [Computer use](docs/COMPUTER_USE.md) for installation, enabling an existing setup and the screenshot → input → verification workflow.
 
+Browser tools use a separately installed Node.js/Chrome provider, with isolated sessions per task. Follow [Browser use](docs/BROWSER_USE.md) for setup and optional login persistence.
+
 ## Permissions and limits
 
 - Commands, Git writes, extension installation and desktop input require operator approval by default. Inspect requests with `uv run webcodex approvals`.
@@ -45,7 +48,7 @@ Desktop tools require the optional `computer` dependencies and explicit permissi
 
 Detailed guides are in Traditional Chinese:
 
-- Usage: [Operations](docs/OPERATIONS.md) · [Computer use](docs/COMPUTER_USE.md) · [Connections](docs/CHATGPT.md) · [Extensions](docs/EXTENSIONS.md)
+- Usage: [Operations](docs/OPERATIONS.md) · [Computer use](docs/COMPUTER_USE.md) · [Browser use](docs/BROWSER_USE.md) · [Connections](docs/CHATGPT.md) · [Extensions](docs/EXTENSIONS.md)
 - Project: [Architecture](docs/ARCHITECTURE.md) · [Platform validation](docs/PLATFORMS.md) · [Feature roadmap](docs/ROADMAP.md)
 - Development: [Contributing and tests](CONTRIBUTING.md) · [Security reporting](.github/SECURITY.md) · [Release readiness](docs/RELEASING.md)
 

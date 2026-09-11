@@ -76,6 +76,12 @@ def plugin_manifest(root: Path) -> dict:
             isinstance(s, str) for s in spec.get("args", [])
         ):
             raise ValueError("MCP provider args must be a list of strings")
+        if "allowedTools" in spec and (
+            not isinstance(spec["allowedTools"], list)
+            or len(spec["allowedTools"]) > 256
+            or not all(isinstance(s, str) and 0 < len(s) <= 128 for s in spec["allowedTools"])
+        ):
+            raise ValueError("allowedTools must be a list of at most 256 tool names")
     skills = manifest.get("skills", "skills")
     skills = [skills] if isinstance(skills, str) else skills
     if not isinstance(skills, list) or not all(isinstance(s, str) for s in skills):
@@ -116,8 +122,12 @@ def copy_bundle(source: Path, target: Path):
 class Provider:
     """One owner task keeps the SDK's async context and provider session alive."""
 
-    def __init__(self, spec: dict, root: Path, project: Path, config: RunnerConfig):
+    def __init__(
+        self, spec: dict, root: Path, project: Path, config: RunnerConfig, state_dir: Path
+    ):
         self.spec, self.root, self.project, self.config = spec, root, project, config
+        self.state_dir = state_dir
+        self.allowed_tools = spec.get("allowedTools")
         self.queue = asyncio.Queue(maxsize=16)
         self.task = asyncio.create_task(self._serve())
 
@@ -128,6 +138,7 @@ class Provider:
             "CLAUDE_PLUGIN_ROOT": str(self.root),
             "PROJECT_ROOT": str(self.project),
             **self.config.environment,
+            "TASK_STATE_DIR": str(self.state_dir),
         }
 
         def replace(match):
@@ -182,10 +193,23 @@ class Provider:
                     if pending.cancelled():
                         pending = None
                         continue
+                    if (
+                        method == "call_tool"
+                        and self.allowed_tools is not None
+                        and arguments["name"] not in self.allowed_tools
+                    ):
+                        pending.set_exception(ValueError("Tool is not allowed by this plugin"))
+                        pending = None
+                        continue
                     try:
                         result = await asyncio.wait_for(getattr(session, method)(**arguments), 120)
                         if not pending.done():
-                            pending.set_result(result.model_dump(mode="json", by_alias=True))
+                            payload = result.model_dump(mode="json", by_alias=True)
+                            if method == "list_tools" and self.allowed_tools is not None:
+                                payload["tools"] = [
+                                    t for t in payload["tools"] if t["name"] in self.allowed_tools
+                                ]
+                            pending.set_result(payload)
                     except Exception as error:
                         if not pending.done():
                             pending.set_exception(
@@ -377,6 +401,7 @@ class Extensions:
         return paths[name]
 
     async def provider(self, task: str, workspace: Workspace, plugin: str, server: str) -> Provider:
+        identifier(task)
         identifier(plugin)
         identifier(server)
         root = self.root / "plugin" / plugin
@@ -386,12 +411,18 @@ class Extensions:
         key = (task, plugin, server)
         provider = self.providers.get(key)
         if provider and not provider.task.done():
+            provider.allowed_tools = manifest["servers"][server].get("allowedTools")
             return provider
         if len([p for p in self.providers.values() if not p.task.done()]) >= 16:
             raise ValueError(
                 "16 provider sessions are active; close unused sessions with plugin_disconnect"
             )
-        provider = Provider(manifest["servers"][server], root, workspace.root, self.config)
+        state_dir = self.root
+        for part in ["sessions", plugin, server, task]:
+            state_dir = private_dir(state_dir / part)
+        provider = Provider(
+            manifest["servers"][server], root, workspace.root, self.config, state_dir
+        )
         self.providers[key] = provider
         return provider
 

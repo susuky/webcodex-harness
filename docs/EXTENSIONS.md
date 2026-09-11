@@ -73,7 +73,13 @@ my-plugin/
 
 同一 bundle 的 Markdown skill 可跨平台使用；腳本及 provider 的執行檔仍要符合 Runner 平台。Windows Python 路徑通常以 `.exe` 結尾，Bash 腳本需要另外存在的 Bash；WSL2 的工具與路徑屬於 Linux 環境。不要直接共用 Windows 和 WSL2 的 `.venv`、Runner state 或絕對路徑設定。設定檔與 skill 請使用 UTF-8。
 
-支援 HTTP MCP 的 `url`／`headers`；環境參數只展開 `${PLUGIN_ROOT}`、`${CODEX_PLUGIN_ROOT}`、`${CLAUDE_PLUGIN_ROOT}`、`${PROJECT_ROOT}` 和操作員明確配置的 Runner `environment`。不會自動把整份父程序環境變數交給 provider。
+支援 HTTP MCP 的 `url`／`headers`；環境參數只展開 `${PLUGIN_ROOT}`、`${CODEX_PLUGIN_ROOT}`、`${CLAUDE_PLUGIN_ROOT}`、`${PROJECT_ROOT}`、`${TASK_STATE_DIR}` 和操作員明確配置的 Runner `environment`。不會自動把整份父程序環境變數交給 provider。
+
+`${TASK_STATE_DIR}` 是 Runner 管理的保留變數，不可由 `environment` 覆寫。位置為 `<state_dir>/extensions/<project_id>/sessions/<plugin>/<server>/<task_id>/`，建立時沿用私有目錄保護。不同專案、task、plugin 與 server 使用不同目錄；重連同一組識別碼會取得相同路徑。Provider 必須明確使用此路徑保存狀態，它不會自動隔離遠端服務或共用瀏覽器。斷線與移除 plugin 不會刪除這些目錄，目前沒有自動清理期限。
+
+每個 MCP server 可設定 `allowedTools` 字串清單。省略時維持原有行為、允許所有 provider 工具；空清單拒絕全部工具。設定後，`plugin_tools` 只列出清單內的工具，`plugin_call` 在送往 provider 前再檢查一次。清單最多 256 個名稱，每個名稱為 1–128 字元；只接受精確名稱，不支援萬用字元。已安裝設定的修改會在下一次取得該 provider 時套用到既有連線；其他啟動參數的變更則需先斷線。
+
+這是 Harness 的呼叫限制，不是 provider 程序的 sandbox；也不限制 resources／prompts。安裝與執行外掛仍代表信任該程式，所有 provider 工具仍沿用 `execute` 權限。
 
 ## 執行與延續
 
@@ -86,5 +92,7 @@ my-plugin/
 ## 完整範例
 
 `examples/plugins/project-tools` 提供可安裝的 plugin、skill、`project_stats` 工具、README resource 與摘要 prompt。統計值取自 Runner 的實際工作目錄，`observations` 可驗證連續呼叫是否使用同一個 provider session。
+
+`examples/plugins/browser-tools` 提供固定版本 Playwright MCP 的啟動設定、13 個允許工具、task 專屬輸出目錄與獨立瀏覽器狀態。安裝與操作見 [瀏覽器操作指南](BROWSER_USE.md)。
 
 本專案不內建外掛市集帳號、第三方 OAuth、hooks、apps UI 或 provider 的依賴安裝器；安裝成功代表 bundle 已被驗證並保存，是否能執行仍由實際工具探索／呼叫驗證。

@@ -12,6 +12,7 @@
 - 延續已儲存的任務、監看程序，並核准敏感操作。
 - 載入專案 skills 與 plugins，保留 MCP 連線狀態。
 - 選擇啟用桌面截圖與控制，包含 Unicode 文字輸入。
+- 透過選用的 Playwright MCP plugin 操作網頁、填表、切換分頁及擷取資料。
 
 ## 快速啟動
 
@@ -35,6 +36,8 @@ uv run webcodex runner
 
 桌面工具需安裝選用的 `computer` 依賴並明確授予權限。[桌面操作指南](docs/COMPUTER_USE.md) 涵蓋安裝、既有設定啟用，以及「截圖 → 輸入 → 確認結果」流程。
 
+瀏覽器工具使用另外安裝的 Node.js／Chrome provider，各任務使用獨立連線與瀏覽器狀態。設定與選用的登入保存見 [瀏覽器操作指南](docs/BROWSER_USE.md)。
+
 ## 權限與限制
 
 - 預設命令、Git 寫入、擴充安裝與桌面輸入需操作員核准。使用 `uv run webcodex approvals` 檢視請求。
@@ -45,7 +48,7 @@ uv run webcodex runner
 
 詳細指南使用繁體中文：
 
-- 使用：[操作教學](docs/OPERATIONS.md) · [桌面操作](docs/COMPUTER_USE.md) · [連線設定](docs/CHATGPT.md) · [擴充套件](docs/EXTENSIONS.md)
+- 使用：[操作教學](docs/OPERATIONS.md) · [桌面操作](docs/COMPUTER_USE.md) · [瀏覽器操作](docs/BROWSER_USE.md) · [連線設定](docs/CHATGPT.md) · [擴充套件](docs/EXTENSIONS.md)
 - 專案：[架構](docs/ARCHITECTURE.md) · [平台驗證](docs/PLATFORMS.md) · [功能規劃](docs/ROADMAP.md)
 - 開發：[參與開發與測試](CONTRIBUTING.md) · [安全回報](.github/SECURITY.md) · [發布準備](docs/RELEASING.md)
 

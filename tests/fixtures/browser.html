@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<title>WebCodex 瀏覽器驗證</title>
+<style>
+  body { font: 18px system-ui, sans-serif; background: #edf2f7; color: #172c43; margin: 48px; }
+  main { max-width: 720px; margin: auto; background: white; padding: 36px; border-radius: 16px; }
+  h1 { font-size: 28px; margin-top: 0; }
+  label { display: block; margin-top: 18px; }
+  input, select, button { font: inherit; padding: 10px; border: 1px solid #b0bdca; border-radius: 6px; }
+  button { margin-top: 24px; background: #185d9a; color: white; cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+  th, td { text-align: left; padding: 10px; border-bottom: 1px solid #d9e2eb; }
+  #status { padding: 14px; background: #edf7ef; }
+</style>
+<main>
+  <h1>WebCodex 瀏覽器驗證</h1>
+  <p>測試表單、動態內容與資料擷取。</p>
+  <form id="order">
+    <label>姓名 <input id="name" name="name" autocomplete="off"></label>
+    <label>方案 <select id="plan"><option value="basic">基本</option><option value="pro">進階</option></select></label>
+    <button id="submit" type="submit">確認資料</button>
+  </form>
+  <p id="status" role="status">尚未確認</p>
+  <table><thead><tr><th>項目</th><th>數量</th></tr></thead>
+    <tbody><tr><td>鍵盤</td><td>2</td></tr><tr><td>滑鼠</td><td>3</td></tr></tbody>
+  </table>
+  <a href="second.html" target="_blank">開啟第二頁</a>
+</main>
+<script>
+  let submissions = 0;
+  document.querySelector('#order').addEventListener('submit', event => {
+    event.preventDefault();
+    submissions++;
+    document.querySelector('#status').textContent = '處理中';
+    setTimeout(() => {
+      const name = document.querySelector('#name').value;
+      document.querySelector('#status').textContent = `已確認：${name}（${submissions} 次）`;
+      localStorage.setItem('test-session', name);
+      document.cookie = 'test_session=fixture; path=/; max-age=3600; SameSite=Lax';
+    }, 800);
+  });
+</script>
+</html>
