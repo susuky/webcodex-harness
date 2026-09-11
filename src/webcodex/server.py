@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from . import __version__
 from .catalog import definitions, tool
 from .config import ServerConfig, identifier
 from .runtime import Runtime
@@ -339,7 +340,7 @@ def create_app(config: ServerConfig):
     service = Service(config)
     mcp = Server(
         "webcodex",
-        version="0.1.0",
+        version=__version__,
         instructions=(
             "You can work on registered repositories through this coding harness. Start with projects_list, "
             "then task_create or task_list/task_get to resume an explicit task. Read workspace_info, applicable "
@@ -380,7 +381,7 @@ def create_app(config: ServerConfig):
         service.store.close()
 
     async def health(request):
-        return JSONResponse({"status": "ok", "version": "0.1.0"})
+        return JSONResponse({"status": "ok", "version": __version__})
 
     async def api_tools(request):
         return JSONResponse(

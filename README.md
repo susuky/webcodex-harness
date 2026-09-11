@@ -84,6 +84,9 @@ Detailed guides are currently in Traditional Chinese:
 | [Architecture](docs/ARCHITECTURE.md) | Execution and authorization contracts |
 | [Platform validation](docs/PLATFORMS.md) | Evidence and reproducible tests |
 | [Upstream comparison](docs/ROADMAP.md) | Adopted ideas and proposed additions |
+| [Contributing](CONTRIBUTING.md) | Development, bug reports and pull requests |
+| [Security reporting](.github/SECURITY.md) | Reporting vulnerabilities and deployment boundaries |
+| [Release readiness](docs/RELEASING.md) | Package checks, dependency licensing and remaining release steps |
 
 ```sh
 uv run --extra computer pytest -q
@@ -93,3 +96,10 @@ uv build
 ```
 
 Desktop interaction tests are opt-in; see the computer use guide. Keep this README and [README.zh-TW.md](README.zh-TW.md) synchronized when changing setup, features or limitations.
+
+```less
+Copyright © 2026 Hao-Ping Lin (@susuky). All rights reserved.
+
+This repository is publicly accessible for viewing and evaluation only.
+No license is granted to use, copy, modify, redistribute, sublicense, or use this software commercially without prior written permission.
+```

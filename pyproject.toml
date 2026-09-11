@@ -1,15 +1,24 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "webcodex-harness"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A self-hosted MCP coding harness with outbound runners and durable tasks"
 readme = "README.md"
 requires-python = ">=3.11"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+]
 dependencies = [
   "mcp>=1.25,<2",
+  "pydantic>=2.11,<3",
+  "starlette>=0.27,<2",
   "httpx>=0.28,<1",
   "uvicorn>=0.35,<1",
   "PyYAML>=6,<7",
@@ -22,6 +31,9 @@ computer = ["PyAutoGUI>=0.9.54,<1", "Pillow>=11,<13"]
 
 [project.scripts]
 webcodex = "webcodex.cli:main"
+
+[tool.hatch.version]
+path = "src/webcodex/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/webcodex"]

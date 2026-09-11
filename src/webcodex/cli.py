@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 
+from . import __version__
 from .config import RunnerConfig, ServerConfig, initialize, load_config, server_url
 
 DEFAULT_DIR = (
@@ -47,6 +48,7 @@ def main():
         for stream in [sys.stdin, sys.stdout, sys.stderr]:
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="WebCodex：讓 MCP 用戶端操作你指定的本機專案")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     setup = commands.add_parser("init", help="建立獨立的 Server、Runner 與用戶端設定")
     setup.add_argument("--project", required=True, type=Path)

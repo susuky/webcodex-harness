@@ -84,6 +84,9 @@ Ubuntu X11 已有真實虛擬桌面測試；Windows 後端仍需在互動式 Win
 | [架構](docs/ARCHITECTURE.md) | 執行與權限契約 |
 | [平台驗證](docs/PLATFORMS.md) | 證據與重現方式 |
 | [上游比對](docs/ROADMAP.md) | 已採用概念與後續建議 |
+| [參與開發](CONTRIBUTING.md) | 開發、問題回報與 Pull Request |
+| [安全回報](.github/SECURITY.md) | 漏洞回報與部署邊界 |
+| [發布準備](docs/RELEASING.md) | 套件檢查、依賴授權與待完成事項 |
 
 ```sh
 uv run --extra computer pytest -q
@@ -93,3 +96,10 @@ uv build
 ```
 
 桌面互動測試需明確啟用，見桌面操作指南。安裝方式、功能或限制變動時，請同步更新本文件與 [README.md](README.md)。
+
+```less
+Copyright © 2026 Hao-Ping Lin (@susuky). All rights reserved.
+
+This repository is publicly accessible for viewing and evaluation only.
+No license is granted to use, copy, modify, redistribute, sublicense, or use this software commercially without prior written permission.
+```
