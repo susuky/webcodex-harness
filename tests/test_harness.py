@@ -137,9 +137,9 @@ async def call(client, name, args=None, *, error=False):
     return {"error": response.content[0].text}
 
 
-async def process_result(client, task_id, initial):
+async def process_result(client, task_id, initial, *, timeout_seconds=20):
     result = initial["result"]
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + timeout_seconds
     while result["status"] == "running" and time.monotonic() < deadline:
         result = (
             await call(
@@ -152,7 +152,7 @@ async def process_result(client, task_id, initial):
                 },
             )
         )["result"]
-    assert result["status"] != "running", result
+    assert result["status"] != "running", json.dumps(result, ensure_ascii=False)
     return result
 
 
@@ -757,7 +757,7 @@ async def test_runner_executes_real_cargo_test(harness):
         job = await call(
             client, "exec_command", {"task_id": task, "argv": ["cargo", "test", "--offline"]}
         )
-        result = await process_result(client, task, job)
+        result = await process_result(client, task, job, timeout_seconds=90)
         assert result["exit_code"] == 0 and "1 passed" in result["output"], result["output"]
 
 

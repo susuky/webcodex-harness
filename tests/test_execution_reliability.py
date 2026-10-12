@@ -463,9 +463,13 @@ def test_write_compares_the_version_that_was_read(tmp_path, monkeypatch):
         return original_stat(target, *args, **kwargs)
 
     monkeypatch.setattr(os, "stat", replace_before_stat)
-    with pytest.raises(ValueError, match="changed"):
+    windows = os.name == "nt"
+    # A pinned Windows read rejects the injected write before it can change the file.
+    with pytest.raises(
+        PermissionError if windows else ValueError, match=None if windows else "changed"
+    ):
         workspace.write("file.txt", b"our edit", sha256(b"original"))
-    assert path.read_bytes() == b"external edit"
+    assert path.read_bytes() == (b"original" if windows else b"external edit")
     assert not list(tmp_path.glob(".webcodex-write-*"))
 
 
