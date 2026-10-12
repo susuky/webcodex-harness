@@ -137,7 +137,7 @@ class TaskTools:
             "SELECT id,title,runner,project,kind,status,summary,updated FROM tasks WHERE owner=? "
             f"AND ((kind='coding' AND runner||'/'||project IN ({project_slots})) "
             f"OR (kind='project' AND runner||'/'||project IN ({root_slots}))) "
-            "ORDER BY updated DESC LIMIT ? OFFSET ?",
+            "ORDER BY updated DESC,rowid DESC LIMIT ? OFFSET ?",
             (self.owner, *allowed, *roots, limit + 1, offset),
         )
         return {

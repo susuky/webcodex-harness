@@ -225,6 +225,9 @@ class Workspace:
                 raise ValueError(f"File exceeds the {maximum}-byte read limit")
             if file_version(os.fstat(stream.fileno())) != file_version(info):
                 raise ValueError("File changed while reading; read it again before editing")
+            if os.name == "nt":
+                # Match write's path stat while this file is still pinned against replacement.
+                info = os.stat(self.root / path, follow_symlinks=False)
             return content, info
 
     def copy_file(
@@ -254,7 +257,13 @@ class Workspace:
                 items = []
                 for entry in entries:
                     try:
-                        items.append((entry.name, entry.stat(follow_symlinks=False)))
+                        # Windows DirEntry.stat leaves identity and link counts at zero.
+                        info = (
+                            os.stat(directory / entry.name, follow_symlinks=False)
+                            if os.name == "nt"
+                            else entry.stat(follow_symlinks=False)
+                        )
+                        items.append((entry.name, info))
                     except (FileNotFoundError, PermissionError):
                         if not skip_unavailable:
                             raise

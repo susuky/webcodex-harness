@@ -43,6 +43,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           WEBCODEX_TEST_DESKTOP: '1'
+          XLOCALEDIR: /usr/share/X11/locale
         run: xvfb-run -a -s '-screen 0 1280x800x24 -nolisten tcp' uv run --extra computer pytest -q tests/test_computer_live.py
       - run: uv run ruff check src tests examples
       - run: uv run ruff format --check src tests examples

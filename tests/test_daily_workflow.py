@@ -16,6 +16,8 @@ from webcodex.config import (
 )
 from webcodex.server import Service, TaskTools
 
+pytest_plugins = ["test_harness"]
+
 
 async def review(client, task_id, path=None):
     value = await call(client, "task_review", {"task_id": task_id, "path": path})
@@ -262,11 +264,12 @@ async def test_review_tracks_staged_unstaged_renames_deletions_and_binary(harnes
         assert job["status"] == "failed"
 
 
-async def test_task_list_filters_before_pagination(tmp_path):
+async def test_task_list_filters_before_pagination(tmp_path, monkeypatch):
     harness = Harness(tmp_path)
     service = Service(harness.config)
     try:
         service.store.register("local", "one", {"project": "a" * 64, "hidden": "b" * 64})
+        monkeypatch.setattr("webcodex.store.time.time", lambda: 1000.0)
         first = service.store.create_task("owner", "local/project", "first")
         second = service.store.create_task("owner", "local/project", "second")
         service.store.create_task("owner", "local/hidden", "hidden")

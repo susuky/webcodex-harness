@@ -99,9 +99,12 @@ uv run webcodex call computer_click --arguments '@args.json'
 
 ```bash
 sudo apt-get install -y xvfb xauth python3-tk xdotool
-WEBCODEX_TEST_DESKTOP=1 xvfb-run -a -s '-screen 0 1280x800x24 -nolisten tcp' \
+XLOCALEDIR=/usr/share/X11/locale WEBCODEX_TEST_DESKTOP=1 \
+  xvfb-run -a -s '-screen 0 1280x800x24 -nolisten tcp' \
   uv run --extra computer pytest -q tests/test_computer_live.py
 ```
+
+`XLOCALEDIR` 指定系統的 X11 locale 資料，讓 uv 提供的 Python／Tk 在測試視窗正確接收繁體中文與其他 Unicode 字元。
 
 Windows 在獨立測試帳號、解鎖的互動桌面執行：
 
