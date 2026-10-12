@@ -4,12 +4,14 @@ import asyncio
 import base64
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -22,6 +24,8 @@ from mcp.client.streamable_http import streamable_http_client
 from webcodex.config import Client, RunnerConfig, ServerConfig
 from webcodex.runner import Runner
 from webcodex.server import create_app
+
+SOURCE_ROOT = str(Path(__file__).resolve().parents[1] / "src")
 
 
 class Harness:
@@ -60,6 +64,8 @@ class Harness:
     async def start(self):
         self.app = create_app(self.config)
         self.server = uvicorn.Server(uvicorn.Config(self.app, log_level="error", access_log=False))
+        # Pytest owns signals; SSE must not retain a stopped test server via its signal handler.
+        self.server.capture_signals = nullcontext
         self.server_task = asyncio.create_task(self.server.serve(sockets=[self.socket]))
         deadline = time.monotonic() + 10
         while not self.server.started:
@@ -71,7 +77,9 @@ class Harness:
         async with self.http() as client:
             while time.monotonic() < deadline:
                 response = await client.post("/api/call", json={"name": "projects_list"})
-                if response.json().get("projects"):
+                if not self.runner_config.projects:
+                    response = await client.post("/api/call", json={"name": "project_roots_list"})
+                if response.json().get("projects") or response.json().get("roots"):
                     break
                 await asyncio.sleep(0.05)
             else:
@@ -86,7 +94,9 @@ class Harness:
     async def mcp(self, token="c" * 40):
         async with self.http(token) as http:
             async with streamable_http_client(self.url + "/mcp", http_client=http) as streams:
-                async with ClientSession(streams[0], streams[1]) as client:
+                async with ClientSession(
+                    streams[0], streams[1], read_timeout_seconds=timedelta(seconds=30)
+                ) as client:
                     await client.initialize()
                     yield client
 
@@ -473,13 +483,40 @@ async def test_authentication_approval_and_task_isolation(harness):
             },
         )
         assert job["status"] == "pending_approval"
+        assert job["service"]["product"] == "webcodex-harness"
+        command = shlex.split(job["approval"]["approve_command"])
+        assert command[:3] == ["webcodex", "approve", job["job_id"]]
+        assert command[3:] == ["--service-id", job["service"]["id"]]
+        assert "task approve" not in job["next_step"]
         assert not (harness.repo / "approved.txt").exists()
         async with harness.http("a" * 40) as admin:
             rows = (await admin.get("/api/admin/approvals")).json()["approvals"]
             assert rows[0]["job_id"] == job["job_id"]
             assert (
-                await admin.post("/api/admin/approvals/" + job["job_id"], json={"allow": True})
-            ).status_code == 200
+                await admin.post(
+                    "/api/admin/approvals/" + job["job_id"],
+                    json={"allow": True, "service_id": "a-different-service"},
+                )
+            ).status_code == 400
+            assert not (harness.repo / "approved.txt").exists()
+        config_path = harness.config.state_dir / "operator.json"
+        config_path.write_text(
+            harness.config.model_copy(update={"public_url": harness.url}).model_dump_json(),
+            encoding="utf-8",
+        )
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "webcodex",
+            *command[1:],
+            "--config",
+            str(config_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), 15)
+        assert proc.returncode == 0, (out.decode(errors="replace"), err.decode(errors="replace"))
+        assert json.loads(out)["job_id"] == job["job_id"]
         done = await call(reviewer, "job_get", {"job_id": job["job_id"], "wait_seconds": 10})
         assert done["status"] == "succeeded"
         await process_result(reviewer, task, done)
@@ -505,7 +542,9 @@ async def test_stdio_bridge_uses_the_authenticated_http_harness(harness, tmp_pat
         json.dumps({"server_url": harness.url, "token": "c" * 40}), encoding="utf-8", newline="\n"
     )
     server = StdioServerParameters(
-        command=sys.executable, args=["-m", "webcodex", "bridge", "--config", str(config)]
+        command=sys.executable,
+        args=["-m", "webcodex", "bridge", "--config", str(config)],
+        env={"PYTHONPATH": SOURCE_ROOT},
     )
     async with stdio_client(server) as streams:
         async with ClientSession(*streams) as client:
@@ -532,6 +571,95 @@ async def test_stdio_bridge_uses_the_authenticated_http_harness(harness, tmp_pat
 
             harness.config.clients["owner"].projects = []
             assert (await call(client, "projects_list"))["projects"] == []
+
+
+async def test_stdio_bridge_delivers_progress_before_result_and_isolates_requests(
+    harness, tmp_path
+):
+    config = tmp_path / "progress-client.json"
+    config.write_text(json.dumps({"server_url": harness.url, "token": "c" * 40}), encoding="utf-8")
+    server = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "webcodex", "bridge", "--config", str(config)],
+        env={"PYTHONPATH": SOURCE_ROOT},
+    )
+    async with stdio_client(server) as streams, ClientSession(*streams) as client:
+        await client.initialize()
+        task = (
+            await call(client, "task_create", {"project": "local/project", "title": "progress"})
+        )["id"]
+        harness.runner.stop.set()
+        await asyncio.wait_for(harness.runner_task, 10)
+        queued = (
+            await client.call_tool(
+                "exec_command",
+                {
+                    "task_id": task,
+                    "argv": [sys.executable, "-c", "print('not dispatched')"],
+                    "request_id": "progress-once",
+                },
+            )
+        ).structuredContent
+        assert queued["status"] == "queued"
+        updates = [[], []]
+        first = asyncio.Event()
+
+        async def observe(index):
+            async def progress(value, total, message):
+                updates[index].append((value, total, message))
+                first.set()
+
+            return await client.call_tool(
+                "job_get",
+                {"job_id": queued["job_id"], "wait_seconds": 11},
+                progress_callback=progress,
+            )
+
+        requests = [asyncio.create_task(observe(index)) for index in range(2)]
+        try:
+            await asyncio.wait_for(first.wait(), 8)
+            assert not any(
+                request.done() for request in requests
+            )  # Notifications aren't buffered until the result.
+            for response in await asyncio.gather(*requests):
+                assert response.structuredContent["job_id"] == queued["job_id"]
+                assert response.structuredContent["status"] == "queued"
+            for messages in updates:
+                assert len(messages) == 2
+                assert messages[0][0] < messages[1][0]
+                assert all(
+                    total is None and "正在確認工作狀態" in message
+                    for _, total, message in messages
+                )
+            assert not any(
+                "call_tool.<locals>.heartbeat" in task.get_coro().__qualname__
+                for task in asyncio.all_tasks()
+            )
+            await call(client, "job_cancel", {"job_id": queued["job_id"]}, error=True)
+        finally:
+            for request in requests:
+                request.cancel()
+            await asyncio.gather(*requests, return_exceptions=True)
+
+
+async def test_workspace_info_distinguishes_uninitialized_git_and_command_failure(harness):
+    async with harness.mcp() as client:
+        task = (
+            await call(client, "task_create", {"project": "local/project", "title": "Git state"})
+        )["id"]
+        info = (await call(client, "workspace_info", {"task_id": task}))["result"]
+        assert info["is_git_repository"] is False and "git_error" not in info
+        assert not (harness.repo / ".git").exists()
+        assert harness.runner.processes.list(task) == []
+        subprocess.run(["git", "init", "-q", str(harness.repo)], check=True)
+        info = (await call(client, "workspace_info", {"task_id": task}))["result"]
+        assert info["is_git_repository"] is True and "git_status" in info
+        (harness.repo / ".git/HEAD").write_text("invalid HEAD\n", encoding="utf-8")
+        info = (await call(client, "workspace_info", {"task_id": task}))["result"]
+        assert info["is_git_repository"] is None
+        assert "exit_code=128" in info["git_error"]
+        assert "Command failed" in info["git_error"]
+        assert "bounded output" not in info["git_error"]
 
 
 async def test_plugin_http_transport_and_runner_network(harness):
@@ -690,6 +818,7 @@ async def test_server_restart_keeps_tasks_and_running_process(harness):
     harness.server = uvicorn.Server(
         uvicorn.Config(create_app(harness.config), log_level="error", access_log=False)
     )
+    harness.server.capture_signals = nullcontext
     harness.server_task = asyncio.create_task(harness.server.serve(sockets=[sock]))
     deadline = time.monotonic() + 10
     while not harness.server.started and time.monotonic() < deadline:

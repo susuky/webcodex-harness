@@ -204,7 +204,7 @@ async def test_mcp_computer_permissions_approval_dedup_and_native_image(tmp_path
             args = {"task_id": task["id"]}
             denied = await call(client, "computer_screenshot", args, error=True)
             assert "not permitted" in denied["result"]["error"]
-            harness.runner_config.permissions |= COMPUTER_PERMISSIONS
+            harness.runner.config.permissions |= COMPUTER_PERMISSIONS
             shot = await call(client, "computer_screenshot", args)
             native = await client.call_tool("job_get", {"job_id": shot["job_id"]})
             assert native.content[1].type == "image" and native.content[1].mimeType == "image/jpeg"

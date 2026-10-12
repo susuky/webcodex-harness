@@ -14,7 +14,14 @@ import httpx
 import uvicorn
 
 from . import __version__
-from .config import RunnerConfig, ServerConfig, initialize, load_config, server_url
+from .config import (
+    RunnerConfig,
+    ServerConfig,
+    allow_project_root,
+    initialize,
+    load_config,
+    server_url,
+)
 
 DEFAULT_DIR = (
     Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "webcodex-harness"
@@ -51,7 +58,8 @@ def main():
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     setup = commands.add_parser("init", help="建立獨立的 Server、Runner 與用戶端設定")
-    setup.add_argument("--project", required=True, type=Path)
+    setup.add_argument("--project", type=Path, help="登記既有專案")
+    setup.add_argument("--project-root", type=Path, help="允許建立或登記新專案的既有父目錄")
     setup.add_argument("--config-dir", default=DEFAULT_DIR, type=Path)
     setup.add_argument("--port", type=int, default=8765)
     setup.add_argument(
@@ -59,6 +67,14 @@ def main():
     )
     setup.add_argument(
         "--computer-use", action="store_true", help="啟用整個桌面的截圖與輸入操作；預設需核准輸入"
+    )
+    root = commands.add_parser("allow-root", help="加入可建立專案的父目錄，保留既有設定與憑證")
+    root.add_argument("path", type=Path)
+    root.add_argument("--name", help="父目錄識別名稱；既有目錄沿用原名稱")
+    root.add_argument("--client", default="owner")
+    root.add_argument("--config-dir", default=DEFAULT_DIR, type=Path)
+    root.add_argument(
+        "--trusted", action="store_true", help="此目錄內的專案建立與日常開發免逐筆核准"
     )
     for name, filename in [
         ("serve", "server.json"),
@@ -78,6 +94,8 @@ def main():
         sub.add_argument("--config", default=str(DEFAULT_DIR / "server.json"))
         if name in {"approve", "deny", "answer"}:
             sub.add_argument("id")
+        if name in {"approve", "deny"}:
+            sub.add_argument("--service-id", help="確認操作的是工作回覆所指定的服務")
         if name == "answer":
             sub.add_argument("text")
     commands.add_parser("doctor", help="檢查這台機器的執行環境")
@@ -90,7 +108,22 @@ def main():
         if args.command == "init":
             output(
                 initialize(
-                    args.config_dir, args.project, args.port, args.trusted, args.computer_use
+                    args.config_dir,
+                    args.project,
+                    args.port,
+                    args.trusted,
+                    args.computer_use,
+                    args.project_root,
+                )
+            )
+        elif args.command == "allow-root":
+            output(
+                allow_project_root(
+                    args.config_dir,
+                    args.path,
+                    client_id=args.client,
+                    name=args.name,
+                    trusted=args.trusted,
                 )
             )
         elif args.command == "serve":
@@ -158,9 +191,10 @@ def main():
                 elif args.command in {"approvals", "questions"}:
                     response = client.get("/api/admin/" + args.command)
                 elif args.command in {"approve", "deny"}:
-                    response = client.post(
-                        "/api/admin/approvals/" + args.id, json={"allow": args.command == "approve"}
-                    )
+                    decision = {"allow": args.command == "approve"}
+                    if args.service_id:
+                        decision["service_id"] = args.service_id
+                    response = client.post("/api/admin/approvals/" + args.id, json=decision)
                 else:
                     response = client.post(
                         "/api/admin/questions/" + args.id, json={"answer": args.text}

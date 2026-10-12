@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task App 診斷測試頁</title>
+<style>
+  body{font:16px/1.6 system-ui,sans-serif;margin:24px;color:#202322;background:#f4f6f4}
+  main{max-width:920px;margin:auto}h1{font-size:22px;margin:0}p{margin:8px 0}
+  .counters{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0}output{font-weight:650}
+  button{font:inherit;padding:7px 12px;margin-right:8px;background:white;border:1px solid #b9c5bc;border-radius:5px}
+  iframe{display:block;margin-top:20px;width:100%;height:760px;border:1px solid #cbd4cd;background:white}
+  pre{font:13px/1.5 monospace;white-space:pre-wrap;background:#fff;padding:12px;max-height:180px;overflow:auto}
+</style>
+<main>
+  <h1>Task App 診斷測試頁</h1>
+  <p>這是本機模擬 Host，載入同目錄的真實 task_app.html。沒有連接 Server、執行命令或發送外部通知；ui/message 只計數，不會啟動模型。</p>
+  <p>模式：<output id="mode"></output>。before 模擬 prepare 未送達；after 模擬已保存 prepared 後遺失回覆，等待卡片的十秒逾時。stateFailures=1 會使下一筆狀態查詢失敗。</p>
+  <div class="counters">
+    <span>Prepare：<output id="prepare-count">0</output></span>
+    <span>ui/message：<output id="ui-message-count">0</output></span>
+    <span>實際等待狀態：<output id="wait-state">ready</output></span>
+    <span>狀態查詢失敗：<output id="state-failure-count">0</output></span>
+    <span>Bind：<output id="bind-count">0</output></span>
+    <span>世代：<output id="generation">1</output></span>
+    <span>暫停：<output id="paused">false</output></span>
+  </div>
+  <button id="inspect" type="button">更新診斷數值</button>
+  <button id="fail-state" type="button">下一次狀態查詢失敗</button>
+  <button id="toggle-pause" type="button">切換模擬 Host 暫停</button>
+  <button id="replace-controller" type="button">更換模擬控制世代</button>
+  <pre id="host-log" aria-label="模擬 Host 記錄"></pre>
+  <iframe id="app" src="./task_app.html" title="真實 Task App（模擬連線）"></iframe>
+</main>
+<script>
+(() => {
+  "use strict";
+  const query = new URLSearchParams(location.search);
+  const mode = ["before", "after"].includes(query.get("mode")) ? query.get("mode") : "none";
+  const stateFailures = query.get("stateFailures") === "1" ? 1 : 0;
+  const app = document.getElementById("app");
+  const taskId = "1".repeat(32), waitId = "2".repeat(32);
+  const host = {state:"ready",generation:1,paused:false,view:null,prepare:0,messages:0,binds:0,failedStates:0,pendingStateFailures:0};
+  const logs = [];
+  const el = id => document.getElementById(id);
+  el("mode").textContent = mode;
+  function inspect() {
+    for (const [id,key] of [["prepare-count","prepare"],["ui-message-count","messages"],["wait-state","state"],
+      ["state-failure-count","failedStates"],["bind-count","binds"],["generation","generation"],["paused","paused"]])
+      el(id).textContent = String(host[key]);
+    el("host-log").textContent = logs.join("\n");
+  }
+  function log(value) { logs.push(value); if (logs.length > 30) logs.shift(); inspect(); }
+  function send(data) { app.contentWindow.postMessage({jsonrpc:"2.0",...data},location.origin); }
+  function result(control={}) {
+    return {task:{id:taskId,title:"確認原任務的續接",status:"active",plan:[{step:"檢查續接結果",status:"in_progress"}]},
+      progress:{state:"ready",runner_online:true,pending_count:0,updated:Date.now()/1000},
+      continuation:{paused:host.paused,wait:{id:waitId,state:host.state}},control};
+  }
+  function toolResult(value) { return {structuredContent:value,content:[{type:"text",text:JSON.stringify(value)}],isError:false}; }
+  function taskApp(args) {
+    if (args.task_id !== taskId) throw new Error("wrong task");
+    const action = args.action;
+    log(`task_app ${action}`);
+    if (action === "bind") {
+      host.binds++; host.view = args.view_id;
+      return result({bound:true,generation:host.generation});
+    }
+    if (args.generation !== host.generation || args.view_id !== host.view) throw new Error("controller changed");
+    if (action === "state") {
+      if (host.pendingStateFailures > 0) {
+        host.pendingStateFailures--; host.failedStates++;
+        throw new Error("simulated state transport failure");
+      }
+      return result({bound:true,generation:host.generation,paused:host.paused});
+    }
+    if (action === "pause" || action === "enable") {
+      host.paused = action === "pause"; return result({paused:host.paused});
+    }
+    if (action === "unbind") return result({bound:false});
+    if (args.wait_id !== waitId) throw new Error("wrong wait");
+    if (action === "prepare") {
+      host.prepare++;
+      if (host.paused || host.state !== "ready") throw new Error("wait is not sendable");
+      if (host.prepare === 1 && mode === "before") {
+        host.pendingStateFailures = stateFailures;
+        throw new Error("prepare never reached Server");
+      }
+      host.state = "prepared";
+      if (host.prepare === 1 && mode === "after") {
+        host.pendingStateFailures = stateFailures;
+        return null;
+      }
+      return result({wait_id:waitId,state:"prepared",app_protocol:{message:"本機測試續接通知；沒有啟動真實模型。"}});
+    }
+    if (action === "finish") {
+      if (!["prepared","accepted","unknown"].includes(host.state)) throw new Error("wait was not prepared");
+      host.state = host.state === "unknown" ? "unknown" : args.outcome;
+      return result({wait_id:waitId,state:host.state});
+    }
+    throw new Error("unsupported action");
+  }
+  addEventListener("message",event => {
+    if (event.source !== app.contentWindow || event.origin !== location.origin || event.data?.jsonrpc !== "2.0") return;
+    const {id,method,params={}} = event.data;
+    try {
+      let value;
+      if (method === "ui/initialize") value = {protocolVersion:"2026-01-26",hostInfo:{name:"local-test-host",version:"1"},hostCapabilities:{}};
+      else if (method === "ui/notifications/initialized") {
+        send({method:"ui/notifications/tool-input",params:{arguments:{task_id:taskId}}}); return;
+      } else if (method === "tools/call" && params.name === "task_app") {
+        value = taskApp(params.arguments);
+        if (value === null) { log("prepared persisted; response intentionally withheld"); return; }
+        value = toolResult(value);
+      } else if (method === "tools/call" && params.name === "task_review") {
+        value = toolResult({task_id:taskId,review:{is_git_repository:true,files:[],total_files:0,files_truncated:false,
+          preview:null,executions:[],observed_at:Date.now()/1000}});
+      } else if (method === "ui/message") {
+        host.messages++; log("ui/message counted locally; no model started"); value = {};
+      } else if (method === "ui/notifications/size-changed") {
+        if (Number.isFinite(params.height)) app.style.height = Math.max(550,Math.min(1600,params.height)) + "px";
+        return;
+      } else return;
+      if (id !== undefined) send({id,result:value});
+    } catch (error) {
+      log(error.message);
+      if (id !== undefined) send({id,error:{code:-32000,message:error.message}});
+    } finally { inspect(); }
+  });
+  el("inspect").addEventListener("click",inspect);
+  el("fail-state").addEventListener("click",() => { host.pendingStateFailures++; log("next state will fail"); });
+  el("toggle-pause").addEventListener("click",() => { host.paused = !host.paused; log("host pause toggled"); });
+  el("replace-controller").addEventListener("click",() => {
+    host.generation++;
+    if (["prepared","accepted"].includes(host.state)) host.state = "unknown";
+    log("controller generation replaced");
+  });
+  inspect();
+})();
+</script>
+</html>

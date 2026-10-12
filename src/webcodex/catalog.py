@@ -61,7 +61,10 @@ def definitions(cls, *, remote: bool) -> dict[str, Definition]:
         if remote:
             description += (
                 " Requires an explicit task_id from task_create/task_list. Returns a durable job_id; "
-                "if queued/running/pending_approval, use job_get to observe that job. "
+                "follow next_action in this turn to observe queued/running work and remaining output. "
+                "Only pending_approval needs an operator decision; show the returned details once, "
+                "then resume that job after the decision. Check outcome/exit_code: job succeeded "
+                "does not mean the command passed. "
                 "Supply a stable request_id when retrying the same call to avoid duplicate effects. "
                 "An unknown result must be investigated before retrying with a new request_id."
             )

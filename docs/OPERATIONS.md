@@ -34,7 +34,7 @@ Windows WSL2 先依 [Microsoft 指南](https://learn.microsoft.com/en-us/windows
 
 ## 初始化與啟動
 
-首次初始化指定已存在的工作 repo：
+首次初始化可指定已存在的工作 repo；若要從零建立新專案，使用 `--project-root` 指定既有父目錄，依 [建立與登記專案](PROJECTS.md) 完成設定。
 
 ```powershell
 uv run webcodex init --project 'C:\src\my-repo'
@@ -58,6 +58,8 @@ uv run webcodex init --project "$HOME/src/my-repo"
 
 ## 建立任務與呼叫工具
 
+新專案先走 `project_roots_list` → `project_create`／`project_register` → `job_get`，登記成功後才用回傳的 project ID 建立以下任務。這些專案操作不需要預先提供 task ID。
+
 以下統一使用 UTF-8 `args.json`，適用 Bash 與 PowerShell，並接受 UTF-8 BOM。也可用 `--arguments -` 從 stdin 讀 JSON；Windows PowerShell 5.1 需先將 `$OutputEncoding` 設為 UTF-8。
 
 ```json
@@ -65,10 +67,12 @@ uv run webcodex init --project "$HOME/src/my-repo"
 ```
 
 ```text
-uv run webcodex call task_create --arguments '@args.json'
+uv run webcodex call work_on_project --arguments '@args.json'
 ```
 
-保存回傳的 `id` 作為 `task_id`。將檔案改為 `{"task_id":"TASK_ID"}`，呼叫 `workspace_info`，確認規則、Git 狀態及工具鏈。所有範例的 `TASK_ID`、`JOB_ID`、`PROCESS_ID`、`SHA256` 都必須換成實際值。
+保存回傳的 `task.id` 作為 `task_id`，並查看同時回傳的 `workspace`，確認規則、Git 狀態及工具鏈。若仍在執行，依 `workspace.next_action` 取得原工作結果。接續已有任務時，將參數改為 `{"task_id":"TASK_ID"}` 呼叫相同工具。所有範例的 `TASK_ID`、`JOB_ID`、`PROCESS_ID`、`SHA256` 都必須換成實際值。
+
+`workspace_info.is_git_repository` 指登記的專案根目錄是否為可用的 Git 工作樹根。新目錄沒有 `.git` 時回傳 `false`，不產生逾時錯誤，也不自行初始化 Git；一般讀寫仍可繼續。有 Git 中繼資料但查詢失敗時回傳 `null` 與 `git_error`，保留實際結束碼；只有成功取得狀態才回傳 `true`。位於另一個 repository 內的子目錄，不會因此取得操作父 repository 的授權。
 
 | 工具 | `args.json` 範例 |
 | --- | --- |
@@ -80,11 +84,17 @@ uv run webcodex call task_create --arguments '@args.json'
 
 對應呼叫為 `uv run webcodex call TOOL_NAME --arguments '@args.json'`。命令使用工作 repo 的環境；也可在 `argv` 指定其 Python 絕對路徑。Rust 需安裝相應工具鏈，Windows 原生另外需要 MSVC C++ 工具與 Windows SDK。
 
-`read_file` 提供整份檔案 SHA-256。覆寫、編輯或刪除必須帶入 hash；過期時重新讀取，不強制覆蓋。`git_diff` 不包含 untracked 新檔，需另用 `read_file` 檢查。`apply_patch` 接受標準 unified Git diff，不接受 `*** Begin Patch` 格式。完整 schema 由 `webcodex tools` 提供。
+`read_file` 提供整份檔案 SHA-256。覆寫、編輯或刪除必須帶入 hash；過期時重新讀取，不強制覆蓋。`task_review` 提供包含新檔案的變更清單、逐檔差異與實際命令結果；`git_diff` 本身仍不包含 untracked 新檔。`apply_patch` 接受標準 unified Git diff，不接受 `*** Begin Patch` 格式。完整 schema 由 `webcodex tools` 提供。
+
+`search_files` 每頁搜尋最多 500 個檔案、20 MiB 內容；超過時縮小 `path` 或 `glob`。搜尋使用受保護的私有快照，結果仍顯示原始相對檔名。Git 與 ripgrep 必須安裝在專案／授權父目錄以外的絕對 PATH 目錄；相對 PATH 與專案內同名程式不會用於這些結構化工具。Windows 必須提供原生 `.exe`／`.com`，不使用 `.bat`／`.cmd` wrapper。
+
+結構化 Git 操作不會自動補取 partial clone 的缺失物件；遇到此類錯誤時，先由操作員在可信終端機明確下載所需物件，再重新查詢。HTTPS 擴充安裝的明確 clone／fetch 不受此限制。
 
 ## 核准、等待與停止程序
 
-收到 `pending_approval` 時，操作員先檢視參數，再決定：
+個人專案可設定 `trusted_projects`，讓日常開發不必反覆切回終端機；設定與範圍見 [核准與受信任專案](APPROVALS.md)。`projects_list` 會顯示實際模式，信任清單不另外授予工具權限。
+
+收到 `pending_approval` 時，優先使用回傳的 `approval.approve_command` 或 `approval.deny_command`，其中包含本版本語法及服務識別檢查。操作員先檢視參數，再決定。以下為相容的基本指令：
 
 ```text
 uv run webcodex approvals
@@ -101,6 +111,8 @@ uv run webcodex deny JOB_ID
 ```
 
 **程序已結束且 `exit_code` 為 0，才代表命令成功。** 後續用 `next_cursor` 讀新增輸出；`has_more` 表示同份輸出還有內容，`truncated` 表示超出保存上限。
+
+輸出游標以 byte 計算，分頁會保留完整 UTF-8 字元。若 `max_bytes` 小於第一個字元的長度，單頁最多額外讀取 3 bytes；程序仍在輸出半個字元時，游標會保留在該字元開頭，待後續輸出到齊再讀。
 
 斷線重試同一次操作，沿用相同 `request_id` 與參數；改完程式再跑測試則換新 ID。`unknown` 可能已執行，不應自動重送。停止程序用 `cancel_process(task_id, process_id)`；取消尚未開始的工作用 `job_cancel(job_id)`。
 

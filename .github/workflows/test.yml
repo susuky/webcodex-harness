@@ -46,7 +46,14 @@ jobs:
         run: xvfb-run -a -s '-screen 0 1280x800x24 -nolisten tcp' uv run --extra computer pytest -q tests/test_computer_live.py
       - run: uv run ruff check src tests examples
       - run: uv run ruff format --check src tests examples
-      - run: uv build
+      - name: Build with a synthetic private attachment
+        run: |
+          python -c "from pathlib import Path; p=Path('.codex-remote-attachments/release-probe.txt'); p.parent.mkdir(exist_ok=True); p.write_text('must not ship')"
+          uv build
+      - name: Check distribution contents
+        run: uv run pytest -q tests/test_distribution.py
+        env:
+          WEBCODEX_TEST_DIST: dist
       - run: uvx twine check dist/*
       - name: Check installation without desktop extras
         run: uv run --isolated --no-project --with . webcodex --version

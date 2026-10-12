@@ -10,15 +10,19 @@ Server 與 Runner 目前採 HTTPS long polling；同機開發允許 loopback HTT
 
 ## 身分與專案
 
-- 每個用戶端有自己的 token、專案清單與 `permissions`。
+- 每個用戶端有自己的 token、專案清單、選用父目錄清單與 `permissions`。
 - 每台 Runner 使用獨立 token，不能拿它呼叫 MCP 或操作員 API。
 - 操作員 token 只用於核准與回答問題；MCP 工具清單不暴露這些操作。
 - `runner_id/project_id` 指向已登錄專案。綁定包含 canonical path、檔案系統裝置與 inode 的雜湊；更換根目錄需要建立新任務。
 - 任務與工作紀錄依用戶端身分隔離。共同獲准的專案仍是共享的真實檔案系統，並非多租戶 OS 隔離。
 
-`read`、`write`、`execute`、`git_write`、`extensions` 決定 coding 工具類別。選用的 `computer_observe`／`computer_control` 分別授予桌面觀察與輸入，預設皆不啟用。`approval_required` 決定哪些 Runner 操作先進入核准佇列。即使 Server 允許，Runner 的 `permissions` 仍可進一步拒絕。
+`read`、`write`、`execute`、`git_write`、`extensions` 決定 coding 工具類別。選用的 `projects` 授予建立與登記專案，`computer_observe`／`computer_control` 分別授予桌面觀察與輸入，預設皆不啟用。`approval_required` 決定哪些 Runner 操作先進入核准佇列。即使 Server 允許，Runner 的 `permissions` 仍可進一步拒絕。
+
+`project_create`／`project_register` 不接受 coding task ID。Server 依 client 與父目錄身分重用 `kind=project` 的管理紀錄，沿用工作佇列、核准與去重；一般任務為 `kind=coding`，兩者不能混用工具。Runner 在父目錄內執行操作，將登記寫入自己的 SQLite，再更新 Server 專案清單，最後回報工作成功。根目錄授權涵蓋其中動態登記的專案；不同 client 的任務紀錄仍分開。設定與限制見 [建立專案](PROJECTS.md)。
 
 權限設定在啟動時載入。修改設定並重新啟動 Server 後，尚未交付的工作會在送給 Runner 前重查權限；撤銷的工作不執行，新增加的核准要求也會生效。已交付或執行中的作業不會因設定變更自動回溯取消。
+
+`clients.CLIENT_ID.trusted_projects` 可按確切 project ID 免除 coding 工具的逐筆核准，不增加專案或工具存取，也不免除桌面與專案管理的核准。Server 啟動時將符合新政策的待核准工作移回原佇列，保留 job ID、`approved` 人工決策記錄與政策變更事件；已完成任務的待核准工作保留原狀。Server SQLite 保存不含敏感資訊的服務 ID，job 的核准指令帶入此 ID，由決策 endpoint 檢查目標服務。使用方式見 [核准指南](APPROVALS.md)。
 
 ## 工作狀態
 
@@ -43,15 +47,23 @@ SQLite 的 `UNIQUE(owner, task_id, request_id)` 讓相同請求取得原工作�
 
 Runner 的 process lock 防止同一 state directory 同時啟動兩個實例；Server 的 15 秒實例租期避免另一台機器用同一 Runner 身分搶走工作。短暫網路斷線不會終止現有子程序。
 
+## 任務續接
+
+既有 task 可保存一筆尚未消費的等待，記錄原 job 與後續程序觀察 job。觀察採既有工作去重機制，不建立第二次命令執行。任務卡片透過 App 專用 `task_app` 呼叫更新進度；卡片協調仍受任務擁有者、專案及工具權限檢查，不提供核准或任意執行能力。
+
+SQLite 保存控制者、世代、120 秒租期與已退役卡片，避免舊卡片反覆搶回控制。視窗識別、卡片識別與消費憑證以雜湊保存。每次狀態轉移使用短交易；通知先從 `ready` 轉成 `prepared`，再由前景卡片請求 `ui/message`，收到回覆記為 `accepted`，結果不明記為 `unknown`。只有 `task_resume` 驗證確切等待與憑證後才轉成 `consumed`，重複消費會明確標示。
+
+已準備或已送出的通知在控制者失效時轉為 `unknown`，不自動重送。原通知的遲到消費仍可確認同一筆尚未被取代的等待；人工恢復後取代等待會使舊憑證失效。暫停時禁止準備及消費，任務完成時取消未消費等待。卡片關閉期間沒有背景模型或排程工作者，重新開啟後從持久紀錄恢復觀察。
+
 ## 檔案與 Git
 
 結構化檔案工具透過 directory fd 和 `O_NOFOLLOW` 開啟檔案；只接受一般且無 hardlink 的檔案，寫入先建立暫存檔，再替換。新檔案採 create-if-absent，既有檔案需要雜湊相符。
 
 上述 directory fd 路徑用於 Ubuntu／WSL2。Windows 原生以 `CreateFile` 的 `OPEN_REPARSE_POINT` 逐層檢查，開啟目錄時不授予 delete sharing，讓祖先目錄在操作期間不能被改名或替換；拒絕 junction、symlink、其他 reparse point、裝置名稱、ADS 與私有目錄別名。新檔案使用 Windows 不覆寫目的地的 rename，覆寫使用替換。Windows 設定目錄以 DACL 限定目前帳號與 SYSTEM；Linux 使用目錄 0700、設定檔 0600。
 
-Runner 對同一專案的結構化寫入加鎖；shell 與外部編輯器仍可同時修改 repo，因此不能宣稱跨程序交易隔離。Patch 先完整檢查再套用，不支援任意二進位、rename／copy 或連結型別的變更。Git 查詢關閉外部 diff／textconv，結構化 Git 操作關閉 hooks 與 fsmonitor。
+Runner 對同一專案的結構化寫入加鎖；shell 與外部編輯器仍可同時修改 repo，因此不能宣稱跨程序交易隔離。Workspace 以不跟隨連結的方式開啟根目錄，核對 task 綁定的目錄身份；每次開啟檔案時再核對身份，沿用已開啟的 directory fd 或 Windows pinned handles。專案技能與本地擴充來源的子 Workspace 也保留原任務的根目錄綁定。Patch 先完整檢查再套用，不支援任意二進位、rename／copy 或連結型別的變更。結構化 Git 使用專案外、絕對 PATH 目錄中的執行檔，關閉 hooks、fsmonitor、log 簽章驗證與 Git transport，避免缺失物件觸發下載及外部程式；diff 另關閉外部 diff／textconv。Ubuntu／WSL2 的 Git 程序以已開啟的目錄 fd 對應 `/proc` 路徑啟動，Windows 在 Git 操作期間保留祖先目錄 handles。
 
-`search_files` 對經過檔案邊界檢查的檔案分頁使用 ripgrep；`next_file_offset` 探索後續檔案，程序輸出游標則讀取同一頁的剩餘結果。
+`search_files` 安全開啟每頁最多 500 個檔案，串流複製至 Runner 私有目錄中的快照，再以可信 ripgrep 搜尋。每頁快照最多 20 MiB，超過時需縮小 path／glob；回傳保留原始相對檔名與行號。快照保留至程序結束後清除；`next_file_offset` 探索後續檔案，程序輸出游標則讀取同一頁的剩餘結果。
 
 ## 命令生命週期
 
@@ -75,8 +87,11 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 | --- | --- |
 | `src/webcodex/server.py` | MCP／REST、驗證、權限、操作員 API、任務工具 |
 | `src/webcodex/store.py` | SQLite 工作、事件、去重、領取與恢復 |
+| `src/webcodex/continuation.py` | 任務等待、卡片租期、通知防重與消費 |
+| `src/webcodex/task_app.html` | 任務進度卡片、前景續接與暫停控制 |
 | `src/webcodex/runner.py` | 主動連線、journal、工具分派與結果回報 |
 | `src/webcodex/runtime.py` | Repo、Git、命令、圖片及擴充工具 |
+| `src/webcodex/projects.py` | 父目錄驗證、專案建立與登記、Runner 持久登記恢復 |
 | `src/webcodex/computer.py` | 選用桌面後端、截圖、座標檢查與輸入序列化 |
 | `src/webcodex/filesystem.py` | 路徑邊界、檔案讀寫與雜湊檢查 |
 | `src/webcodex/processes.py` | 子程序、PTY、輸出與停止流程 |

@@ -1,9 +1,11 @@
 # 公開與發布準備
 
-本專案的權利聲明位於中英文 README 最下方：公開閱覽與評估不代表授予一般開源授權；使用、複製、修改或散布等行為需要事先書面許可。本專案不附 LICENSE，也不以參考倉庫的授權取代自己的權利聲明。
+本專案的著作權及第三方授權聲明位於中英文 README 最下方。本專案不附 LICENSE，也未授予一般開源授權；第三方依賴保留各自的授權條款，不以參考倉庫的授權取代本專案權利聲明。
 
 ## 已具備
 
+- 正式倉庫為 [susuky/webcodex-harness](https://github.com/susuky/webcodex-harness)，套件 metadata 已提供原始碼、文件與 issue 連結。
+- GitHub 已啟用 [私密漏洞回報](https://github.com/susuky/webcodex-harness/security/advisories)。
 - Ubuntu／Windows coding 後端、選用的桌面工具，以及標明實測範圍的文件。
 - 中英文 README、[協作指南](../CONTRIBUTING.md)、問題／PR 範本與[安全回報指南](../.github/SECURITY.md)。
 - 以 `src/webcodex/__init__.py` 為單一版本來源的套件、CLI、MCP 與 health endpoint。
@@ -13,8 +15,6 @@
 
 | 待完成事項 | 驗收方式 |
 | --- | --- |
-| 正式倉庫與回報位置 | 選定自己的 repository URL，再補入套件的 project URLs；不要指向參考倉庫 |
-| 私密漏洞回報 | 維護者在 GitHub 啟用 Private vulnerability reporting，確認回報者看得到入口 |
 | 雲端 CI | 推送後檢查實際 Ubuntu／Windows 矩陣結果；本機通過不等於 GitHub Actions 已通過 |
 | Windows 桌面 | 在獨立登入帳號下完成截圖、輸入及 DPI 驗收；目前仍須保留待驗收標記 |
 | 發布內容與權利 | 檢查完整 Git 歷史、來源、資料及依賴的散布條件；保留 README 的原文權利聲明 |

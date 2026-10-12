@@ -7,6 +7,7 @@ import re
 import secrets
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -14,7 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 DEFAULT_PERMISSIONS = {"read", "write", "execute", "git_write", "extensions"}
 COMPUTER_PERMISSIONS = {"computer_observe", "computer_control"}
-PERMISSIONS = DEFAULT_PERMISSIONS | COMPUTER_PERMISSIONS
+PERMISSIONS = DEFAULT_PERMISSIONS | COMPUTER_PERMISSIONS | {"projects"}
+MAX_PROJECTS = 100
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 
 
@@ -24,6 +26,16 @@ def identifier(value: str) -> str:
             "Identifier must contain 1–64 letters, digits, dots, underscores or hyphens"
         )
     return value
+
+
+def project_binding(path: Path, *, info: os.stat_result | None = None) -> str:
+    if info is None:
+        if path.resolve(strict=True) != path or not path.is_dir():
+            raise ValueError("Project directory was replaced by a symlink or removed")
+        info = path.stat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("Project directory was replaced or removed")
+    return hashlib.sha256(f"{path}\0{info.st_dev}\0{info.st_ino}".encode()).hexdigest()
 
 
 def server_url(value: str) -> str:
@@ -81,16 +93,46 @@ class StrictModel(BaseModel):
 class Client(StrictModel):
     token: str = Field(min_length=32)
     projects: list[str]
+    project_roots: list[str] = Field(default_factory=list)
+    trusted_projects: list[str] = Field(default_factory=list, max_length=100)
+    trusted_project_roots: list[str] = Field(default_factory=list, max_length=100)
     permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
     approval_required: set[str] = Field(
-        default_factory=lambda: {"execute", "git_write", "extensions", "computer_control"}
+        default_factory=lambda: {
+            "execute",
+            "git_write",
+            "extensions",
+            "computer_control",
+            "projects",
+        }
     )
 
     @model_validator(mode="after")
     def valid_permissions(self):
         if not self.permissions <= PERMISSIONS or not self.approval_required <= PERMISSIONS:
             raise ValueError("Unknown permission")
+        for project in [*self.trusted_projects, *self.trusted_project_roots]:
+            parts = project.split("/")
+            if len(parts) != 2:
+                raise ValueError("Trust settings require an exact runner/project or runner/root ID")
+            for part in parts:
+                identifier(part)
         return self
+
+    def approvals_for(
+        self, project: str, kind: str = "coding", *, project_root: str | None = None
+    ) -> set[str]:
+        trusted_root = (project if kind == "project" else project_root) in set(
+            self.trusted_project_roots
+        ) & set(self.project_roots)
+        if kind != "coding":
+            return self.approval_required - {"projects"} if trusted_root else self.approval_required
+        required = self.approval_required - {"projects"}
+        return (
+            required - DEFAULT_PERMISSIONS
+            if project in self.trusted_projects or trusted_root
+            else required
+        )
 
 
 class ServerConfig(StrictModel):
@@ -128,6 +170,7 @@ class RunnerConfig(StrictModel):
     token: str = Field(min_length=32)
     state_dir: Path
     projects: dict[str, Path]
+    project_roots: dict[str, Path] = Field(default_factory=dict)
     permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
     max_concurrent_jobs: int = Field(default=4, ge=1, le=32)
     max_processes: int = Field(default=16, ge=1, le=128)
@@ -142,25 +185,25 @@ class RunnerConfig(StrictModel):
             raise ValueError("Unknown permission")
         self.server_url = server_url(self.server_url)
         self.state_dir = self.state_dir.expanduser().resolve()
-        for name, path in self.projects.items():
-            identifier(name)
-            path = path.expanduser().resolve(strict=True)
-            if not path.is_dir():
-                raise ValueError("Project root must be a directory")
-            if self.state_dir == path or self.state_dir.is_relative_to(path):
-                raise ValueError("Runner state must be outside all registered projects")
-            self.projects[name] = path
+        for paths in (self.projects, self.project_roots):
+            if len(paths) > MAX_PROJECTS:
+                raise ValueError(
+                    f"At most {MAX_PROJECTS} projects or project roots may be configured"
+                )
+            for name, path in paths.items():
+                identifier(name)
+                path = path.expanduser().resolve()
+                if path.exists() and not path.is_dir():
+                    raise ValueError("Project root must be a directory")
+                if self.state_dir == path or self.state_dir.is_relative_to(path):
+                    raise ValueError(
+                        "Runner state must be outside all registered projects and roots"
+                    )
+                paths[name] = path
         return self
 
     def inventory(self) -> dict:
-        result = {}
-        for name, path in self.projects.items():
-            if path.resolve(strict=True) != path or not path.is_dir():
-                raise ValueError("Registered project root was replaced by a symlink or removed")
-            info = path.stat()
-            identity = f"{path}\0{info.st_dev}\0{info.st_ino}"
-            result[name] = hashlib.sha256(identity.encode()).hexdigest()
-        return result
+        return {name: project_binding(path) for name, path in self.projects.items()}
 
 
 def load_config(path: str | Path, model: type[StrictModel]):
@@ -173,21 +216,119 @@ def load_config(path: str | Path, model: type[StrictModel]):
         ) from None
 
 
+def allow_project_root(
+    directory: Path,
+    path: Path,
+    *,
+    client_id: str = "owner",
+    name: str | None = None,
+    trusted: bool = False,
+) -> dict:
+    """Operator-only setup; preserve credentials and unrelated clients, with private backups."""
+    directory = directory.expanduser().resolve(strict=True)
+    path = path.expanduser().resolve(strict=True)
+    if not path.is_dir() or directory.is_relative_to(path):
+        raise ValueError("Choose a project directory that does not contain WebCodex settings")
+    paths = {key: directory / (key + ".json") for key in ("server", "runner")}
+    if any(is_link(p) for p in paths.values()):
+        raise ValueError("Configuration files must not be symlinks")
+    originals = {key: p.read_bytes() for key, p in paths.items()}
+    data = {key: json.loads(content.decode("utf-8-sig")) for key, content in originals.items()}
+    server = ServerConfig.model_validate(data["server"])
+    runner = RunnerConfig.model_validate(data["runner"])
+    if client_id not in server.clients:
+        raise ValueError(
+            "Choose an existing client with --client; available: " + ", ".join(server.clients)
+        )
+    if server.runners.get(runner.runner_id) != runner.token:
+        raise ValueError("Server and Runner settings do not belong to the same installation")
+    existing = next((key for key, value in runner.project_roots.items() if value == path), None)
+    name = existing or name or re.sub(r"[^A-Za-z0-9_.-]", "-", path.name).strip(".-_") or "projects"
+    identifier(name)
+    if name in runner.project_roots and runner.project_roots[name] != path:
+        raise ValueError("This root name is already used; choose a different --name")
+    root_id = runner.runner_id + "/" + name
+    policy = data["server"]["clients"][client_id]
+    policy["project_roots"] = sorted(set(policy.get("project_roots", [])) | {root_id})
+    permissions = {"projects"} | (DEFAULT_PERMISSIONS if trusted else set())
+    policy["permissions"] = sorted(server.clients[client_id].permissions | permissions)
+    if trusted:
+        policy["trusted_project_roots"] = sorted(
+            set(policy.get("trusted_project_roots", [])) | {root_id}
+        )
+    data["runner"].setdefault("project_roots", {})[name] = str(path)
+    data["runner"]["permissions"] = sorted(runner.permissions | permissions)
+    ServerConfig.model_validate(data["server"])
+    RunnerConfig.model_validate(data["runner"])
+    backup = private_dir(directory / "backups" / ("access-" + secrets.token_hex(8)))
+    encoded = {
+        key: (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode()
+        for key, value in data.items()
+    }
+    for key, content in originals.items():
+        with (backup / (key + ".json")).open("xb") as stream:
+            stream.write(content)
+        (backup / (key + ".json")).chmod(0o600)
+
+    def replace(key: str, content: bytes, expected: bytes):
+        fd, temporary = tempfile.mkstemp(prefix=".access-", dir=directory)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if is_link(paths[key]) or paths[key].read_bytes() != expected:
+                raise ValueError("Settings changed during setup; retry using the current files")
+            os.replace(temporary, paths[key])
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    written = []
+    try:
+        for key in ("runner", "server"):
+            replace(key, encoded[key], originals[key])
+            written.append(key)
+    except Exception:
+        for key in reversed(written):
+            replace(key, originals[key], encoded[key])
+        raise
+    return {
+        "project_root": root_id,
+        "path": str(path),
+        "client": client_id,
+        "trusted": trusted or root_id in policy.get("trusted_project_roots", []),
+        "backup": str(backup),
+        "restart_required": ["server", "runner"],
+    }
+
+
 def initialize(
-    directory: Path, project: Path, port: int, trusted: bool, computer_use: bool = False
+    directory: Path,
+    project: Path | None,
+    port: int,
+    trusted: bool,
+    computer_use: bool = False,
+    project_root: Path | None = None,
 ) -> dict:
     directory = directory.expanduser().resolve()
-    project = project.expanduser().resolve(strict=True)
+    if project is None and project_root is None:
+        raise ValueError("Choose an existing --project or an allowed --project-root")
+    project = project.expanduser().resolve(strict=True) if project else None
+    project_root = project_root.expanduser().resolve(strict=True) if project_root else None
     # Credentials and execution journals cannot be exposed through the project tools.
-    if directory == project or directory.is_relative_to(project):
-        raise ValueError("Choose a config directory outside the registered project")
+    for root in (project, project_root):
+        if root and (directory == root or directory.is_relative_to(root)):
+            raise ValueError("Choose a config directory outside the registered project and roots")
     private_dir(directory)
     for name in ["server.json", "runner.json", "client.json"]:
         if (directory / name).exists():
             raise ValueError(f"Refusing to replace existing {name}")
     admin, client, runner = [secrets.token_urlsafe(32) for _ in range(3)]
     url = f"http://127.0.0.1:{port}"
-    policy = Client(token=client, projects=["local/project"])
+    policy = Client(token=client, projects=["local/project"] if project else [])
+    if project_root:
+        policy.project_roots = ["local/projects"]
+        policy.permissions.add("projects")
     if computer_use:
         policy.permissions |= COMPUTER_PERMISSIONS
     if trusted:
@@ -205,12 +346,20 @@ def initialize(
         server_url=url,
         runner_id="local",
         token=runner,
-        projects={"project": project},
+        projects={"project": project} if project else {},
+        project_roots={"projects": project_root} if project_root else {},
         environment={"WEBCODEX_PYTHON": sys.executable},
     )
     if computer_use:
         runner_config.permissions |= COMPUTER_PERMISSIONS
+    if project_root:
+        runner_config.permissions.add("projects")
     write_private(directory / "server.json", server.model_dump(mode="json"))
     write_private(directory / "runner.json", runner_config.model_dump(mode="json"))
     write_private(directory / "client.json", {"server_url": url, "token": client})
-    return {"config_dir": str(directory), "mcp_url": url + "/mcp", "project": "local/project"}
+    return {
+        "config_dir": str(directory),
+        "mcp_url": url + "/mcp",
+        "project": "local/project" if project else None,
+        "project_root": "local/projects" if project_root else None,
+    }

@@ -32,11 +32,24 @@ computer = ["PyAutoGUI>=0.9.54,<1", "Pillow>=11,<13"]
 [project.scripts]
 webcodex = "webcodex.cli:main"
 
+[project.urls]
+Source = "https://github.com/susuky/webcodex-harness"
+Documentation = "https://github.com/susuky/webcodex-harness#readme"
+Issues = "https://github.com/susuky/webcodex-harness/issues"
+
 [tool.hatch.version]
 path = "src/webcodex/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/webcodex"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src", "/tests", "/examples", "/docs", "/.github",
+  "/.gitattributes", "/.gitignore", "/CONTRIBUTING.md",
+  "/README.md", "/README.zh-TW.md", "/pyproject.toml", "/uv.lock",
+]
+exclude = [".codex-remote-attachments/"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.12,<1"]

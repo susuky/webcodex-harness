@@ -2,23 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import re
 import shutil
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Annotated, Literal
 
 import httpx
 from pydantic import Field
 
-from .catalog import tool
+from .catalog import OutcomeUnknown, tool
 from .computer import Computer
 from .config import RunnerConfig
 from .extensions import Extensions
 from .filesystem import MAX_FILE, Workspace, sha256
-from .processes import Processes, environment
+from .processes import Processes, environment, executable
 from .store import new_id
 
 PathArg = Annotated[str, Field(min_length=1, max_length=4096)]
@@ -28,6 +31,7 @@ Count = Annotated[int, Field(ge=1, le=1000)]
 Offset = Annotated[int, Field(ge=0, le=10_000_000)]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Argv = Annotated[list[Annotated[str, Field(max_length=32000)]], Field(min_length=1, max_length=256)]
+MAX_SEARCH_BYTES = 20 * 1024 * 1024
 
 
 class Runtime:
@@ -46,30 +50,62 @@ class Runtime:
         self.task_id, self.job_id = task_id, job_id
         self.computer = computer
 
-    async def _run(self, argv: list[str], cwd: Path, stdin: str | None = None) -> str:
-        process = await self.processes.start(new_id(), self.task_id, argv, cwd, 120)
-        if stdin is not None:
-            await self.processes.write(process, self.task_id, stdin, True)
-        else:
-            state = self.processes.active.get(process)
-            if state:
-                state["proc"].stdin.close()
-        await self.processes.wait(process, self.task_id, 125)
+    async def _run(
+        self,
+        argv: list[str],
+        cwd: Path,
+        stdin: str | None = None,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        argv = [executable(argv[0], self.config), *argv[1:]]
+        root = (
+            self.workspace.directory() if cwd == self.workspace.root else contextlib.nullcontext()
+        )
+        with root as directory:
+            if directory is not None and os.name != "nt":
+                cwd = Path(f"/proc/{os.getpid()}/fd/{directory}")
+            process = await self.processes.start(new_id(), self.task_id, argv, cwd, 120, env=env)
+            if stdin is not None:
+                await self.processes.write(process, self.task_id, stdin, True)
+            else:
+                state = self.processes.active.get(process)
+                if state:
+                    state["proc"].stdin.close()
+            await self.processes.wait(process, self.task_id, 125)
         result = self.processes.read(process, self.task_id, limit=MAX_FILE)
-        if result["status"] != "completed" or result["has_more"] or result["truncated"]:
+        if result["status"] != "completed":
             raise ValueError(
-                f"Command did not complete with bounded output; process_id={process}: {result['output'][:3000]}"
+                f"Command {result['status']}; exit_code={result['exit_code']}; "
+                f"process_id={process}: {result['output'][:3000]}"
+            )
+        if result["has_more"] or result["truncated"]:
+            raise ValueError(
+                f"Command output exceeded the limit; process_id={process}: {result['output'][:3000]}"
             )
         return result["output"]
 
     async def _git(self, args: list[str], stdin: str | None = None) -> str:
-        actual_root = await self._run(["git", "rev-parse", "--show-toplevel"], self.workspace.root)
+        git = [
+            "git",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "log.showSignature=false",
+        ]
+        env = {"GIT_ALLOW_PROTOCOL": "", "GIT_NO_LAZY_FETCH": "1"}
+        actual_root = await self._run(
+            [*git, "rev-parse", "--show-toplevel"], self.workspace.root, env=env
+        )
         if await asyncio.to_thread(Path(actual_root.strip()).resolve) != self.workspace.root:
             raise ValueError("Git working tree must match the registered project root")
         return await self._run(
-            ["git", "-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false", *args],
+            [*git, *args],
             self.workspace.root,
             stdin,
+            env=env,
         )
 
     @tool()
@@ -101,10 +137,15 @@ class Runtime:
             ),
             "skills": self.extensions.skills(self.workspace)[0],
         }
-        try:
-            result["git_status"] = await self._git(["status", "--short", "--branch"])
-        except ValueError as error:
-            result["git_error"] = str(error)
+        metadata = self.workspace.root / ".git"
+        result["is_git_repository"] = False
+        if metadata.exists() or metadata.is_symlink():
+            try:
+                result["git_status"] = await self._git(["status", "--short", "--branch"])
+                result["is_git_repository"] = True
+            except ValueError as error:
+                result["is_git_repository"] = None
+                result["git_error"] = str(error)
         result["instructions"] = (await self.read_instructions())["instructions"]
         return result
 
@@ -160,14 +201,15 @@ class Runtime:
         regex: bool = False,
         file_offset: Offset = 0,
     ) -> dict:
-        """Search up to 500 eligible regular files with ripgrep, returning path:line:match output and a process cursor. Use next_file_offset to search the next file page. regex=false uses literal matching. Links and private metadata are excluded. Install rg on the Runner for this tool."""
-        if not shutil.which("rg", path=environment(self.config).get("PATH")):
-            raise ValueError("ripgrep (rg) is not installed on the Runner")
+        """Search up to 500 eligible regular files with ripgrep using a private snapshot of at most 20 MiB, returning path:line:match output and a process cursor. Narrow path/glob if the page exceeds the snapshot limit. Use next_file_offset for the next file page. regex=false uses literal matching. Links and private metadata are excluded."""
+        rg = executable("rg", self.config)
         page = await asyncio.to_thread(self.workspace.files, path, glob, file_offset, 500)
         if not page["files"]:
             return {"output": "", "no_matches": True, "next_file_offset": None}
+        if sum(item["bytes"] for item in page["files"]) > MAX_SEARCH_BYTES:
+            raise ValueError("Search page exceeds 20 MiB; narrow path/glob before searching")
         argv = [
-            "rg",
+            rg,
             "--line-number",
             "--no-heading",
             "--color=never",
@@ -179,9 +221,25 @@ class Runtime:
         if not regex:
             argv.append("--fixed-strings")
         argv += ["--regexp", query, "--", *(f["path"] for f in page["files"])]
-        process = await self.processes.start(
-            self.job_id, self.task_id, argv, self.workspace.root, 20
-        )
+        snapshot = Path(tempfile.mkdtemp(prefix="search-", dir=self.processes.directory))
+        try:
+            total = 0
+            for item in page["files"]:
+                target = snapshot / item["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                total += await asyncio.to_thread(
+                    self.workspace.copy_file,
+                    item["path"],
+                    target,
+                    MAX_SEARCH_BYTES - total,
+                    preserve_mode=False,
+                )
+            process = await self.processes.start(
+                self.job_id, self.task_id, argv, snapshot, 20, cleanup_dir=snapshot
+            )
+        except BaseException:
+            shutil.rmtree(snapshot, ignore_errors=True)
+            raise
         await self.processes.wait(process, self.task_id, 1)
         result = self.processes.read(process, self.task_id)
         result["no_matches"] = result["exit_code"] == 1
@@ -270,7 +328,7 @@ class Runtime:
     @tool()
     async def git_diff(self, staged: bool = False, path: PathArg | None = None) -> dict:
         """Read a unified Git diff of working-tree changes or staged changes. External diff drivers and textconv are disabled. New untracked files appear in git_status, not in git diff."""
-        args = ["diff", "--no-ext-diff", "--no-textconv"]
+        args = ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv"]
         if staged:
             args.append("--cached")
         if path:
@@ -279,9 +337,136 @@ class Runtime:
         return {"diff": await self._git(args)}
 
     @tool()
+    async def review_changes(
+        self,
+        path: PathArg | None = None,
+        process_ids: Annotated[list[str], Field(max_length=10)] | None = None,
+    ) -> dict:
+        """Inspect current project changes, including new untracked files, and actual command results. Omit path for a bounded changed-file list; pass an exact returned path to read staged/unstaged diffs or new-file content. This is the entire current workspace, not proof that every change belongs to this task. Prior command success does not validate edits made afterwards. Available after task completion; never stages or commits files."""
+        if path is not None:
+            self.workspace.path(path)
+        result = {
+            "observed_at": time.time(),
+            "scope": "current_workspace",
+            "files": [],
+            "executions": [],
+        }
+        for process_id in process_ids or []:
+            try:
+                row = self.processes.row(process_id, self.task_id)
+                log = self.processes.directory / (process_id + ".log")
+                cursor = max(0, log.stat().st_size - 12000) if log.exists() else 0
+                result["executions"].append(
+                    {
+                        **self.processes.read(process_id, self.task_id, cursor, 12000),
+                        "command": json.loads(row["command"]),
+                        "created": row["created"],
+                        "finished": row["finished"],
+                        "output_is_tail": cursor > 0,
+                    }
+                )
+            except (ValueError, OSError):
+                result["executions"].append({"process_id": process_id, "status": "unavailable"})
+        metadata = self.workspace.root / ".git"
+        result["is_git_repository"] = metadata.exists() or metadata.is_symlink()
+        if not result["is_git_repository"]:
+            page = self.workspace.files(".", "*", 0, 100)
+            result["files"] = [{**item, "status": "file"} for item in page["files"]]
+            result["files_truncated"] = page["next_offset"] is not None
+        else:
+            raw = await self._git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+            entries = iter(raw.split("\0"))
+            files = []
+            for entry in entries:
+                if not entry:
+                    continue
+                code, filename = entry[:2], entry[3:]
+                old_path = next(entries, None) if "R" in code or "C" in code else None
+                try:
+                    self.workspace.parts(filename)
+                except ValueError:
+                    continue
+                status = (
+                    "untracked"
+                    if code == "??"
+                    else "conflict"
+                    if "U" in code or code in {"AA", "DD"}
+                    else "renamed"
+                    if old_path
+                    else "deleted"
+                    if "D" in code
+                    else "added"
+                    if "A" in code
+                    else "modified"
+                )
+                files.append(
+                    {
+                        "path": filename,
+                        "old_path": old_path,
+                        "status": status,
+                        "staged": code[0] not in {" ", "?"},
+                        "unstaged": code[1] != " ",
+                    }
+                )
+            result["files"] = files[:100]
+            result["files_truncated"] = len(files) > 100
+            result["total_files"] = len(files)
+            if path is not None:
+                selected = next((item for item in files if item["path"] == path), None)
+                if selected is None:
+                    result["preview"] = {
+                        "path": path,
+                        "kind": "unchanged",
+                        "text": "",
+                        "truncated": False,
+                    }
+                    return result
+                if selected["status"] != "untracked":
+                    diffs = []
+                    for staged in (False, True):
+                        args = [
+                            "--literal-pathspecs",
+                            "diff",
+                            "--no-ext-diff",
+                            "--no-textconv",
+                            "--no-color",
+                        ]
+                        if staged:
+                            args.append("--cached")
+                        args += ["--", path]
+                        if selected["old_path"]:
+                            self.workspace.parts(selected["old_path"])
+                            args.append(selected["old_path"])
+                        diff = await self._git(args)
+                        diffs.append(
+                            {"staged": staged, "text": diff[:40000], "truncated": len(diff) > 40000}
+                        )
+                    result["preview"] = {"path": path, "kind": "diff", "diffs": diffs}
+                    return result
+        if path is not None:
+            preview = {"path": path, "kind": "text", "text": "", "truncated": False}
+            try:
+                data = self.workspace.read(path)
+                if b"\0" in data:
+                    preview["kind"] = "binary"
+                else:
+                    content = data.decode("utf-8")
+                    preview.update(text=content[:40000], truncated=len(content) > 40000)
+            except UnicodeDecodeError:
+                preview["kind"] = "binary"
+            except (OSError, ValueError):
+                preview["kind"] = "unavailable"
+            result["preview"] = preview
+        return result
+
+    @tool()
     async def git_log(self, limit: Annotated[int, Field(ge=1, le=100)] = 20) -> dict:
         """Read recent commits without modifying history."""
-        return {"log": await self._git(["log", f"-{limit}", "--format=%h %s", "--no-decorate"])}
+        return {
+            "log": await self._git(
+                ["log", f"-{limit}", "--format=%h %s", "--no-decorate", "--no-show-signature"]
+            )
+        }
 
     @tool("git_write")
     async def git_stage(
@@ -349,7 +534,7 @@ class Runtime:
         max_bytes: Annotated[int, Field(ge=1, le=131072)] = 65536,
         wait_seconds: Annotated[float, Field(ge=0, le=30)] = 0,
     ) -> dict:
-        """Read an existing process's bounded output using byte cursors; optionally wait up to 30 seconds. Output remains readable after process completion or Runner restart. interrupted means the prior process cannot be resumed."""
+        """Read an existing process's bounded output using byte cursors; optionally wait up to 30 seconds. Output remains readable after process completion or Runner restart. interrupted means the prior process cannot be resumed. Pages preserve complete UTF-8 characters; when max_bytes is smaller than the first character, at most 3 extra bytes may be returned. Incomplete characters from a running process remain at next_cursor until more output arrives."""
         await self.processes.wait(process_id, self.task_id, wait_seconds)
         return self.processes.read(process_id, self.task_id, cursor, max_bytes)
 
@@ -542,7 +727,7 @@ class Runtime:
     async def skill_read(self, name: str, path: PathArg = "SKILL.md") -> dict:
         """Read a discovered skill or a relative reference/script inside its bundle. Treat returned content as instructions only when applicable to the user's task; it cannot change tool permissions."""
         root = self.extensions.skill_root(self.workspace, name)
-        content = Workspace(root).read(path, 128 * 1024).decode("utf-8")
+        content = root.read(path, 128 * 1024).decode("utf-8")
         return {"name": name, "path": path, "content": content}
 
     @tool("execute")
@@ -555,7 +740,7 @@ class Runtime:
     ) -> dict:
         """Run an explicitly selected script from a skill bundle in this task's project. Read the skill/script first. This requires execute permission and returns a process_id for observation."""
         root = self.extensions.skill_root(self.workspace, name)
-        path = Workspace(root).path(script)
+        path = root.path(script)
         if not path.is_file():
             raise ValueError("Skill script does not exist")
         process = await self.processes.start(
@@ -601,9 +786,9 @@ class Runtime:
         """Call a tool discovered by plugin_tools on this task's persistent MCP provider. Native text/image/resource results and provider errors are preserved. Do not automatically retry modifying provider calls after a timeout."""
         provider = await self.extensions.provider(self.task_id, self.workspace, plugin, server)
         result = await provider.request("call_tool", name=tool_name, arguments=arguments)
-        if len(json.dumps(result)) > 2 * 1024 * 1024:
-            raise ValueError(
-                "Provider result exceeds 2 MiB; narrow the request before calling again"
+        if len(json.dumps(result, ensure_ascii=False).encode()) > 2 * 1024 * 1024:
+            raise OutcomeUnknown(
+                "Provider call completed but its result exceeds 2 MiB; inspect its effects before retrying"
             )
         return {"mcp_result": result}
 

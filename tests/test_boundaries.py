@@ -63,17 +63,22 @@ def test_guarded_files_and_directory_boundaries(tmp_path):
 
 def test_durable_replay_lost_claim_and_project_binding(tmp_path):
     store = Store(tmp_path)
+    service_identity = store.service
     store.register("runner", "instance", {"project": "a" * 64})
     task = store.create_task("owner", "runner/project", "durability")
     job = store.enqueue(task, "write_file", {"content": "one"}, "request-1", False, 10)
     claimed = store.claim("runner", "instance", 1)
     assert claimed[0]["id"] == job["job_id"]
+    # Publishing a new project can race with a claim response still in transit.
+    store.register("runner", "instance", {"project": "a" * 64}, [], refresh_inventory=True)
+    assert store.job(job["job_id"], "owner")["status"] == "running"
     # Claim response was lost: no replay, even when the same Runner reconnects.
     store.register("runner", "instance", {"project": "a" * 64}, [])
     assert store.job(job["job_id"], "owner")["status"] == "unknown"
     assert store.claim("runner", "instance", 1) == []
     store.close()
     store = Store(tmp_path)
+    assert store.service == service_identity
     replay = store.enqueue(task, "write_file", {"content": "one"}, "request-1", False, 10)
     assert replay["job_id"] == job["job_id"]
     with pytest.raises(ValueError, match="different"):
@@ -97,6 +102,8 @@ def test_live_runner_claims_are_not_retargeted(tmp_path):
     store.claim("runner", "one", 1)
     with pytest.raises(ValueError, match="still connected"):
         store.register("runner", "two", {"project": "a" * 64})
+    with pytest.raises(ValueError, match="instance"):
+        store.register("runner", "two", {"project": "a" * 64}, refresh_inventory=True)
     store.register("runner", "one", {"project": "a" * 64}, [job["job_id"]])
     assert store.job(job["job_id"], "owner")["status"] == "running"
     with pytest.raises(ValueError, match="instance"):

@@ -13,6 +13,16 @@
 
 上游已有視窗與控制項身分驗證、Windows UI Automation 和 macOS Accessibility 等語意操作。本次提供座標與按鍵控制，尚未移植這些能力；Ubuntu X11 是本專案另外實作的後端。
 
+## 新專案流程
+
+2026-09-12 再比對 [yyjeqhc/webcodex @ c9f1a54](https://github.com/yyjeqhc/webcodex/tree/c9f1a54fc9e9e3fd21d5005a140b9e97998134db) 的專案操作，補上原先只能對已登記專案建立 task 的缺口：
+
+- `project_roots_list` 探索操作員允許的父目錄，`project_create`／`project_register` 不需要既有 task。
+- Runner 建立或登記資料夾並持久保存，再公布可用 project ID；沿用現有權限、核准及工作去重。
+- 已驗證從零個專案開始、回報中斷、重啟恢復、路徑邊界與舊資料庫 migration；Windows 新流程仍待實機測試。
+
+實際設定、參考來源與限制見 [建立與登記專案](PROJECTS.md)。目前不提供上游的模板、既有目錄採用或取消登記功能。傳輸沿用原有 Server／Runner 與選用的 Secure MCP Tunnel，不需因建立專案額外加入 Cloudflare 或 SSH。
+
 ## 桌面與開發工具建議（尚未實作）
 
 | 優先 | 功能 | 使用價值與最小範圍 |

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import errno
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import struct
 import time
 from pathlib import Path
 
+from .catalog import OutcomeUnknown
 from .config import RunnerConfig, private_dir
 
 if os.name != "nt":
@@ -43,6 +46,28 @@ def environment(config: RunnerConfig) -> dict[str, str]:
     result.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
     result.update({k.upper() if os.name == "nt" else k: v for k, v in config.environment.items()})
     return result
+
+
+def executable(name: str, config: RunnerConfig) -> str:
+    """Structured helpers never use a project directory or implicit current-directory lookup."""
+    env = environment(config)
+    suffixes = [""] if os.name != "nt" else [".EXE", ".COM"]
+    roots = [*config.projects.values(), *config.project_roots.values()]
+    for entry in env.get("PATH", "").split(os.pathsep):
+        directory = Path(entry)
+        if not entry or not directory.is_absolute():
+            continue
+        for suffix in suffixes:
+            candidate = directory / (name + suffix)
+            if not shutil.which(str(candidate), path=""):
+                continue
+            resolved = candidate.resolve(strict=True)
+            if os.name == "nt" and resolved.suffix.casefold() not in {".exe", ".com"}:
+                continue
+            if any(resolved == root or resolved.is_relative_to(root) for root in roots):
+                continue
+            return str(resolved)
+    raise ValueError(f"{name} is not installed in a trusted absolute PATH directory")
 
 
 class Processes:
@@ -81,6 +106,9 @@ class Processes:
         cwd: Path,
         timeout_seconds: int,
         tty: bool = False,
+        cleanup_dir: Path | None = None,
+        *,
+        env: dict[str, str] | None = None,
     ) -> str:
         async with self.lock:
             if self.db.execute("SELECT 1 FROM processes WHERE id=?", (process_id,)).fetchone():
@@ -90,55 +118,133 @@ class Processes:
                 raise ValueError("Too many running processes; cancel or wait for one first")
             if not argv or not argv[0] or any("\x00" in arg for arg in argv):
                 raise ValueError("A nonempty command without NUL characters is required")
-            master = slave = job = terminal = gate = None
-            if tty and os.name != "nt":
-                master, slave = pty.openpty()
-                os.set_blocking(master, False)
+            proc = master = slave = job = terminal = gate = log = None
             try:
+                log = (self.directory / (process_id + ".log")).open("wb")
+                # Persist identity before spawn: even uncertain startup must never be replayed.
+                with self.db:
+                    self.db.execute(
+                        "INSERT INTO processes(id,task_id,status,command,cwd,created) "
+                        "VALUES (?,?,'running',?,?,?)",
+                        (process_id, task_id, json.dumps(argv), str(cwd), time.time()),
+                    )
+                if tty and os.name != "nt":
+                    master, slave = pty.openpty()
+                    os.set_blocking(master, False)
+                child_env = environment(self.config)
+                child_env.update(env or {})
                 if os.name == "nt":
                     from .windows import spawn
 
-                    proc, job, terminal, gate = await spawn(
-                        argv, cwd, environment(self.config), tty
-                    )
+                    launch = spawn(argv, cwd, child_env, tty)
                 else:
-                    proc = await asyncio.create_subprocess_exec(
+                    launch = asyncio.create_subprocess_exec(
                         *argv,
                         cwd=cwd,
-                        env=environment(self.config),
+                        env=child_env,
                         start_new_session=True,
                         stdin=slave if tty else asyncio.subprocess.PIPE,
                         stdout=slave if tty else asyncio.subprocess.PIPE,
                         stderr=slave if tty else asyncio.subprocess.STDOUT,
                     )
-            except BaseException:
+                try:
+                    spawning = asyncio.create_task(launch)
+                except BaseException:
+                    launch.close()
+                    raise
+                cancellation = None
+                while True:
+                    try:
+                        spawned = await asyncio.shield(spawning)
+                        break
+                    except asyncio.CancelledError as error:
+                        if spawning.cancelled():
+                            raise
+                        # Repeated cancellation must not discard a still-spawning child.
+                        cancellation = error
+                if os.name == "nt":
+                    proc, job, terminal, gate = spawned
+                else:
+                    proc = spawned
+                if cancellation is not None:
+                    raise cancellation
+                state = {
+                    "proc": proc,
+                    "master": master,
+                    "terminal": terminal,
+                    "job": job,
+                    "gate": gate,
+                    "log": log,
+                    "bytes": 0,
+                    "stored": 0,
+                    "truncated": False,
+                    "cancelled": False,
+                    "cleanup_dir": cleanup_dir,
+                }
+                self.active[process_id] = state
+                monitor = self._monitor(process_id, timeout_seconds)
+                try:
+                    state["monitor"] = asyncio.create_task(monitor)
+                except BaseException:
+                    monitor.close()
+                    raise
+                return process_id
+            except BaseException as error:
+                failure = error
+                self.active.pop(process_id, None)
+                if proc is not None:
+                    with contextlib.suppress(Exception):
+                        self._signal(
+                            {"proc": proc, "job": job}, getattr(signal, "SIGKILL", signal.SIGTERM)
+                        )
+                    if terminal is None and proc.stdin is not None:
+                        with contextlib.suppress(Exception):
+                            proc.stdin.close()
+                    deadline = asyncio.get_running_loop().time() + 3
+                    while asyncio.get_running_loop().time() < deadline:
+                        try:
+                            async with asyncio.timeout_at(deadline):
+                                if terminal is None and proc.stdout is not None:
+                                    while await proc.stdout.read(65536):
+                                        pass
+                                await proc.wait()
+                            break
+                        except asyncio.CancelledError as cancellation:
+                            failure = cancellation
+                        except Exception:
+                            break
                 if master is not None:
-                    os.close(master)
-                raise
+                    with contextlib.suppress(OSError):
+                        os.close(master)
+                if job is not None:
+                    with contextlib.suppress(Exception):
+                        job.Close()
+                if gate is not None:
+                    with contextlib.suppress(Exception):
+                        gate.Close()
+                if log is not None:
+                    with contextlib.suppress(Exception):
+                        log.close()
+                with contextlib.suppress(sqlite3.Error):
+                    with self.db:
+                        self.db.execute(
+                            "UPDATE processes SET status=?,exit_code=?,finished=? WHERE id=?",
+                            (
+                                "interrupted" if proc is not None else "failed",
+                                proc.returncode if proc is not None else None,
+                                time.time(),
+                                process_id,
+                            ),
+                        )
+                if proc is not None and isinstance(failure, Exception):
+                    raise OutcomeUnknown(
+                        "Process startup failed after execution may have begun; inspect state before retrying"
+                    ) from failure
+                raise failure from None
             finally:
                 if slave is not None:
-                    os.close(slave)
-            self.db.execute(
-                "INSERT INTO processes(id,task_id,status,command,cwd,created) VALUES (?,?,'running',?,?,?)",
-                (process_id, task_id, json.dumps(argv), str(cwd), time.time()),
-            )
-            self.db.commit()
-            log = (self.directory / (process_id + ".log")).open("wb")
-            state = {
-                "proc": proc,
-                "master": master,
-                "terminal": terminal,
-                "job": job,
-                "gate": gate,
-                "log": log,
-                "bytes": 0,
-                "stored": 0,
-                "truncated": False,
-                "cancelled": False,
-            }
-            self.active[process_id] = state
-            state["monitor"] = asyncio.create_task(self._monitor(process_id, timeout_seconds))
-            return process_id
+                    with contextlib.suppress(OSError):
+                        os.close(slave)
 
     def _append(self, state: dict, chunk: bytes):
         state["bytes"] += len(chunk)
@@ -231,6 +337,8 @@ class Processes:
             if state["job"] is not None:
                 state["job"].Close()
                 state["gate"].Close()
+            if state.get("cleanup_dir") is not None:
+                shutil.rmtree(state["cleanup_dir"], ignore_errors=True)
             if state["cancelled"]:
                 status = "cancelled"
             elif status == "completed" and proc.returncode != 0:
@@ -251,25 +359,36 @@ class Processes:
 
     def read(self, process_id: str, task_id: str, cursor: int = 0, limit: int = 65536) -> dict:
         row = self.row(process_id, task_id)
+        state = self.active.get(process_id)
+        truncated = bool(state["truncated"] if state else row["truncated"])
         log = self.directory / (process_id + ".log")
         size = log.stat().st_size if log.exists() else 0
         if cursor > size:
             raise ValueError("Cursor exceeds available output")
-        output = b""
+        data = b""
         if log.exists():
             with log.open("rb") as stream:
                 stream.seek(cursor)
-                output = stream.read(limit)
-        state = self.active.get(process_id)
+                data = stream.read(limit + 3)
+        end = min(limit, len(data))
+        while True:
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            final = (row["status"] != "running" or truncated) and cursor + end >= size
+            output = decoder.decode(data[:end], final=final)
+            consumed = end - len(decoder.getstate()[0])
+            if consumed or end == len(data):
+                break
+            # A tiny page still consumes one whole character, using at most three extra bytes.
+            end += 1
         return {
             "process_id": process_id,
             "status": row["status"],
             "exit_code": row["exit_code"],
-            "output": output.decode("utf-8", errors="replace"),
+            "output": output,
             "cursor": cursor,
-            "next_cursor": cursor + len(output),
-            "has_more": cursor + len(output) < size,
-            "truncated": bool(state["truncated"] if state else row["truncated"]),
+            "next_cursor": cursor + consumed,
+            "has_more": cursor + consumed < size,
+            "truncated": truncated,
             "total_bytes": state["bytes"] if state else row["bytes"],
         }
 

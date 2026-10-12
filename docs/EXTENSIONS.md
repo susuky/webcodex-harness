@@ -17,6 +17,8 @@
 
 把上述參數傳給 `extension_install`。Git checkout 後再複製所選 bundle；複製範圍最多 2,000 個檔案／目錄、20 MiB 一般檔案，不接受 symlink、hardlink 或特殊檔案。安裝不執行 hooks、npm install 或 skill scripts。來源與 commit 保存於安裝紀錄中；這些上限限制安裝 bundle，不代表整份 Git 下載也只有 20 MiB。
 
+本地來源與專案技能讀取沿用任務綁定的 Workspace。專案或已選來源目錄的身份改變時會停止，不會重新接受替換後的目錄；Git 中繼資料（含 worktree 的 `.git` 檔案）不會複製到 bundle。
+
 同名套件不可靜默覆寫。更新時先檢查目前來源與版本，再明確使用 `extension_remove` 移除及重新安裝；沒有自動更新程序。
 
 ## Skill 格式
@@ -87,7 +89,7 @@ my-plugin/
 
 每個 task／plugin／provider 保留自己的 MCP session，連續工具呼叫能沿用瀏覽器或其他 provider 狀態。內建上限為 16 個 active provider sessions；可用 `plugin_disconnect` 關閉。Runner 重啟後需要重新連線，不宣稱能還原 provider 記憶體。
 
-`plugin_call` 保留 MCP 原生文字、圖片、resource content、structuredContent 和 isError。對方工具回報的錯誤不會包裝成虛假的成功結果；逾時或斷線時不自動重送可能有副作用的呼叫。
+`plugin_call` 保留 MCP 原生文字、圖片、resource content、structuredContent 和 isError。對方工具回報的錯誤不會包裝成虛假的成功結果；逾時或斷線時不自動重送可能有副作用的呼叫。若呼叫已完成但回傳超過 2 MiB，job 標記為 `unknown`；先檢查實際效果，再決定是否發出新操作，不能以回傳過大推斷尚未執行。
 
 ## 完整範例
 

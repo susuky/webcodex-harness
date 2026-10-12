@@ -4,7 +4,7 @@
 
 ## 回報漏洞
 
-正式 GitHub 倉庫啟用私密漏洞回報後，可使用 **Security → Report a vulnerability**。若看不到該入口，請先用一般 issue 詢問私密聯絡方式，不附漏洞細節、可直接利用的步驟或敏感資料。維護者需在首次公開前完成此設定；目前未提供獨立安全聯絡信箱。
+本倉庫已啟用 [GitHub 私密漏洞回報](https://github.com/susuky/webcodex-harness/security/advisories)，可使用 **Security → Report a vulnerability**。若看不到該入口，請先用一般 issue 詢問私密聯絡方式，不附漏洞細節、可直接利用的步驟或敏感資料。目前未提供獨立安全聯絡信箱。
 
 私密回報請包含受影響版本、平台、最小重現、需要哪些權限，以及實際影響。使用臨時 repo、測試帳號與假憑證即可，不需要提供正式 token、完整資料庫或私人畫面。
 

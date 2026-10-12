@@ -7,7 +7,7 @@ import re
 import shutil
 import stat
 import tempfile
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, closing
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -97,26 +97,34 @@ def plugin_manifest(root: Path) -> dict:
     }
 
 
-def copy_bundle(source: Path, target: Path):
+def copy_bundle(source: Path | Workspace, target: Path):
+    workspace = source if isinstance(source, Workspace) else Workspace(source)
     count, total = 0, 0
-    for directory, dirs, files in os.walk(source, followlinks=False):
-        dirs[:] = [d for d in dirs if d != ".git"]
-        for name in [*dirs, *files]:
-            info = (Path(directory) / name).lstat()
+    target.mkdir()
+    with closing(workspace.walk(skip_dirs={".git"})) as entries:
+        for path, info in entries:
+            if Path(path).name.casefold() == ".git":
+                continue
             if (
-                is_link(Path(directory) / name)
-                or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
-                or info.st_nlink > 1
-                and stat.S_ISREG(info.st_mode)
+                not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+                or getattr(info, "st_file_attributes", 0) & 0x400
+                or stat.S_ISREG(info.st_mode)
+                and info.st_nlink != 1
             ):
                 raise ValueError(
                     "Extension bundles cannot contain symlinks, hardlinks or special files"
                 )
             count += 1
-            total += info.st_size if stat.S_ISREG(info.st_mode) else 0
-            if count > 2000 or total > 20 * 1024 * 1024:
+            if (
+                count > 2000
+                or total + (info.st_size if stat.S_ISREG(info.st_mode) else 0) > 20 * 1024 * 1024
+            ):
                 raise ValueError("Extension exceeds the 2,000-file / 20 MiB installation limit")
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns(".git"))
+            output = target / path
+            if stat.S_ISDIR(info.st_mode):
+                output.mkdir()
+            else:
+                total += workspace.copy_file(path, output, 20 * 1024 * 1024 - total)
 
 
 class Provider:
@@ -306,13 +314,12 @@ class Extensions:
                     ["git", "-c", f"core.hooksPath={os.devnull}", "checkout", "--detach", ref],
                     checkout,
                 )
-                source_root = Workspace(checkout).path(subpath, directory=True)
+                source_root = Workspace(checkout).child(subpath)
                 resolved_ref = actual.strip()
             else:
                 if ref is not None:
                     raise ValueError("ref is only valid for HTTPS Git sources")
-                source_root = workspace.path(source, directory=True)
-                source_root = Workspace(source_root).path(subpath, directory=True)
+                source_root = workspace.child(source).child(subpath)
                 resolved_ref = None
             staged = temp / "bundle"
             await asyncio.to_thread(copy_bundle, source_root, staged)
@@ -354,7 +361,7 @@ class Extensions:
             )
         return result
 
-    def skills(self, workspace: Workspace) -> tuple[list[dict], dict[str, Path]]:
+    def skills(self, workspace: Workspace) -> tuple[list[dict], dict[str, Workspace]]:
         candidates = []
         for prefix in [".agents/skills", ".codex/skills", ".claude/skills"]:
             try:
@@ -384,17 +391,22 @@ class Extensions:
             if not (path / "SKILL.md").is_file():
                 continue
             try:
-                data = skill_metadata(Workspace(path))
+                bundle = (
+                    workspace.child(path.relative_to(workspace.root).as_posix())
+                    if prefix == "project:"
+                    else Workspace(path)
+                )
+                data = skill_metadata(bundle)
                 name = prefix + data["name"]
                 if name in paths:
                     continue
-                paths[name] = path
+                paths[name] = bundle
                 result.append({"name": name, "description": data["description"]})
             except (ValueError, OSError, yaml.YAMLError) as error:
                 result.append({"name": prefix + path.name, "error": str(error)[:500]})
         return result, paths
 
-    def skill_root(self, workspace: Workspace, name: str) -> Path:
+    def skill_root(self, workspace: Workspace, name: str) -> Workspace:
         _, paths = self.skills(workspace)
         if name not in paths:
             raise ValueError("Skill not found; call skills_list first")
