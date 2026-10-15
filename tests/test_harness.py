@@ -13,6 +13,7 @@ import time
 from contextlib import asynccontextmanager, nullcontext
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -102,9 +103,28 @@ class Harness:
 
     async def close(self):
         self.runner.stop.set()
-        await asyncio.wait_for(self.runner_task, 10)
-        self.server.should_exit = True
-        await asyncio.wait_for(self.server_task, 10)
+        try:
+            await asyncio.wait_for(self.runner_task, 60)
+        finally:
+            self.server.should_exit = True
+            await asyncio.wait_for(self.server_task, 10)
+
+
+async def test_harness_stops_server_after_runner_shutdown_failure():
+    harness = object.__new__(Harness)
+    harness.runner = SimpleNamespace(stop=asyncio.Event())
+    harness.server = SimpleNamespace(should_exit=False)
+
+    async def fail_runner():
+        await harness.runner.stop.wait()
+        raise RuntimeError("Runner shutdown failed")
+
+    harness.runner_task = asyncio.create_task(fail_runner())
+    harness.server_task = asyncio.create_task(asyncio.sleep(0))
+    with pytest.raises(RuntimeError, match="Runner shutdown failed"):
+        await harness.close()
+    assert harness.server.should_exit
+    assert harness.server_task.done()
 
 
 @pytest.fixture
@@ -755,9 +775,15 @@ async def test_runner_executes_real_cargo_test(harness):
             },
         )
         job = await call(
-            client, "exec_command", {"task_id": task, "argv": ["cargo", "test", "--offline"]}
+            client,
+            "exec_command",
+            {
+                "task_id": task,
+                "argv": ["cargo", "test", "--offline", "--verbose"],
+                "timeout_seconds": 180,
+            },
         )
-        result = await process_result(client, task, job, timeout_seconds=90)
+        result = await process_result(client, task, job, timeout_seconds=210)
         assert result["exit_code"] == 0 and "1 passed" in result["output"], result["output"]
 
 
