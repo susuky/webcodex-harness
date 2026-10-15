@@ -86,10 +86,10 @@ uv run webcodex approve JOB_ID
 - Runner 重啟會恢復已登記專案；Server SQLite 會保留工作與核准，舊資料庫會自動新增所需欄位。目錄、父目錄或其檔案系統身分已改變時，不把原任務接到新位置；登記紀錄保留，需操作員檢查。無法讀取的專案或父目錄會略過，不會讓其他專案停止回報心跳。
 - 建立資料夾後若 Git 初始化、登記或程序中斷造成結果不確定，工作標示 `unknown`；不自動刪除資料夾或重跑。操作員檢查 `projects_list` 與目的地後，再決定是否登記已存在的資料夾。
 - 每台 Runner 最多公布 100 個專案、100 個父目錄。尚未提供取消登記、搬移、刪除專案或模板套用工具。
-- 父目錄清單限制這些結構化專案工具；有命令或 plugin 權限的 client 仍使用 Runner 帳號權限，並非 OS sandbox。
+- 父目錄清單限制這些結構化專案工具；有命令或 plugin 權限的 client 仍使用 Runner 帳號權限。
 
 Ubuntu 已驗證：零專案建立、核准、Git 初始化、既有資料登記、路徑拒絕、並行建立、回報中斷重試、Runner 重啟恢復及舊 Server 資料庫 migration。Windows 新增專案流程仍待實機驗收。
 
 ## 上游參考
 
-比對 [yyjeqhc/webcodex @ c9f1a54](https://github.com/yyjeqhc/webcodex/tree/c9f1a54fc9e9e3fd21d5005a140b9e97998134db) 的 [Runner 專案操作](https://github.com/yyjeqhc/webcodex/blob/c9f1a54fc9e9e3fd21d5005a140b9e97998134db/crates/webcodex-runner/src/webcodex_runner/projects.rs) 與 [工具入口](https://github.com/yyjeqhc/webcodex/blob/c9f1a54fc9e9e3fd21d5005a140b9e97998134db/src/tool_runtime/projects.rs)，採用「不依賴既有 task、Runner 驗證父目錄、持久登記後公布」的流程。本專案重用既有 Python 工作佇列與核准機制，並未移植上游的模板或採用既有目錄選項。
+比對 [yyjeqhc/webcodex @ c9f1a54](https://github.com/yyjeqhc/webcodex/tree/c9f1a54fc9e9e3fd21d5005a140b9e97998134db) 的 [Runner 專案操作](https://github.com/yyjeqhc/webcodex/blob/c9f1a54fc9e9e3fd21d5005a140b9e97998134db/crates/webcodex-runner/src/webcodex_runner/projects.rs) 與 [工具入口](https://github.com/yyjeqhc/webcodex/blob/c9f1a54fc9e9e3fd21d5005a140b9e97998134db/src/tool_runtime/projects.rs)，採用「不依賴既有 task、Runner 驗證父目錄、持久登記後公布」的流程，重用既有 Python 工作佇列與核准機制。

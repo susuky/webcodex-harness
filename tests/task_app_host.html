@@ -13,7 +13,7 @@
 </style>
 <main>
   <h1>Task App 診斷測試頁</h1>
-  <p>這是本機模擬 Host，載入同目錄的真實 task_app.html。沒有連接 Server、執行命令或發送外部通知；ui/message 只計數，不會啟動模型。</p>
+  <p>本機模擬 Host 會載入同目錄的真實 task_app.html，記錄工具呼叫與 ui/message 次數，供續接流程測試。</p>
   <p>模式：<output id="mode"></output>。before 模擬 prepare 未送達；after 模擬已保存 prepared 後遺失回覆，等待卡片的十秒逾時。stateFailures=1 會使下一筆狀態查詢失敗。</p>
   <div class="counters">
     <span>Prepare：<output id="prepare-count">0</output></span>
@@ -90,7 +90,7 @@
         host.pendingStateFailures = stateFailures;
         return null;
       }
-      return result({wait_id:waitId,state:"prepared",app_protocol:{message:"本機測試續接通知；沒有啟動真實模型。"}});
+      return result({wait_id:waitId,state:"prepared",app_protocol:{message:"本機模擬的續接通知。"}});
     }
     if (action === "finish") {
       if (!["prepared","accepted","unknown"].includes(host.state)) throw new Error("wait was not prepared");

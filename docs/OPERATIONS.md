@@ -4,7 +4,7 @@
 
 ## 安裝
 
-需要 Python 3.11+、Git、ripgrep（`rg`）與 [uv](https://docs.astral.sh/uv/getting-started/installation/)。以下路徑均為範例；使用本獨立專案的原始碼，不能以參考倉庫取代。
+需要 Python 3.11+、Git、ripgrep（`rg`）與 [uv](https://docs.astral.sh/uv/getting-started/installation/)。以下路徑均為範例，請換成本專案原始碼的實際位置。
 
 Windows PowerShell：
 
@@ -52,9 +52,9 @@ uv run webcodex init --project "$HOME/src/my-repo"
 
 設定必須位於 repo 外，`init` 不會覆寫既有設定。首次可加 `--port 8787` 或 `--config-dir`；自訂目錄後，各命令需用 `--config` 指向對應 JSON。`serve`／操作員命令讀 `server.json`，`runner` 讀 `runner.json`，`call`／`tools`／`bridge` 讀 `client.json`。
 
-不同終端機分別執行 `uv run webcodex serve` 與 `uv run webcodex runner`，再執行 `uv run webcodex call projects_list`。專案 `local/project` 的 `online` 應為 `true`。`doctor` 只檢查本機環境，不能代替這項連線驗證。
+不同終端機分別執行 `uv run webcodex serve` 與 `uv run webcodex runner`，再以 `uv run webcodex call projects_list` 驗證連線。專案 `local/project` 的 `online` 應為 `true`。`doctor` 用於檢查本機環境。
 
-預設命令、Git 寫入與擴充安裝需操作員核准。`init --trusted` 可省略核准，但不建立 OS 沙箱；桌面權限仍需另外啟用。設定中的三種憑證不可混用或公開。
+預設命令、Git 寫入與擴充安裝需操作員核准。`init --trusted` 可省略核准，命令仍以 Runner 帳號權限執行；桌面權限需另外啟用。設定中的三種憑證不可混用或公開。
 
 ## 建立任務與呼叫工具
 
@@ -120,9 +120,9 @@ uv run webcodex deny JOB_ID
 
 ## 擴充與延續
 
-依 [擴充指南](EXTENSIONS.md) 使用 `extension_install` 安裝、`skills_list`／`skill_read` 讀規則，或透過 `plugin_tools`／`plugin_call` 呼叫外部 MCP。安裝不代為安裝 provider 依賴或登入外部帳號。
+依 [擴充指南](EXTENSIONS.md) 使用 `extension_install` 安裝、`skills_list`／`skill_read` 讀規則，或透過 `plugin_tools`／`plugin_call` 呼叫外部 MCP。Provider 依賴與外部帳號登入需另行配置。
 
-[連線指南](CHATGPT.md) 提供 stdio bridge、ChatGPT 與 HTTPS 設定。本機啟動不會自動完成 ChatGPT 端連線。
+[連線指南](CHATGPT.md) 提供 stdio bridge、ChatGPT 與 HTTPS 設定。
 
 離開前以 `task_update` 保存真實進度：
 
@@ -130,11 +130,11 @@ uv run webcodex deny JOB_ID
 {"task_id":"TASK_ID","status":"active","summary":"已修正加法並通過相關測試；下一步檢查其他呼叫端。","plan":[{"step":"修正加法","status":"completed"},{"step":"檢查呼叫端","status":"pending"}]}
 ```
 
-下次透過 `task_list`／`task_get` 讀同一任務；所有工作完成才設為 `completed`。這會恢復保存的摘要與紀錄，不會還原用戶端的私有推理。
+下次透過 `task_list`／`task_get` 讀同一任務，從保存的摘要與紀錄接續；所有工作完成才設為 `completed`。
 
 ## 維運與故障排除
 
-停止時先在 Runner 終端機按 Ctrl-C，再停止 Server。Runner 會停止其管理的命令並保存結果；重啟後舊程序標為 `interrupted`，輸出仍可讀。備份設定、state 與 repo 前先停機，並保留存取限制。本專案不自動安裝 systemd 或 Windows 系統服務。
+停止時先在 Runner 終端機按 Ctrl-C，再停止 Server。Runner 會停止其管理的命令並保存結果；重啟後舊程序標為 `interrupted`，輸出仍可讀。備份設定、state 與 repo 前先停機，並保留存取限制。Systemd 或 Windows 系統服務需由操作員配置。
 
 | 情況 | 處理方式 |
 | --- | --- |

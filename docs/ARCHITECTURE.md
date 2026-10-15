@@ -14,7 +14,7 @@ Server 與 Runner 目前採 HTTPS long polling；同機開發允許 loopback HTT
 - 每台 Runner 使用獨立 token，不能拿它呼叫 MCP 或操作員 API。
 - 操作員 token 只用於核准與回答問題；MCP 工具清單不暴露這些操作。
 - `runner_id/project_id` 指向已登錄專案。綁定包含 canonical path、檔案系統裝置與 inode 的雜湊；更換根目錄需要建立新任務。
-- 任務與工作紀錄依用戶端身分隔離。共同獲准的專案仍是共享的真實檔案系統，並非多租戶 OS 隔離。
+- 任務與工作紀錄依用戶端身分隔離。共同獲准的專案使用共享的真實檔案系統。
 
 `read`、`write`、`execute`、`git_write`、`extensions` 決定 coding 工具類別。選用的 `projects` 授予建立與登記專案，`computer_observe`／`computer_control` 分別授予桌面觀察與輸入，預設皆不啟用。`approval_required` 決定哪些 Runner 操作先進入核准佇列。即使 Server 允許，Runner 的 `permissions` 仍可進一步拒絕。
 
@@ -43,7 +43,7 @@ stateDiagram-v2
 
 SQLite 的 `UNIQUE(owner, task_id, request_id)` 讓相同請求取得原工作。執行前先在 Runner journal 落盤，再啟動工具；完成結果在收到 Server acknowledgement 前保留。回報重試不能覆寫已接受的終態。
 
-不承諾分散式系統中的 exactly-once。領取回覆遺失、程序崩潰或外部工具斷線可能讓結果不確定；系統標示 `unknown`，不把修改操作自動放回佇列。重連時 Runner 提供已知工作清單，Server 會辨識「已領取，但 Runner 沒收到」的工作。
+領取回覆遺失、程序崩潰或外部工具斷線可能讓結果不確定；系統標示 `unknown`，不把修改操作自動放回佇列。重連時 Runner 提供已知工作清單，Server 會辨識「已領取，但 Runner 沒收到」的工作。
 
 Runner 的 process lock 防止同一 state directory 同時啟動兩個實例；Server 的 15 秒實例租期避免另一台機器用同一 Runner 身分搶走工作。短暫網路斷線不會終止現有子程序。
 
@@ -61,7 +61,7 @@ SQLite 保存控制者、世代、120 秒租期與已退役卡片，避免舊卡
 
 上述 directory fd 路徑用於 Ubuntu／WSL2。Windows 原生以 `CreateFile` 的 `OPEN_REPARSE_POINT` 逐層檢查，開啟目錄時不授予 delete sharing，讓祖先目錄在操作期間不能被改名或替換；拒絕 junction、symlink、其他 reparse point、裝置名稱、ADS 與私有目錄別名。新檔案使用 Windows 不覆寫目的地的 rename，覆寫使用替換。Windows 設定目錄以 DACL 限定目前帳號與 SYSTEM；Linux 使用目錄 0700、設定檔 0600。
 
-Runner 對同一專案的結構化寫入加鎖；shell 與外部編輯器仍可同時修改 repo，因此不能宣稱跨程序交易隔離。Workspace 以不跟隨連結的方式開啟根目錄，核對 task 綁定的目錄身份；每次開啟檔案時再核對身份，沿用已開啟的 directory fd 或 Windows pinned handles。專案技能與本地擴充來源的子 Workspace 也保留原任務的根目錄綁定。Patch 先完整檢查再套用，不支援任意二進位、rename／copy 或連結型別的變更。結構化 Git 使用專案外、絕對 PATH 目錄中的執行檔，關閉 hooks、fsmonitor、log 簽章驗證與 Git transport，避免缺失物件觸發下載及外部程式；diff 另關閉外部 diff／textconv。Ubuntu／WSL2 的 Git 程序以已開啟的目錄 fd 對應 `/proc` 路徑啟動，Windows 在 Git 操作期間保留祖先目錄 handles。
+Runner 對同一專案的結構化寫入加鎖；shell 與外部編輯器仍可同時修改 repo。Workspace 以不跟隨連結的方式開啟根目錄，核對 task 綁定的目錄身份；每次開啟檔案時再核對身份，沿用已開啟的 directory fd 或 Windows pinned handles。專案技能與本地擴充來源的子 Workspace 也保留原任務的根目錄綁定。Patch 先完整檢查再套用，不支援任意二進位、rename／copy 或連結型別的變更。結構化 Git 使用專案外、絕對 PATH 目錄中的執行檔，關閉 hooks、fsmonitor、log 簽章驗證與 Git transport，避免缺失物件觸發下載及外部程式；diff 另關閉外部 diff／textconv。Ubuntu／WSL2 的 Git 程序以已開啟的目錄 fd 對應 `/proc` 路徑啟動，Windows 在 Git 操作期間保留祖先目錄 handles。
 
 `search_files` 安全開啟每頁最多 500 個檔案，串流複製至 Runner 私有目錄中的快照，再以可信 ripgrep 搜尋。每頁快照最多 20 MiB，超過時需縮小 path／glob；回傳保留原始相對檔名與行號。快照保留至程序結束後清除；`next_file_offset` 探索後續檔案，程序輸出游標則讀取同一頁的剩餘結果。
 
@@ -69,7 +69,7 @@ Runner 對同一專案的結構化寫入加鎖；shell 與外部編輯器仍可�
 
 每個命令有獨立程序群組。標準輸出與錯誤合併寫入 Runner log，記錄總位元組數和截斷狀態。逾時、取消或主要程序退出時回收同一程序群組，避免繼承 stdout 的背景子程序讓讀取永久卡住。刻意呼叫 `setsid` 脫離群組的程序不在這個回收保證內。
 
-Windows 命令改用獨立 Job Object，並設定 `KILL_ON_JOB_CLOSE`。可信的 Python bootstrap 先等待事件；Runner 將它加入 Job Object 後才放行目標命令，避免目標程序先產生尚未受管理的子程序。無法加入 Job 時拒絕啟動。取消與逾時直接終止 Job，Runner 崩潰也會關閉其 Job handle。這是程序生命週期管理，不是權限沙箱。
+Windows 命令改用獨立 Job Object，並設定 `KILL_ON_JOB_CLOSE`。可信的 Python bootstrap 先等待事件；Runner 將它加入 Job Object 後才放行目標命令，避免目標程序先產生尚未受管理的子程序。無法加入 Job 時拒絕啟動。取消與逾時直接終止 Job，Runner 崩潰也會關閉其 Job handle。命令以 Runner 帳號權限執行。
 
 PTY 供互動式工具使用，可傳入字元、Ctrl-C、EOF 並調整大小；未實作完整作業控制終端。要延續環境變數或工作目錄，必須繼續使用同一個 live shell process，而非另開一個 `exec_command`。
 
@@ -103,6 +103,6 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 
 ## 尚需外部環境驗證
 
-本機測試不代表 ChatGPT 帳號、Secure MCP Tunnel、公開 TLS、反向代理或第三方 MCP provider 已完成授權。這些連線必須以實際帳號、目標與執行環境逐一驗證；測試不會冒用本機現有服務憑證。
+ChatGPT 帳號、Secure MCP Tunnel、公開 TLS、反向代理與第三方 MCP provider 的連線，需以實際帳號、目標與執行環境逐一驗證。
 
-原有 coding 功能曾在 Windows 11、WSL2 Ubuntu 22.04 與 Ubuntu 24.04 驗收；這些舊紀錄不包含本次新增的桌面功能。平台版本、當次測試結果及未驗證範圍見 [平台驗證紀錄](PLATFORMS.md)。
+原有 coding 功能曾在 Windows 11、WSL2 Ubuntu 22.04 與 Ubuntu 24.04 驗收；新增桌面功能的當次測試結果、平台版本與待驗證項目見 [平台驗證紀錄](PLATFORMS.md)。

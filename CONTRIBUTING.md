@@ -1,6 +1,6 @@
 # 參與開發
 
-歡迎問題回報與改善建議。此為獨立的 WebCodex Harness，目前仍是開發預覽；請勿把參考倉庫的功能或版本當成本專案已支援的能力。
+歡迎問題回報與改善建議。WebCodex Harness 目前仍是開發預覽，支援功能見 [README](README.zh-TW.md)。
 
 權利範圍以 README 最下方聲明為準。下列安裝、修改與 PR 流程適用於已取得所需書面許可的協作者；本指南不另外授予使用、複製、修改或散布權利。
 
@@ -17,7 +17,7 @@ uv run ruff format --check src tests examples
 uv build
 ```
 
-一般測試不操作桌面。改動桌面後端時，依 [Computer use](docs/COMPUTER_USE.md#重現桌面測試) 使用獨立桌面驗證；Windows API 需在 Windows 執行，不能以 Linux 模擬測試取代。Rust 與固定 commit 的安裝測試，啟用方式見 [平台驗證](docs/PLATFORMS.md)。
+一般測試不操作桌面。改動桌面後端時，依 [Computer use](docs/COMPUTER_USE.md#重現桌面測試) 使用獨立桌面驗證；Windows API 需在 Windows 執行。Rust 與固定 commit 的安裝測試，啟用方式見 [平台驗證](docs/PLATFORMS.md)。
 
 ## 問題回報
 

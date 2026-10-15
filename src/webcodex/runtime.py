@@ -342,7 +342,7 @@ class Runtime:
         path: PathArg | None = None,
         process_ids: Annotated[list[str], Field(max_length=10)] | None = None,
     ) -> dict:
-        """Inspect current project changes, including new untracked files, and actual command results. Omit path for a bounded changed-file list; pass an exact returned path to read staged/unstaged diffs or new-file content. This is the entire current workspace, not proof that every change belongs to this task. Prior command success does not validate edits made afterwards. Available after task completion; never stages or commits files."""
+        """Inspect current project changes, including new untracked files, and actual command results. Omit path for a bounded changed-file list; pass an exact returned path to read staged/unstaged diffs or new-file content. Covers the current workspace and recorded command outcomes. Available after task completion; never stages or commits files."""
         if path is not None:
             self.workspace.path(path)
         result = {
@@ -595,7 +595,7 @@ class Runtime:
 
     @tool("computer_observe")
     async def computer_status(self) -> dict:
-        """Check this Runner's desktop backend and desktop dimensions without capturing pixels. Requires explicit computer_observe permission; available is a backend probe, not proof that screenshot/input will succeed. Ubuntu X11 and native Windows only."""
+        """Check this Runner's desktop backend and desktop dimensions without capturing pixels. Requires explicit computer_observe permission; available reports desktop backend detection. Ubuntu X11 and native Windows only."""
         return await asyncio.to_thread(self.computer.status)
 
     @tool("computer_observe")
@@ -689,7 +689,7 @@ class Runtime:
     async def computer_type(
         self, snapshot_id: str, text: Annotated[str, Field(min_length=1, max_length=4096)]
     ) -> dict:
-        """Type printable Unicode into the focused application without using the clipboard. Ubuntu requires xdotool; Windows uses Unicode SendInput. Use computer_key separately for Enter/Tab. Consumes a fresh snapshot_id from this task. Text is retained in private job arguments; do not use for secrets. Success reports input dispatch, not verified application text."""
+        """Type printable Unicode into the focused application without using the clipboard. Ubuntu requires xdotool; Windows uses Unicode SendInput. Use computer_key separately for Enter/Tab. Consumes a fresh snapshot_id from this task. Text is retained in private job arguments; do not use for secrets. Success reports input dispatch; confirm the resulting text in the application."""
         return await asyncio.to_thread(
             self.computer.perform, self.task_id, snapshot_id, "text", text=text
         )

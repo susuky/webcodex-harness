@@ -11,11 +11,11 @@
 | Windows 互動桌面 | 本次未驗收；已實作後端及可在該平台執行的測試 |
 | GitHub Actions | 已更新，尚未執行；Ubuntu／Windows、Python 3.11／3.12 矩陣 |
 
-完整套件的 7 個 skipped 包含 4 個既有 Windows 原生測試、1 個 Windows INPUT ABI 測試、未安裝 Cargo，以及未啟用固定 commit 的 HTTPS 安裝測試。不同執行環境請以實際 pytest 輸出為準，不固定預期總數。
+完整套件的 7 個 skipped 包含 4 個既有 Windows 原生測試、1 個 Windows INPUT ABI 測試、未安裝 Cargo，以及未啟用固定 commit 的 HTTPS 安裝測試。不同執行環境請記錄實際 pytest 輸出。
 
 Xvfb 測試透過真正的 TCP MCP／Runner 操作獨立 Tk 視窗，驗證原生 JPEG、繁體中文輸入、快捷鍵、點擊、移動、捲動與拖曳。其他測試涵蓋桌面權限、核准、task 綁定、原始座標、截圖失效、重試去重、未知結果、輸入清理與取消時的序列化。
 
-Windows 的新增 Unicode 封包測試驗證 UTF-16、INPUT 結構大小與部分傳送錯誤，但在本次 Ubuntu 執行中略過；不能把 Linux 上的替代 API 測試當成 Windows 實機驗收。Wayland、WSLg、macOS、多螢幕及混合 DPI 也不在本次驗證範圍。
+Windows 的新增 Unicode 封包測試驗證 UTF-16、INPUT 結構大小與部分傳送錯誤，在本次 Ubuntu 執行中略過，仍待 Windows 實機驗收。Wayland、WSLg、macOS、多螢幕及混合 DPI 也不在本次驗證範圍。
 
 ## 重現
 
@@ -33,6 +33,6 @@ uv build
 
 ## 歷史證據
 
-基準版本 `b3c9230` 的 coding 功能曾在 Ubuntu 24.04、Windows 11 Enterprise 10.0.26200 及 WSL2 Ubuntu 22.04 驗收，涵蓋檔案、命令、ConPTY／PTY、Git、擴充與任務延續。完整版本、結果及測試副本位置保留於 [歷史紀錄](archive/PLATFORMS-2026-09-11-b3c9230.md)。這些舊結果不涵蓋本次新增的桌面操作。
+基準版本 `b3c9230` 的 coding 功能曾在 Ubuntu 24.04、Windows 11 Enterprise 10.0.26200 及 WSL2 Ubuntu 22.04 驗收，涵蓋檔案、命令、ConPTY／PTY、Git、擴充與任務延續。完整版本、結果及測試副本位置保留於 [歷史紀錄](archive/PLATFORMS-2026-09-11-b3c9230.md)；新增桌面操作的驗證結果見上方「本次驗證」。
 
-本機測試不代表 ChatGPT 帳號、tunnel、公開 TLS 或外部 provider 已完成連線；仍需依目標環境驗證。
+ChatGPT 帳號、tunnel、公開 TLS 與外部 provider 的連線，需依目標環境驗證。

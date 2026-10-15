@@ -77,8 +77,8 @@ uv run webcodex call computer_click --arguments '@args.json'
 
 ## 執行邊界
 
-- 共用的是整個桌面，可能看見或操作專案外資料；不是 repo 或視窗沙箱。每個桌面只使用一個 Runner，避免不同實例或人為操作互相干擾。
-- 截圖 ID 可防止誤用舊尺寸或重複輸入，但無法阻止人切換視窗、程式自行重排畫面；輸入送出不代表目標程式已成功儲存或更新。
+- 工具共用整個桌面，可能看見或操作專案外資料。每個桌面只使用一個 Runner，避免不同實例或人為操作互相干擾。
+- 截圖 ID 可防止誤用舊尺寸或重複輸入；人為切換視窗或程式自行重排仍會改變畫面。輸入後重新截圖，確認目標程式是否已儲存或更新。
 - 游標位於畫面角落時，PyAutoGUI 的 fail-safe 拒絕後續輸入。執行中的 Unicode 輸入不會因移至角落立刻停止；停止 Runner 時已開始的原生呼叫仍可能完成，應重新確認畫面。
 - 工具在已開始輸入後失敗或遭中斷，job 標為 `unknown`。先重新截圖查證，不自動重送。相同 `request_id` 與參數只會讀回原 job。
 - 截圖與輸入文字會保存在 Server／Runner 私有 SQLite 工作紀錄；事件摘要不含圖片，但工作結果包含。尚無自動清理，不應用此介面輸入秘密。
@@ -91,7 +91,7 @@ uv run webcodex call computer_click --arguments '@args.json'
 | Wayland／WSLg／macOS | 不支援，後端拒絕啟用；控制 Windows 桌面請使用原生 Windows Runner |
 | 多螢幕、混合 DPI、遠端桌面切換 | 尚未驗收 |
 
-`doctor.computer.available` 只表示後端與尺寸查詢可用；實際截圖、權限和目標程式的行為仍需呼叫驗證。
+`doctor.computer.available` 表示後端與尺寸查詢可用。接著呼叫截圖與輸入工具，確認權限和目標程式的實際行為。
 
 ## 重現桌面測試
 

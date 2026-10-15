@@ -1,6 +1,6 @@
 # 瀏覽器操作
 
-選用的 `examples/plugins/browser-tools` 使用固定版本的 [Microsoft Playwright MCP](https://github.com/microsoft/playwright-mcp)，提供網頁元素、表單、分頁、截圖與資料擷取。功能方向參考 [Browser Use 評估](ROADMAP.md#browser-use-比對)，實作沿用既有 plugin 連線，不執行 Browser Use Agent，也不需要另外的模型 API key。
+選用的 `examples/plugins/browser-tools` 使用固定版本的 [Microsoft Playwright MCP](https://github.com/microsoft/playwright-mcp)，提供網頁元素、表單、分頁、截圖與資料擷取。功能方向參考 [Browser Use 評估](ROADMAP.md#browser-use-比對)，實作沿用既有 plugin 連線與用戶端推理。
 
 ## 安裝
 
@@ -71,11 +71,11 @@ uv run webcodex call extension_install --arguments '@args.json'
 
 1. 導覽後呼叫 `browser_snapshot`，`arguments` 使用 `{}`，取得 URL、標題與可互動元素。0.0.80 的一般操作回覆只附快照檔案連結；明確呼叫此工具才取得內嵌的完整快照，無須讀取 Runner 私有檔案。
 2. 從最新快照取得 `[ref=eN]`，以 `browser_type` 的 `{"target":"eN","text":"文字"}` 輸入，再讀一次快照；按鈕則使用 `browser_click` 的 `{"target":"最新參照"}`。導航或頁面變動後重新觀察，不能沿用過期參照。
-3. 使用 `browser_wait_for` 的 `{"text":"預期完成文字"}` 等待動態結果，再讀快照或截圖確認。工具成功回傳不等於業務流程已成功。
+3. 使用 `browser_wait_for` 的 `{"text":"預期完成文字"}` 等待動態結果，再讀快照或截圖確認流程已完成。
 4. `browser_tabs` 支援 `list`、`new`、`select`、`close`；用 `{"action":"list"}` 讀取目前分頁，再以 `{"action":"select","index":0}` 選擇。此 provider 使用索引，開關分頁後需重新列出，不能視為穩定 ID。
 5. 截圖可用 `browser_take_screenshot` 的 `{"type":"png","scale":"css"}`，圖片經 `job_get` 保留 MCP 原生 image content。最後呼叫 `browser_close`，再以相同 task／plugin／server 參數呼叫 `plugin_disconnect`。
 
-每個新操作使用新的 `request_id`；查詢或重送同一請求時保留原 ID，避免重複建立工作。發生逾時、斷線或結果不確定時，先查 `job_get` 並重新觀察頁面，不要換一個 ID 重送提交、付款或其他修改動作。這沿用 Harness 的 job 去重，不保證第三方網站恰好執行一次。
+每個新操作使用新的 `request_id`；查詢或重送同一請求時保留原 ID，沿用 Harness 的 job 去重。發生逾時、斷線或結果不確定時，先查 `job_get` 並重新觀察頁面，再決定後續操作；換一個 ID 重送提交、付款或其他修改動作，可能造成重複執行。
 
 ## 擷取頁面資料
 
@@ -87,7 +87,7 @@ uv run webcodex call extension_install --arguments '@args.json'
 }
 ```
 
-選擇器與欄位需符合目標頁面。此版本將結果放在 MCP 文字內容的 `### Result` 區段，內容為 JSON；不宣稱 provider 一定回傳 `structuredContent`。需要固定欄位時由用戶端驗證，再使用既有檔案工具保存。大型頁面應縮小選取範圍，Harness 對每次 provider 回覆設有 2 MiB 上限。
+選擇器與欄位需符合目標頁面。此版本將 JSON 結果放在 MCP 文字內容的 `### Result` 區段。需要固定欄位時由用戶端驗證，再使用既有檔案工具保存。大型頁面應縮小選取範圍，Harness 對每次 provider 回覆設有 2 MiB 上限。
 
 ## 任務隔離與登入保存
 
@@ -101,13 +101,13 @@ uv run webcodex call extension_install --arguments '@args.json'
 4. 如需手動登入，將 `browser.launchOptions.headless` 改為 `false`，在 Runner 的互動桌面完成登入；無圖形桌面的機器無法使用此方式。
 5. 使用 `browser_close` 正常關閉，讓 profile 寫回後再斷線。同一 task 重連沿用其 profile，其他 task 仍使用不同目錄。
 
-已安裝設定位於 `<state_dir>/extensions/<project_id>/plugin/browser-tools/`；完整私有狀態路徑見 [擴充指南](EXTENSIONS.md#plugin-格式)。此選項適用該安裝副本的所有任務。驗證涵蓋 cookie／localStorage 保存，網站仍可能要求重新登入，不能保證所有登入方式都可延續。
+已安裝設定位於 `<state_dir>/extensions/<project_id>/plugin/browser-tools/`；完整私有狀態路徑見 [擴充指南](EXTENSIONS.md#plugin-格式)。此選項適用該安裝副本的所有任務。驗證涵蓋 cookie／localStorage 保存；網站要求重新登入時，需再次完成登入。
 
 ## 範圍與驗證
 
-`allowedTools` 會在工具探索與呼叫時檢查，未開放檔案上傳或任意 Node.js 執行工具；`browser_evaluate` 仍可在頁面執行有副作用的 JavaScript，因此全部沿用 `execute` 核准，不視為唯讀。此清單不會限制外掛程序本身的系統權限。
+`allowedTools` 會在工具探索與呼叫時檢查，未開放檔案上傳或任意 Node.js 執行工具；`browser_evaluate` 可在頁面執行有副作用的 JavaScript，因此全部沿用 `execute` 核准。外掛程序本身仍使用 Runner 帳號的系統權限。
 
-Playwright 的 `allowed-origins` 會阻擋不符合設定的直接請求，但[官方設定說明](https://github.com/microsoft/playwright-mcp#configuration)指出它**不是網路安全邊界，且不限制重新導向**。瀏覽器與 plugin 使用 Runner 帳號權限，沒有 OS sandbox；不要把這個選項當成完整網路隔離。範例未開啟本機 file URL 存取。
+Playwright 的 `allowed-origins` 會阻擋不符合設定的直接請求，但不限制重新導向；網路隔離需另外配置。[官方設定說明](https://github.com/microsoft/playwright-mcp#configuration) 瀏覽器與 plugin 使用 Runner 帳號權限，沒有 OS sandbox。範例未開啟本機 file URL 存取。
 
 profile、快照、截圖與 Harness 的輸入／輸出紀錄目前沒有自動清理期限。`saveSession: false` 不會停用 Harness 紀錄；不要透過文字工具輸入不應被記錄的密碼。檔案上傳、下載驗證後匯入專案、憑證引用及自動清理仍是後續工作。
 

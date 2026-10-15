@@ -15,7 +15,7 @@
 }
 ```
 
-把上述參數傳給 `extension_install`。Git checkout 後再複製所選 bundle；複製範圍最多 2,000 個檔案／目錄、20 MiB 一般檔案，不接受 symlink、hardlink 或特殊檔案。安裝不執行 hooks、npm install 或 skill scripts。來源與 commit 保存於安裝紀錄中；這些上限限制安裝 bundle，不代表整份 Git 下載也只有 20 MiB。
+把上述參數傳給 `extension_install`。Git checkout 後再複製所選 bundle；複製範圍最多 2,000 個檔案／目錄、20 MiB 一般檔案，不接受 symlink、hardlink 或特殊檔案。安裝不執行 hooks、npm install 或 skill scripts。來源與 commit 保存於安裝紀錄中。檔案數量與大小上限適用於所選 bundle；完整 Git 下載量可能超過 20 MiB。
 
 本地來源與專案技能讀取沿用任務綁定的 Workspace。專案或已選來源目錄的身份改變時會停止，不會重新接受替換後的目錄；Git 中繼資料（含 worktree 的 `.git` 檔案）不會複製到 bundle。
 
@@ -46,7 +46,7 @@ my-plugin/
 └── server.py
 ```
 
-支援 `.codex-plugin/plugin.json` 和 `.claude-plugin/plugin.json` 的 `name`、`description`、`version`、`skills` 與 `mcpServers`。`skills` 可為相對路徑或路徑清單；`mcpServers` 可為設定物件或 JSON 檔案相對路徑。它是這些格式的可執行子集，不宣稱完整支援 Codex／Claude Code 的所有 manifest 功能。
+支援 `.codex-plugin/plugin.json` 和 `.claude-plugin/plugin.json` 的 `name`、`description`、`version`、`skills` 與 `mcpServers`。`skills` 可為相對路徑或路徑清單；`mcpServers` 可為設定物件或 JSON 檔案相對路徑。
 
 ```json
 {
@@ -81,15 +81,15 @@ my-plugin/
 
 每個 MCP server 可設定 `allowedTools` 字串清單。省略時維持原有行為、允許所有 provider 工具；空清單拒絕全部工具。設定後，`plugin_tools` 只列出清單內的工具，`plugin_call` 在送往 provider 前再檢查一次。清單最多 256 個名稱，每個名稱為 1–128 字元；只接受精確名稱，不支援萬用字元。已安裝設定的修改會在下一次取得該 provider 時套用到既有連線；其他啟動參數的變更則需先斷線。
 
-這是 Harness 的呼叫限制，不是 provider 程序的 sandbox；也不限制 resources／prompts。安裝與執行外掛仍代表信任該程式，所有 provider 工具仍沿用 `execute` 權限。
+`allowedTools` 限制 Harness 的工具呼叫；resources／prompts 維持原有權限，provider 程序以 Runner 帳號權限執行。安裝與執行外掛需信任該程式，所有 provider 工具沿用 `execute` 權限。
 
 ## 執行與延續
 
 `plugins_list` 只讀取安裝 metadata。`plugin_tools`、`plugin_resources` 與 `plugin_prompts` 需要啟動或連線 provider，因此也需要 `execute` 權限。
 
-每個 task／plugin／provider 保留自己的 MCP session，連續工具呼叫能沿用瀏覽器或其他 provider 狀態。內建上限為 16 個 active provider sessions；可用 `plugin_disconnect` 關閉。Runner 重啟後需要重新連線，不宣稱能還原 provider 記憶體。
+每個 task／plugin／provider 保留自己的 MCP session，連續工具呼叫能沿用瀏覽器或其他 provider 狀態。內建上限為 16 個 active provider sessions；可用 `plugin_disconnect` 關閉。Runner 重啟後需要重新連線。
 
-`plugin_call` 保留 MCP 原生文字、圖片、resource content、structuredContent 和 isError。對方工具回報的錯誤不會包裝成虛假的成功結果；逾時或斷線時不自動重送可能有副作用的呼叫。若呼叫已完成但回傳超過 2 MiB，job 標記為 `unknown`；先檢查實際效果，再決定是否發出新操作，不能以回傳過大推斷尚未執行。
+`plugin_call` 保留 MCP 原生文字、圖片、resource content、structuredContent 和 isError。逾時或斷線時不自動重送可能有副作用的呼叫。若呼叫已完成但回傳超過 2 MiB，job 標記為 `unknown`；先檢查實際效果，再決定是否發出新操作。
 
 ## 完整範例
 
@@ -97,4 +97,4 @@ my-plugin/
 
 `examples/plugins/browser-tools` 提供固定版本 Playwright MCP 的啟動設定、13 個允許工具、task 專屬輸出目錄與獨立瀏覽器狀態。安裝與操作見 [瀏覽器操作指南](BROWSER_USE.md)。
 
-本專案不內建外掛市集帳號、第三方 OAuth、hooks、apps UI 或 provider 的依賴安裝器；安裝成功代表 bundle 已被驗證並保存，是否能執行仍由實際工具探索／呼叫驗證。
+本專案目前未內建外掛市集帳號、第三方 OAuth、hooks、apps UI 或 provider 的依賴安裝器。安裝會驗證並保存 bundle；完成後透過工具探索／呼叫確認 provider 能執行。

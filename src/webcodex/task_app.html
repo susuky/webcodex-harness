@@ -29,8 +29,8 @@
     <header><h2 id="review-title">檢查成果</h2><button id="review-refresh" type="button">讀取修改與結果</button></header>
     <div class="review-tabs" aria-label="檢視內容"><button id="changes-tab" type="button" aria-pressed="true" aria-controls="changes">修改內容</button><button id="runs-tab" type="button" aria-pressed="false" aria-controls="runs">執行結果</button></div>
     <p id="review-state" class="review-state" role="status">讀取後可選擇檔案，查看修改內容與執行紀錄。</p>
-    <div id="changes"><p class="review-note" id="changes-note">顯示專案目前尚未提交的變更，可能包含其他工作的修改。</p><div class="review-layout"><div id="files" class="file-list" aria-label="檔案清單"></div><div id="preview" class="preview"><p>選取檔案以查看內容。</p></div></div></div>
-    <div id="runs" hidden><p class="review-note">顯示此任務最近的命令紀錄。後續修改仍需要重新驗證。</p><div id="executions"></div></div>
+    <div id="changes"><p class="review-note" id="changes-note">顯示專案目前尚未提交的變更。</p><div class="review-layout"><div id="files" class="file-list" aria-label="檔案清單"></div><div id="preview" class="preview"><p>選取檔案以查看內容。</p></div></div></div>
+    <div id="runs" hidden><p class="review-note">顯示此任務最近的命令紀錄。</p><div id="executions"></div></div>
   </section>
   <footer><span id="updated" class="updated">尚未取得更新</span><button id="pause" type="button" hidden>暫停自動續接</button></footer>
 </main>
@@ -110,7 +110,7 @@
     } else if (wait && ["prepared","accepted"].includes(wait.state)) {
       status = "已請求接續"; detail = "正在等候對話回覆，工作紀錄已保留。";
     } else if (wait && wait.state === "unknown") {
-      status = "尚未確認是否接續"; detail = "為避免重複操作，請在對話中確認目前任務。";
+      status = "尚未確認是否接續"; detail = "請在對話中確認目前任務。";
     }
     el("status").textContent = status; el("detail").textContent = detail;
     el("steps").replaceChildren();
@@ -147,7 +147,7 @@
       el("files").append(button);
     }
     el("changes-note").textContent = review.is_git_repository
-      ? "顯示專案目前尚未提交的變更，可能包含其他工作的修改。"
+      ? "顯示專案目前尚未提交的變更。"
       : "這個專案尚未使用 Git。以下可檢視目前檔案，無法比較修改前後。";
     const count = review.total_files ?? review.files?.length ?? 0;
     el("review-state").textContent = (review.is_git_repository ? `目前有 ${count} 個變更檔案` : `已讀取 ${count} 個檔案`)
@@ -190,7 +190,7 @@
       if (run.status === "failed" || run.status === "timed_out") details.open = true;
       el("executions").append(details);
     }
-    if (!review.executions?.length) el("executions").append(node("p","此任務尚無命令執行紀錄，不能據此判定測試已通過。"));
+    if (!review.executions?.length) el("executions").append(node("p","此任務尚無命令執行紀錄。"));
     notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
   }
   async function loadReview(path=null, jobId=null) {
@@ -215,7 +215,7 @@
       }
       el("review-state").textContent = "仍在讀取，可稍後繼續查看同一筆結果。";
     } catch (_) {
-      if (version === reviewVersion) el("review-state").textContent = "暫時無法更新修改內容。原有工作不受影響，可稍後重試。";
+      if (version === reviewVersion) el("review-state").textContent = "暫時無法更新修改內容，請稍後重試。";
     } finally {
       if (version === reviewVersion) { el("review-refresh").disabled = false; el("review-refresh").textContent = pendingReview ? "繼續讀取" : "重新整理"; }
     }

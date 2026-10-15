@@ -1,6 +1,6 @@
 # 功能參考與後續建議
 
-比對日期：2026-09-11；參考 [yyjeqhc/webcodex @ 04e8135](https://github.com/yyjeqhc/webcodex/tree/04e8135f852a75b572c9a575db0182b07b534eea)。本專案為獨立 Python 實作，以下區分目前能力與建議，並非上游相容性承諾。
+比對日期：2026-09-11；參考 [yyjeqhc/webcodex @ 04e8135](https://github.com/yyjeqhc/webcodex/tree/04e8135f852a75b572c9a575db0182b07b534eea)。以下整理本專案的實作狀態與後續建議。
 
 ## 已採用的 WebCodex 概念
 
@@ -21,7 +21,7 @@
 - Runner 建立或登記資料夾並持久保存，再公布可用 project ID；沿用現有權限、核准及工作去重。
 - 已驗證從零個專案開始、回報中斷、重啟恢復、路徑邊界與舊資料庫 migration；Windows 新流程仍待實機測試。
 
-實際設定、參考來源與限制見 [建立與登記專案](PROJECTS.md)。目前不提供上游的模板、既有目錄採用或取消登記功能。傳輸沿用原有 Server／Runner 與選用的 Secure MCP Tunnel，不需因建立專案額外加入 Cloudflare 或 SSH。
+實際設定、參考來源與限制見 [建立與登記專案](PROJECTS.md)。目前不提供上游的模板、既有目錄採用或取消登記功能。傳輸沿用原有 Server／Runner 與選用的 Secure MCP Tunnel。
 
 ## 桌面與開發工具建議（尚未實作）
 
@@ -32,13 +32,13 @@
 | 3 | 精簡工作監看頁 | 參考 [Runtime Console](https://github.com/yyjeqhc/webcodex/blob/04e8135f852a75b572c9a575db0182b07b534eea/docs/runtime-console.md)，先以既有 API 顯示 Runner、job、待核准及程序輸出，沿用目前的角色權限 |
 | 4 | LSP 程式碼導覽 | 參考 [架構中的 LSP](https://github.com/yyjeqhc/webcodex/blob/04e8135f852a75b572c9a575db0182b07b534eea/docs/ARCHITECTURE.md)，先提供 definition／references／diagnostics；需要可量測優於目前 ripgrep 的使用情境再加入 |
 
-下一步優先完成 Windows 互動桌面與 DPI 驗收，再加入指定視窗控制。Wayland 需要另行評估 compositor／portal 授權流程，不能把 X11 測試當成 Wayland 支援證據。
+下一步優先完成 Windows 互動桌面與 DPI 驗收，再加入指定視窗控制。Wayland 需要另行評估 compositor／portal 授權流程。
 
 ## Browser Use 比對
 
 比對日期：2026-09-12；參考 [browser-use/browser-use @ 50f2055](https://github.com/browser-use/browser-use/tree/50f205533fe10ba35b553d2a3689c77b87bd5d0a)。Browser Use 本身只做原始碼評估；下列前三項已透過選用的 Playwright MCP plugin 實作，操作方式與實測範圍見 [瀏覽器操作](BROWSER_USE.md)。
 
-`fetch_url` 只讀取 HTTP 回應，不執行 JavaScript；`computer_*` 使用桌面座標與按鍵，沒有網頁元素或分頁模型。`browser-tools` 補上瀏覽器操作，不代替原生桌面控制。
+`fetch_url` 讀取 HTTP 回應，不執行 JavaScript；`computer_*` 使用桌面座標與按鍵；`browser-tools` 操作網頁元素、JavaScript 與分頁。
 
 ### 功能與實作狀態
 
@@ -50,7 +50,7 @@
 | 4 | [檔案上傳](https://github.com/browser-use/browser-use/blob/50f205533fe10ba35b553d2a3689c77b87bd5d0a/browser_use/tools/service.py#L860)與[下載](https://github.com/browser-use/browser-use/blob/50f205533fe10ba35b553d2a3689c77b87bd5d0a/examples/features/download_file.py) | 尚未實作受控傳檔。建議上傳只能選擇明確核准的專案檔案；下載驗證完成、大小與 hash 後再匯入專案，沿用路徑與覆寫保護 |
 | 5 | [依網站提供敏感資料](https://github.com/browser-use/browser-use/blob/50f205533fe10ba35b553d2a3689c77b87bd5d0a/examples/features/sensitive_data.py) | 尚未實作。建議工具只傳憑證引用，由 Runner 依網站與權限取值。現有 job 紀錄保存輸入參數，需連同截圖與保留期限處理 |
 
-任務間的 cookie／localStorage 隔離與明確選用的保存／恢復已在本機測試頁驗證。網站限制可參考 [BrowserProfile](https://github.com/browser-use/browser-use/blob/50f205533fe10ba35b553d2a3689c77b87bd5d0a/browser_use/browser/profile.py#L628)，但導航網域清單不等於整個瀏覽器的網路隔離；目前使用的 Playwright 設定同樣不是網路安全邊界。
+任務間的 cookie／localStorage 隔離與明確選用的保存／恢復已在本機測試頁驗證。網站限制可參考 [BrowserProfile](https://github.com/browser-use/browser-use/blob/50f205533fe10ba35b553d2a3689c77b87bd5d0a/browser_use/browser/profile.py#L628)。網站範圍設定與網路隔離需分別配置。
 
 ### 接入方式與取捨
 
@@ -59,9 +59,9 @@
 參考版本的 [CLI 入口](https://github.com/browser-use/browser-use/blob/50f205533fe10ba35b553d2a3689c77b87bd5d0a/browser_use/cli.py#L357) 區分兩種模式：
 
 - `--mcp`：有 `browser_navigate`、`browser_get_state`、`browser_click`、`browser_type` 與分頁工具，較適合先評估。`browser_extract_content` 與 `retry_with_browser_use_agent` 會另用 LLM，首版不納入。
-- `--cli-mcp`：提供 `browser_exec` 執行任意 Python，以及截圖工具；不適合視為只有瀏覽器權限的介面。
+- `--cli-mcp`：提供 `browser_exec` 執行任意 Python，以及截圖工具。
 
-Browser Use 參考版本預設共用設定目錄與下載位置，不能只靠 MCP session 分離就宣稱瀏覽器隔離。目前核心新增 `allowedTools` 與保留的 `${TASK_STATE_DIR}`，範例僅開放 13 個工具、預設 isolated browser，並要求操作員配置網站範圍。所有呼叫仍使用 `execute` 權限；其他外掛是否隔離狀態，取決於其實際設定。
+Browser Use 參考版本預設共用設定目錄與下載位置。目前核心新增 `allowedTools` 與保留的 `${TASK_STATE_DIR}`，範例僅開放 13 個工具、預設 isolated browser，並要求操作員配置網站範圍。所有呼叫仍使用 `execute` 權限；其他外掛是否隔離狀態，取決於其實際設定。
 
 Ubuntu 已完成真實 MCP 路徑驗收：讀取元素 → 填表 → 等待 JavaScript 更新 → 擷取資料／截圖 → 切換分頁；另驗證跨 task 隔離、導航後舊元素失效、相同 request ID 不重複提交及選用 profile 保存。Windows 瀏覽器整合仍待驗證。上游 Actor 的 CSS 查詢[不會等待元素可見](https://github.com/browser-use/browser-use/blob/50f205533fe10ba35b553d2a3689c77b87bd5d0a/browser_use/actor/README.md#L60)，本實作使用 Playwright 操作與明確的頁面完成條件。
 

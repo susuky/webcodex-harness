@@ -153,7 +153,7 @@ class TaskTools:
 
     @tool()
     async def task_get(self, task_id: str) -> dict:
-        """Resume a task using progress: current approval policy, pending jobs and latest process observations/output. Saved status/summary/plan may be stale; use progress before claiming a blocker. Follow next_actions in this turn without asking the user to say continue. This restores work records, not hidden conversation context."""
+        """Resume a task using progress: current approval policy, pending jobs and latest process observations/output. Saved status/summary/plan may be stale; use progress before claiming a blocker. Follow next_actions in this turn without asking the user to say continue. This restores saved work records."""
         task = self.task(task_id)
         task["jobs"] = self.store.rows(
             "SELECT id AS job_id,tool,status,created,updated FROM jobs WHERE task_id=? ORDER BY created DESC LIMIT 30",
@@ -181,7 +181,7 @@ class TaskTools:
         path: Annotated[str, Field(min_length=1, max_length=4096)] | None = None,
         job_id: str | None = None,
     ) -> dict:
-        """Show current changed files (including new files), lazy per-file diffs, and recent real command outcomes/output. Works for active or completed tasks. Omit job_id to refresh; if review_job is pending, repeat this call with its exact job_id instead of creating another review. Set path to an exact listed file for its preview. Workspace changes may include other work; results are execution history, not a claim that current files passed tests."""
+        """Show current changed files (including new files), lazy per-file diffs, and recent real command outcomes/output. Works for active or completed tasks. Omit job_id to refresh; if review_job is pending, repeat this call with its exact job_id instead of creating another review. Set path to an exact listed file for its preview. Changes cover the current project; execution results record recent command outcomes."""
         task = self.task(task_id)
         if task["kind"] != "coding":
             raise ValueError("Review the coding task created for the registered project")
