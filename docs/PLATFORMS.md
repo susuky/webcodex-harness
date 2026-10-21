@@ -6,12 +6,14 @@
 
 | 項目 | 實際結果 |
 | --- | --- |
-| 完整 pytest 回歸 | 175 passed、13 skipped，195.69 秒 |
+| 本次提交快照的完整 pytest 回歸 | 158 passed、13 skipped，177.53 秒 |
 | Ruff／格式檢查／`git diff --check` | 通過 |
 | 真實 Codex CLI 0.162.1／MCP 子代理 | 兩個 worker 並行：唯讀取得指定內容、可寫建立內容相同的檔案；14.54 秒 |
 | Linux X11／Xvfb 桌面 | 真實 MCP 截圖、Unicode、快捷鍵、點擊、移動、捲動及拖曳通過；13.22 秒 |
 | macOS 桌面 | 已加入 Quartz 權限、Retina 及 Unicode 後端；模擬測試通過，實機待驗證 |
 | Windows 桌面與子代理 | 桌面後端保留；本次沒有 Windows 實機結果 |
+
+提交前以 Git 暫存內容建立獨立目錄，對該快照執行完整 pytest、Ruff 與格式檢查。
 
 子代理測試使用獨立專案與暫存 Server／Runner，透過真正 TCP MCP 執行；不修改正式專案。`WEBCODEX_TEST_SUBAGENTS=1` 明確啟用真實 CLI 與帳號用量測試，重現方式見 [子代理指南](SUBAGENTS.md)。桌面測試使用獨立 Xvfb，沒有操作使用者正在使用的桌面。
 
