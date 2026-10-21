@@ -425,10 +425,14 @@ class Service:
             ):
                 job = await self.call(
                     task["owner"],
-                    "read_process",
+                    "subagent_get" if result.get("agent_id") else "read_process",
                     {
                         "task_id": task["id"],
-                        "process_id": result["process_id"],
+                        **(
+                            {"agent_id": result["agent_id"]}
+                            if result.get("agent_id")
+                            else {"process_id": result["process_id"]}
+                        ),
                         "wait_seconds": 0,
                         "request_id": "watch:" + wait["id"] + ":" + job_id,
                     },
@@ -524,12 +528,13 @@ class Service:
         actions = [job["next_action"] for job in pending if "next_action" in job]
         running = [p for p in activity["process_observations"] if p["status"] == "running"]
         for process in running:
+            agent = process["tool"].startswith("subagent_")
             actions.append(
                 {
-                    "tool": "read_process",
+                    "tool": "subagent_get" if agent else "read_process",
                     "arguments": {
                         "task_id": task["id"],
-                        "process_id": process["process_id"],
+                        "agent_id" if agent else "process_id": process["process_id"],
                         "wait_seconds": 20,
                     },
                 }
@@ -549,10 +554,14 @@ class Service:
         ]
         for process in failed:
             if process["job_id"] != activity["latest_execution"]["job_id"]:
+                agent = process["tool"].startswith("subagent_")
                 actions.append(
                     {
-                        "tool": "read_process",
-                        "arguments": {"task_id": task["id"], "process_id": process["process_id"]},
+                        "tool": "subagent_get" if agent else "read_process",
+                        "arguments": {
+                            "task_id": task["id"],
+                            "agent_id" if agent else "process_id": process["process_id"],
+                        },
                     }
                 )
         questions = self.store.one(
@@ -849,6 +858,10 @@ def create_app(config: ServerConfig):
             "connected, keep following job_get/read_process during this turn. "
             "Ask ordinary clarification directly in the conversation; request_user_input records an "
             "out-of-band CLI question and is not the ChatGPT question UI. "
+            "Use subagent_spawn for focused delegated work when workspace.subagents.enabled is true. "
+            "Start independent workers before waiting, assign distinct files to writing workers, then "
+            "collect final/error with subagent_get or subagent_wait. subagent_cancel stops a worker; "
+            "subagent_list restores this task's worker IDs. Subagents use the Runner's Codex CLI login. "
             "Long calls return job_id; poll job_get for the same job. Command results return process_id; use "
             "read_process/write_stdin instead of launching a duplicate. projects_list reports each project's "
             "approval policy: automatic mode needs no separate local approval. If a job is pending_approval, "

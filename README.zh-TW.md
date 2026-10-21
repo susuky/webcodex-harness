@@ -2,7 +2,7 @@
 
 [English](README.md) | 繁體中文
 
-讓 MCP 用戶端操作你 Ubuntu 或 Windows 電腦上的 repo 與桌面應用程式。Server 管理驗證與任務；Runner 主動連線，在本機執行工具。
+讓 MCP 用戶端操作你電腦上的 repo 與桌面應用程式。Server 管理驗證與任務；Runner 主動連線，在本機執行工具。
 
 ## 功能
 
@@ -10,6 +10,7 @@
 - 延續已儲存的任務、監看程序，並核准敏感操作。
 - 在明確允許的父目錄建立或登記專案，不需要已有任務。
 - 載入專案 skills 與 plugins，保留 MCP 連線狀態。
+- 透過 subagents 分派工作給多個 Codex worker，平行處理、等待結果與取消子任務。
 - 選擇啟用桌面截圖與控制，包含 Unicode 文字輸入。
 - 透過選用的 Playwright MCP plugin 操作網頁、填表、切換分頁及擷取資料。
 
@@ -50,13 +51,17 @@ uv run webcodex runner
 
 桌面工具需安裝選用的 `computer` 依賴並明確授予權限。[桌面操作指南](docs/COMPUTER_USE.md) 涵蓋安裝、既有設定啟用，以及「截圖 → 輸入 → 確認結果」流程。
 
+**Computer use 操作 Runner 所在電腦的桌面。** Server 負責轉送請求與結果；操作目標由任務所屬的 Runner 決定，與開啟 ChatGPT 網頁的電腦無關。要控制 Windows，就在該 Windows 的互動桌面啟動原生 Runner，並選用它登記的專案。
+
+啟用選用的 [平行子代理（subagents）](docs/SUBAGENTS.md) 後，ChatGPT 可以使用啟動、查詢、等待、列表與取消五個專用工具分工，並收回各 worker 的結果。Runner 需有已登入的 Codex CLI；並行上限由 Runner 設定。
+
 瀏覽器工具使用另外安裝的 Node.js／Chrome provider，各任務使用獨立連線與瀏覽器狀態。設定與選用的登入保存見 [瀏覽器操作指南](docs/BROWSER_USE.md)。
 
 ## 權限與限制
 
 - 預設建立專案、命令、Git 寫入、擴充安裝與桌面輸入需操作員核准。個人專案可選用 [日常開發免逐筆核准](docs/APPROVALS.md)；待核准工作會附上適用指令與服務識別。
 - Shell、plugin 與桌面輸入使用 Runner 帳號權限，**沒有 OS sandbox**。桌面存取涵蓋共用畫面，可能包含專案外內容。設定與狀態應保持私有；截圖與輸入文字目前不會自動到期清除。
-- Ubuntu X11 控制已在虛擬桌面測試；Windows 互動桌面仍待驗收。Wayland／WSLg、鎖定桌面與 macOS 尚不支援。
+- Ubuntu X11 控制已在虛擬桌面測試；macOS 與 Windows 已有桌面後端，互動桌面仍待各平台實機驗收。Wayland／WSLg 與鎖定桌面尚不支援。
 
 ## 文件
 

@@ -23,6 +23,7 @@ from .extensions import Extensions
 from .filesystem import MAX_FILE, Workspace, sha256
 from .processes import Processes, environment, executable
 from .store import new_id
+from .subagents import Subagents
 
 PathArg = Annotated[str, Field(min_length=1, max_length=4096)]
 ShortText = Annotated[str, Field(max_length=16000)]
@@ -44,11 +45,13 @@ class Runtime:
         task_id: str,
         job_id: str,
         computer: Computer,
+        subagents: Subagents,
     ):
         self.config, self.workspace = config, workspace
         self.processes, self.extensions = processes, extensions
         self.task_id, self.job_id = task_id, job_id
         self.computer = computer
+        self.subagents = subagents
 
     async def _run(
         self,
@@ -58,12 +61,17 @@ class Runtime:
         *,
         env: dict[str, str] | None = None,
     ) -> str:
+        if sys.platform == "darwin" and cwd == self.workspace.root:
+            raise ValueError(
+                "Structured Git/patch helpers are unavailable on macOS until pinned "
+                "working-directory support is implemented; desktop tools remain available"
+            )
         argv = [executable(argv[0], self.config), *argv[1:]]
         root = (
             self.workspace.directory() if cwd == self.workspace.root else contextlib.nullcontext()
         )
         with root as directory:
-            if directory is not None and os.name != "nt":
+            if directory is not None and sys.platform == "linux":
                 cwd = Path(f"/proc/{os.getpid()}/fd/{directory}")
             process = await self.processes.start(new_id(), self.task_id, argv, cwd, 120, env=env)
             if stdin is not None:
@@ -129,9 +137,14 @@ class Runtime:
                     "node",
                     "npm",
                     "docker",
+                    "codex",
                 ]
             },
             "shell_is_os_sandboxed": False,
+            "subagents": {
+                "enabled": self.config.subagents_enabled,
+                "max_concurrent": self.config.max_subagents,
+            },
             "computer_permissions": sorted(
                 self.config.permissions & {"computer_observe", "computer_control"}
             ),
@@ -568,6 +581,64 @@ class Runtime:
         """List this task's recent process IDs and actual execution states."""
         return {"processes": self.processes.list(self.task_id)}
 
+    @tool("execute")
+    async def subagent_spawn(
+        self,
+        name: Annotated[str, Field(min_length=1, max_length=100)],
+        prompt: Annotated[str, Field(min_length=1, max_length=64000)],
+        cwd: PathArg = ".",
+        write: bool = False,
+        timeout_seconds: Annotated[int, Field(ge=1, le=86400)] = 1800,
+    ) -> dict:
+        """Delegate a focused task to a real Codex worker and return its durable agent_id immediately. Spawn several agents before waiting to work in parallel. Requires Runner subagents_enabled and an existing Codex CLI login. Workers use a read-only sandbox by default; write=true permits workspace edits. Give writing workers distinct files; include relevant AGENTS.md instructions, parent constraints and context in prompt because project configuration/instructions are not automatically inherited. Collect final/error with subagent_get or subagent_wait; retry the same request_id after a disconnect instead of creating a duplicate."""
+        directory = self.workspace.path(cwd, directory=True)
+        workspace = Workspace(directory)
+        # Recheck the registered root after resolving the optional working directory.
+        with self.workspace.directory():
+            return await self.subagents.spawn(
+                self.job_id,
+                self.task_id,
+                workspace,
+                prompt,
+                name,
+                write,
+                min(timeout_seconds, self.config.max_process_seconds),
+            )
+
+    @tool()
+    async def subagent_get(
+        self,
+        agent_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")],
+        wait_seconds: Annotated[float, Field(ge=0, le=30)] = 0,
+    ) -> dict:
+        """Read this task's worker state and final answer, optionally waiting for completion. completed requires a successful Codex turn with a final answer. failed, cancelled, timed_out and interrupted require inspection; they are not successful delegation. Results remain readable after Runner restart."""
+        await self.subagents.wait([agent_id], self.task_id, wait_seconds)
+        return self.subagents.get(agent_id, self.task_id)
+
+    @tool()
+    async def subagent_list(self) -> dict:
+        """List this task's recent workers with status and bounded answer previews. final_truncated=true means use subagent_get for the full answer. Agents from other tasks are not accessible."""
+        return {"agents": self.subagents.list(self.task_id)}
+
+    @tool()
+    async def subagent_wait(
+        self,
+        agent_ids: Annotated[
+            list[Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]],
+            Field(min_length=1, max_length=16),
+        ],
+        wait_seconds: Annotated[float, Field(ge=0, le=30)] = 20,
+    ) -> dict:
+        """Wait until any selected worker finishes or the bounded wait expires, then return every selected worker's state and answer. final_truncated=true means use subagent_get for the full answer. timed_out describes this wait, not worker failure; running workers continue. Spawn independent agents before waiting and keep observing existing agent_ids."""
+        return await self.subagents.wait(agent_ids, self.task_id, wait_seconds)
+
+    @tool("write")
+    async def subagent_cancel(
+        self, agent_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]
+    ) -> dict:
+        """Stop one worker and its process group, preserving its output and final answer if available. This does not roll back any workspace edits."""
+        return await self.subagents.cancel(agent_id, self.task_id)
+
     @tool()
     async def view_image(self, path: PathArg) -> dict:
         """Read a PNG, JPEG, GIF or WebP from the project as native MCP image content, with a 1 MiB input limit."""
@@ -595,19 +666,19 @@ class Runtime:
 
     @tool("computer_observe")
     async def computer_status(self) -> dict:
-        """Check this Runner's desktop backend and desktop dimensions without capturing pixels. Requires explicit computer_observe permission; available reports desktop backend detection. Ubuntu X11 and native Windows only."""
+        """Check this Runner's desktop backend and dimensions without capturing pixels. Requires computer_observe; supports Ubuntu X11, macOS and native Windows. available reports backend detection; use computer_screenshot to verify capture."""
         return await asyncio.to_thread(self.computer.status)
 
     @tool("computer_observe")
     async def computer_screenshot(
         self, max_dimension: Annotated[int, Field(ge=320, le=2560)] = 1600
     ) -> dict:
-        """Capture the shared desktop as a native MCP JPEG (at most 1 MiB). This can show data outside the project. Returns a snapshot_id valid for one input operation within 5 minutes; a newer screenshot on this Runner invalidates it. Coordinates for input use source_width/source_height, not the resized image width/height. Images are retained in private job journals."""
+        """Capture the shared desktop as a native MCP JPEG (at most 1 MiB). This can show data outside the project. Returns a snapshot_id valid for one input operation within 5 minutes; a newer screenshot on this Runner invalidates it. Coordinates use source_width/source_height; macOS uses logical display points, with Retina capture normalized to that space. Images are retained in private job journals."""
         return await asyncio.to_thread(self.computer.screenshot, self.task_id, max_dimension)
 
     @tool("computer_control")
     async def computer_move(self, snapshot_id: str, x: Offset, y: Offset) -> dict:
-        """Move the pointer to source-pixel coordinates on the desktop, using a fresh screenshot from this task. Consumes snapshot_id. The desktop is shared with the human and other applications, not isolated to the project."""
+        """Move the pointer using coordinates in source_width/source_height from a fresh screenshot. macOS uses logical display points. Consumes snapshot_id. The desktop is shared with the human and other applications."""
         return await asyncio.to_thread(
             self.computer.perform, self.task_id, snapshot_id, "move", x=x, y=y
         )
@@ -689,7 +760,7 @@ class Runtime:
     async def computer_type(
         self, snapshot_id: str, text: Annotated[str, Field(min_length=1, max_length=4096)]
     ) -> dict:
-        """Type printable Unicode into the focused application without using the clipboard. Ubuntu requires xdotool; Windows uses Unicode SendInput. Use computer_key separately for Enter/Tab. Consumes a fresh snapshot_id from this task. Text is retained in private job arguments; do not use for secrets. Success reports input dispatch; confirm the resulting text in the application."""
+        """Type printable Unicode into the focused application without using the clipboard. Ubuntu uses xdotool, macOS Quartz events, and Windows Unicode SendInput. Use computer_key separately for Enter/Tab. Consumes a fresh snapshot_id from this task. Text is retained in private job arguments; do not use for secrets. Confirm the resulting text in the application."""
         return await asyncio.to_thread(
             self.computer.perform, self.task_id, snapshot_id, "text", text=text
         )

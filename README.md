@@ -2,7 +2,7 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-Let an MCP client work with repositories and desktop applications on your Ubuntu or Windows machine. A Server manages authentication and tasks; outbound Runners execute tools locally.
+Let an MCP client work with repositories and desktop applications on your machine. A Server manages authentication and tasks; outbound Runners execute tools locally.
 
 ## What it does
 
@@ -10,6 +10,7 @@ Let an MCP client work with repositories and desktop applications on your Ubuntu
 - Resume saved tasks, monitor processes and approve sensitive operations.
 - Create or register projects under explicitly allowed parent directories, even with no existing task.
 - Load project skills and plugins with persistent MCP connections.
+- Delegate tasks to multiple Codex subagents, run them in parallel, collect results and cancel workers.
 - Optionally capture and control the desktop, including Unicode text input.
 - Add browser navigation, forms, tabs and page data extraction with the optional Playwright MCP plugin.
 
@@ -50,13 +51,17 @@ Connect to `http://127.0.0.1:8765/mcp` using the Bearer token in the generated `
 
 Desktop tools require the optional `computer` dependencies and explicit permissions. Follow [Computer use](docs/COMPUTER_USE.md) for installation, enabling an existing setup and the screenshot → input → verification workflow.
 
+**Computer use controls the desktop on the Runner's machine.** The Server relays requests and results; the task's Runner determines the target computer, independently of the computer displaying ChatGPT. To control Windows, start a native Runner in that Windows interactive desktop and select a project registered by it.
+
+Optional [parallel subagents](docs/SUBAGENTS.md) give ChatGPT five dedicated tools to spawn, inspect, wait for, list and cancel Codex CLI workers. The Runner needs an authenticated Codex CLI; its configuration sets the concurrency limit.
+
 Browser tools use a separately installed Node.js/Chrome provider, with isolated sessions per task. Follow [Browser use](docs/BROWSER_USE.md) for setup and optional login persistence.
 
 ## Permissions and limits
 
 - Project creation, commands, Git writes, extension installation and desktop input require operator approval by default. Personal projects can opt into [automatic development operations](docs/APPROVALS.md); pending jobs include the correct approval command and service identity.
 - Shells, plugins and desktop input use the Runner account's permissions, with **no OS sandbox**. Desktop access covers the shared screen, including content outside the project. Keep configuration and state private; screenshots and typed text have no automatic expiry.
-- Ubuntu X11 control has been tested on a virtual desktop. Interactive Windows desktop validation is pending; Wayland/WSLg, locked desktops and macOS are unsupported.
+- Ubuntu X11 control has been tested on a virtual desktop. macOS and Windows desktop backends are implemented; interactive validation on those platforms is pending. Wayland/WSLg and locked desktops are unsupported.
 
 ## Guides
 

@@ -13,7 +13,7 @@ import pytest
 from test_harness import Harness, call
 
 from webcodex.catalog import OutcomeUnknown
-from webcodex.computer import Computer, windows_desktop, windows_text
+from webcodex.computer import Computer, macos_desktop, macos_text, windows_desktop, windows_text
 from webcodex.config import (
     COMPUTER_PERMISSIONS,
     RunnerConfig,
@@ -69,6 +69,147 @@ def test_headless_and_wayland_report_unavailable(monkeypatch):
     monkeypatch.setenv("DISPLAY", ":1")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     assert "Wayland" in Computer().status()["reason"]
+
+
+def test_macos_permissions_session_and_missing_dependencies(monkeypatch):
+    quartz = SimpleNamespace(
+        CGSessionCopyCurrentDictionary=Mock(return_value={"kCGSessionOnConsoleKey": True}),
+        CGPreflightScreenCaptureAccess=Mock(return_value=True),
+        CGPreflightPostEventAccess=Mock(return_value=False),
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    assert macos_desktop() is quartz
+    with pytest.raises(ValueError, match="Accessibility"):
+        macos_desktop(control=True)
+    quartz.CGPreflightPostEventAccess.return_value = True
+    assert macos_desktop(control=True) is quartz
+    quartz.CGPreflightScreenCaptureAccess.return_value = False
+    with pytest.raises(ValueError, match="Screen Recording"):
+        macos_desktop()
+    quartz.CGPreflightScreenCaptureAccess.return_value = True
+    for session in (
+        None,
+        {"kCGSessionOnConsoleKey": False},
+        {"kCGSessionOnConsoleKey": True, "CGSSessionScreenIsLocked": True},
+    ):
+        quartz.CGSessionCopyCurrentDictionary.return_value = session
+        with pytest.raises(ValueError, match="active, unlocked"):
+            macos_desktop()
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "Quartz", None)
+    assert "uv sync --extra computer" in Computer().status()["reason"]
+
+
+def test_macos_uses_display_points_and_normalizes_retina_capture(monkeypatch):
+    computer = Computer()
+    api, grab = fake_desktop(monkeypatch, computer)
+    image = pytest.importorskip("PIL.Image")
+    quartz = SimpleNamespace(
+        CGMainDisplayID=Mock(return_value=1),
+        CGDisplayBounds=Mock(
+            return_value=SimpleNamespace(size=SimpleNamespace(width=1920, height=1080))
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    api.size.return_value = (3840, 2160)
+    monkeypatch.setattr(computer, "_size", Computer._size)
+    assert Computer._size(api) == (1920, 1080)
+    grab.grab.return_value = image.new("RGB", (3840, 2160), "white")
+    status = computer.status()
+    assert status["backend"] == "macos" and status["scope"] == "primary_display"
+    snapshot = computer.screenshot("task", 960)
+    assert (snapshot["source_width"], snapshot["source_height"]) == (1920, 1080)
+    assert (snapshot["width"], snapshot["height"]) == (960, 540)
+    grab.grab.assert_called_once_with(bbox=(0, 0, 1920, 1080))
+    grab.grab.return_value = image.new("RGB", (3840, 2000), "white")
+    with pytest.raises(ValueError, match="geometry changed"):
+        computer.screenshot("task", 960)
+
+
+def test_macos_input_permission_precedes_snapshot_consumption(monkeypatch):
+    computer = Computer()
+    api, _ = fake_desktop(monkeypatch, computer)
+    quartz = SimpleNamespace(
+        CGSessionCopyCurrentDictionary=Mock(return_value={"kCGSessionOnConsoleKey": True}),
+        CGPreflightScreenCaptureAccess=Mock(return_value=True),
+        CGPreflightPostEventAccess=Mock(return_value=False),
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    snapshot_id = computer.screenshot("task", 960)["snapshot_id"]
+    with pytest.raises(ValueError, match="Accessibility"):
+        computer.perform("task", snapshot_id, "click", x=10, y=20, button="left", clicks=1)
+    api.click.assert_not_called()
+    assert computer.snapshot is not None
+    quartz.CGPreflightPostEventAccess.return_value = True
+    computer.perform("task", snapshot_id, "click", x=10, y=20, button="left", clicks=1)
+    api.click.assert_called_once_with(10, 20, clicks=1, interval=0.1, button="left")
+    assert computer.snapshot is None
+
+
+def test_macos_unicode_packets_and_key_release_after_dispatch_failure(monkeypatch):
+    events = []
+
+    def create(source, key, down):
+        event = {"down": down}
+        events.append(event)
+        return event
+
+    quartz = SimpleNamespace(
+        CGEventCreateKeyboardEvent=Mock(side_effect=create),
+        CGEventSetFlags=Mock(side_effect=lambda event, flags: event.update(flags=flags)),
+        CGEventKeyboardSetUnicodeString=Mock(
+            side_effect=lambda event, length, text: event.update(length=length, text=text)
+        ),
+        CGEventPost=Mock(),
+        kCGHIDEventTap=0,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    macos_text("中😀")
+    assert [(e["down"], e["length"], e["text"]) for e in events] == [
+        (True, 1, "中"),
+        (False, 1, "中"),
+        (True, 2, "😀"),
+        (False, 2, "😀"),
+    ]
+    assert [call.args[1] for call in quartz.CGEventPost.call_args_list] == events
+    assert all(event["flags"] == 0 for event in events)
+    quartz.CGEventPost.reset_mock()
+    quartz.CGEventPost.side_effect = [RuntimeError("dispatch failure"), None]
+    with pytest.raises(RuntimeError, match="dispatch failure"):
+        macos_text("x")
+    assert quartz.CGEventPost.call_count == 2
+    assert quartz.CGEventPost.call_args.args[1]["down"] is False
+    quartz.CGEventPost.reset_mock()
+    quartz.CGEventCreateKeyboardEvent.side_effect = None
+    quartz.CGEventCreateKeyboardEvent.return_value = None
+    with pytest.raises(OutcomeUnknown, match="could not create"):
+        macos_text("x")
+    quartz.CGEventPost.assert_not_called()
+
+
+def test_macos_text_failure_consumes_snapshot_without_retry(monkeypatch):
+    computer = Computer()
+    fake_desktop(monkeypatch, computer)
+    quartz = SimpleNamespace(
+        CGSessionCopyCurrentDictionary=Mock(return_value={"kCGSessionOnConsoleKey": True}),
+        CGPreflightScreenCaptureAccess=Mock(return_value=True),
+        CGPreflightPostEventAccess=Mock(return_value=True),
+        CGEventCreateKeyboardEvent=Mock(side_effect=["down", "up"]),
+        CGEventSetFlags=Mock(),
+        CGEventKeyboardSetUnicodeString=Mock(),
+        CGEventPost=Mock(side_effect=[OSError("dispatch failure"), None]),
+        kCGHIDEventTap=0,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    snapshot_id = computer.screenshot("task", 960)["snapshot_id"]
+    with pytest.raises(OutcomeUnknown):
+        computer.perform("task", snapshot_id, "text", text="中")
+    assert computer.snapshot is None
+    assert quartz.CGEventPost.call_count == 2
+    quartz.CGEventPost.assert_called_with(0, "up")
 
 
 def test_windows_desktop_rejects_services_disconnected_and_protected_sessions(monkeypatch):

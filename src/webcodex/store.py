@@ -16,12 +16,23 @@ PROCESS_STATUSES = {"running", "completed", "failed", "timed_out", "interrupted"
 ResultIdentifier = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(identifier)]
 
 
+class SubagentObservation(StrictModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    agent_id: ResultIdentifier
+    status: Literal["running", "completed", "failed", "timed_out", "interrupted", "cancelled"]
+    exit_code: Annotated[int, Field(ge=-(2**63), le=2**63 - 1)] | None = None
+
+
 class RunnerResult(StrictModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
     registered: bool = False
     project: Annotated[str, Field(min_length=1, max_length=129)] = ""
     process_id: ResultIdentifier = ""
+    agent_id: ResultIdentifier = ""
+    agents: Annotated[list[SubagentObservation], Field(max_length=100)] = Field(
+        default_factory=list
+    )
     status: str = ""
     exit_code: Annotated[int, Field(ge=-(2**63), le=2**63 - 1)] | None = None
     has_more: bool = False
@@ -41,6 +52,8 @@ class RunnerResult(StrictModel):
             and self.status not in PROCESS_STATUSES
         ):
             raise ValueError("A process result requires a valid process status")
+        if self.agent_id and self.status not in PROCESS_STATUSES:
+            raise ValueError("A subagent result requires a valid status")
         return self
 
 
@@ -99,6 +112,12 @@ class Store:
             CREATE TABLE IF NOT EXISTS questions (
                 id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
                 question TEXT NOT NULL, answer TEXT, created REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS agent_observations (
+                task_id TEXT NOT NULL REFERENCES tasks(id), agent_id TEXT NOT NULL,
+                job_id TEXT NOT NULL REFERENCES jobs(id), status TEXT NOT NULL,
+                exit_code INTEGER, created REAL NOT NULL, updated REAL NOT NULL,
+                PRIMARY KEY(task_id,agent_id)
             );
         """)
         # Keep added columns and their backfill atomic across interrupted startup.
@@ -444,6 +463,23 @@ class Store:
                 row["next_step"] += (
                     " Follow next_action in this turn; never restart to obtain output."
                 )
+        if row["status"] == "succeeded" and result.get("agent_id"):
+            row["outcome"] = result["status"]
+            row["next_step"] = (
+                "This is a saved subagent observation. Collect final and inspect error/status; "
+                "a successful spawn job does not mean the worker finished."
+            )
+            if result["status"] == "running":
+                row["next_action"] = {
+                    "tool": "subagent_get",
+                    "arguments": {
+                        "task_id": row["task_id"],
+                        "agent_id": result["agent_id"],
+                        "wait_seconds": 20,
+                    },
+                }
+            else:
+                row.pop("next_action", None)
         return row
 
     def task_activity(self, task: dict) -> dict:
@@ -466,17 +502,29 @@ class Store:
             )
         ]
         processes = self.rows(
-            "WITH observations AS (SELECT id AS job_id,updated AS observed_at,"
+            "WITH observations AS (SELECT id AS job_id,tool,updated AS observed_at,"
             "process_id,process_status AS status,process_exit_code AS exit_code,"
             "min(created) OVER (PARTITION BY process_id) AS started_at,"
             "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
             "FROM jobs WHERE task_id=? AND status='succeeded' "
             "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
+            "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
+            "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id) "
             "AND process_id IS NOT NULL) "
-            "SELECT job_id,observed_at,started_at,process_id,status,exit_code FROM observations "
+            "SELECT job_id,tool,observed_at,started_at,process_id,status,exit_code FROM observations "
             "WHERE rank=1 ORDER BY started_at DESC,process_id LIMIT 100",
             (task_id,),
         )
+        processes.extend(
+            self.rows(
+                "SELECT job_id,'subagent_get' AS tool,updated AS observed_at,created AS started_at,"
+                "agent_id AS process_id,status,exit_code FROM agent_observations "
+                "WHERE task_id=? ORDER BY created DESC,agent_id LIMIT 100",
+                (task_id,),
+            )
+        )
+        processes.sort(key=lambda process: (-process["started_at"], process["process_id"]))
+        processes = processes[:100]
         return {
             "summary_stale": bool(last["updated"] and last["updated"] > task["updated"]),
             "last_job_update": last["updated"],
@@ -548,6 +596,7 @@ class Store:
             return  # Acknowledgement retry; never rewrite an accepted result.
         projection = completion.result
         observation = bool(projection.process_id and projection.status)
+        observed = time.time()
         with self.db:
             self.db.execute(
                 "UPDATE jobs SET status=?,result=?,process_id=?,process_status=?,process_exit_code=?,"
@@ -558,10 +607,30 @@ class Store:
                     projection.process_id if observation else None,
                     projection.status if observation else None,
                     projection.exit_code if observation else None,
-                    time.time(),
+                    observed,
                     job_id,
                 ),
             )
+            if status == "succeeded" and job["tool"].startswith("subagent_"):
+                agents = projection.agents
+                if projection.agent_id:
+                    agents = [SubagentObservation.model_validate(result, strict=True)]
+                for agent in agents:
+                    self.db.execute(
+                        "INSERT INTO agent_observations VALUES (?,?,?,?,?,?,?) "
+                        "ON CONFLICT(task_id,agent_id) DO UPDATE SET job_id=excluded.job_id,"
+                        "status=excluded.status,exit_code=excluded.exit_code,updated=excluded.updated "
+                        "WHERE agent_observations.status='running' OR excluded.status!='running'",
+                        (
+                            job["task_id"],
+                            agent.agent_id,
+                            job_id,
+                            agent.status,
+                            agent.exit_code,
+                            job["created"],
+                            observed,
+                        ),
+                    )
             self.event(job["task_id"], "job." + status, {"job_id": job_id})
 
     def approve(self, job_id: str, allow: bool) -> dict:

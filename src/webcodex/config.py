@@ -174,6 +174,8 @@ class RunnerConfig(StrictModel):
     permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
     max_concurrent_jobs: int = Field(default=4, ge=1, le=32)
     max_processes: int = Field(default=16, ge=1, le=128)
+    subagents_enabled: bool = False
+    max_subagents: int = Field(default=4, ge=1, le=16)
     max_output_bytes: int = Field(default=8 * 1024 * 1024, ge=4096, le=128 * 1024 * 1024)
     max_process_seconds: int = Field(default=3600, ge=1, le=86400)
     environment: dict[str, str] = Field(default_factory=dict)

@@ -18,6 +18,7 @@ from .processes import Processes
 from .projects import PROJECT_OPERATIONS, ProjectOperations, restore_projects, root_inventory
 from .runtime import Runtime
 from .store import new_id
+from .subagents import Subagents
 
 logger = logging.getLogger(__name__)
 DEFINITIONS = definitions(Runtime, remote=True)
@@ -64,6 +65,7 @@ class Runner:
             self.lock_file.close()
             raise
         self.processes = Processes(config)
+        self.subagents = Subagents(config, self.processes)
         self.computer = Computer()
         self.extensions = {project: Extensions(config, project) for project in config.projects}
         self.locks = {project: asyncio.Lock() for project in config.projects}
@@ -146,6 +148,7 @@ class Runner:
                     job["task_id"],
                     job_id,
                     self.computer,
+                    self.subagents,
                 )
                 if definition.permission in {"write", "git_write", "extensions"}:
                     async with self.locks[project]:

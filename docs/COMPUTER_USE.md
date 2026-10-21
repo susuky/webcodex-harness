@@ -1,6 +1,8 @@
-# Computer use：Ubuntu 與 Windows
+# Computer use：Ubuntu、macOS 與 Windows
 
-提供八個 MCP 工具，沿用 Server／Runner 的驗證、核准、持久 job 與重試去重。Ubuntu 使用 X11、PyAutoGUI 與 xdotool；Windows 使用 PyAutoGUI 與 Unicode `SendInput`；截圖使用 Pillow。
+提供八個 MCP 工具，沿用 Server／Runner 的驗證、核准、持久 job 與重試去重。三個平台皆使用 PyAutoGUI 與 Pillow；Ubuntu 使用 X11 與 xdotool，macOS 使用 Quartz Unicode 事件，Windows 使用 Unicode `SendInput`。
+
+實際操作的是任務所屬 **Runner 電腦的桌面**。Server 只轉送請求與結果；ChatGPT 網頁開在哪台電腦，不會改變操作目標。例如 Server 在 Linux、Runner 在 Windows 時，工具操作 Windows 桌面。
 
 ## 啟用
 
@@ -18,6 +20,15 @@ Windows 在已登入且解鎖的桌面開啟 PowerShell：
 uv sync --locked --extra computer
 uv run --extra computer webcodex init --project 'C:\src\my-repo' --computer-use
 ```
+
+macOS 在已登入且解鎖的桌面開啟 Terminal，使用 macOS 10.15 以上版本：
+
+```bash
+uv sync --locked --extra computer
+uv run --extra computer webcodex init --project "$HOME/src/my-repo" --computer-use
+```
+
+在「系統設定 → 隱私權與安全性」中，將「螢幕錄製」授予啟動 Runner 的應用程式；需要滑鼠或鍵盤輸入時，再授予「輔助使用」。例如從 Terminal 啟動，就授予 Terminal。調整後重新啟動該應用程式與 Runner。選用依賴已包含 PyAutoGUI 所需的 PyObjC／Quartz；不需要另外安裝桌面控制套件。
 
 `init` 僅用於新安裝；Server 仍需在另一個終端機執行 `uv run webcodex serve`。桌面 Runner 與環境檢查使用：
 
@@ -51,11 +62,11 @@ uv run --extra computer webcodex runner
 | `computer_key` | `snapshot_id`、`keys` | 單鍵或最多四鍵組合，如 `["ctrl","a"]`、`["enter"]` |
 | `computer_type` | `snapshot_id`、`text` | 輸入最多 4096 字元的可列印 Unicode，不讀寫剪貼簿 |
 
-狀態與截圖需要 `computer_observe`，六種輸入需要 `computer_control`。輸入工具均使用新的截圖 ID；`computer_key` 使用 PyAutoGUI 小寫鍵名。換行與 Tab 請明確呼叫按鍵工具，不混入文字。`computer_type` 在 Ubuntu 約每字 12 ms，最長 60 秒逾時；應用程式須持續處理事件。
+狀態與截圖需要 `computer_observe`，六種輸入需要 `computer_control`。輸入工具均使用新的截圖 ID；`computer_key` 使用 PyAutoGUI 小寫鍵名。macOS 快捷鍵使用 `command`，例如 `["command","a"]`。換行與 Tab 請明確呼叫按鍵工具，不混入文字。`computer_type` 在 Ubuntu 約每字 12 ms，最長 60 秒逾時；應用程式須持續處理事件。
 
 標準流程為：**截圖 → 一次操作 → 新截圖確認**。`snapshot_id` 綁定 task、畫面尺寸及 Runner 記憶體中的最新截圖，五分鐘後失效。任何 task 取得新截圖、已送出輸入或 Runner 重啟，都會讓舊 ID 失效。核准等待超過期限時，需重新觀察並建立新操作。
 
-座標採 `source_width`／`source_height`；若圖片縮小，換算為 `x = 圖片上的 x × source_width / width`，`y` 同理，再取整數。Ubuntu 觀察整個 X11 screen；Windows 限主螢幕。不支援指定視窗、螢幕編號或自動判讀控制項。
+座標採 `source_width`／`source_height`；若圖片縮小，換算為 `x = 圖片上的 x × source_width / width`，`y` 同理，再取整數。Ubuntu 觀察整個 X11 screen；macOS 與 Windows 限主螢幕。macOS 使用滑鼠座標的邏輯尺寸，Retina 截圖會先轉為同一尺寸，再依 `max_dimension` 縮小。不支援指定視窗、螢幕編號或自動判讀控制項。
 
 CLI 範例：將 `{"task_id":"TASK_ID"}` 存入 UTF-8 `args.json` 後執行：
 
@@ -86,9 +97,11 @@ uv run webcodex call computer_click --arguments '@args.json'
 | 環境 | 範圍 |
 | --- | --- |
 | Ubuntu X11／Xvfb | 已有真實 MCP 桌面測試，包含繁體中文與六種輸入 |
+| macOS | 已實作權限檢查、主螢幕截圖、Retina 座標與 Quartz Unicode 輸入；已加入模擬後端測試，尚未執行 Mac 桌面實測。結構化 Git／patch helper 在完成目錄綁定支援前拒絕啟動 |
 | Windows 原生 | 已實作互動桌面檢查與輸入後端；本次未取得 Windows 桌面實機證據 |
 | Windows SSH／服務／斷線 RDP／鎖定或 UAC 桌面 | 不支援；請在登入者的正常桌面啟動 Runner |
-| Wayland／WSLg／macOS | 不支援，後端拒絕啟用；控制 Windows 桌面請使用原生 Windows Runner |
+| macOS 未登入主控台或鎖定桌面 | 後端拒絕啟用；請解鎖並從該桌面啟動 Runner |
+| Wayland／WSLg | 不支援，後端拒絕啟用；控制 Windows 桌面請使用原生 Windows Runner |
 | 多螢幕、混合 DPI、遠端桌面切換 | 尚未驗收 |
 
 `doctor.computer.available` 表示後端與尺寸查詢可用。接著呼叫截圖與輸入工具，確認權限和目標程式的實際行為。
@@ -112,6 +125,12 @@ Windows 在獨立測試帳號、解鎖的互動桌面執行：
 $env:WEBCODEX_TEST_DESKTOP = '1'
 uv run --extra computer pytest -q tests/test_computer_live.py
 Remove-Item Env:WEBCODEX_TEST_DESKTOP
+```
+
+macOS 使用含 Tk 的 Python，在獨立測試帳號、解鎖的桌面授予上述權限後執行同一測試：
+
+```bash
+WEBCODEX_TEST_DESKTOP=1 uv run --extra computer pytest -q tests/test_computer_live.py
 ```
 
 可另設 `WEBCODEX_TEST_SCREENSHOT` 為輸出 JPEG 的絕對路徑。一般 `pytest` 不會操作真實桌面；權限、snapshot、去重、輸入清理及 Windows 封包測試獨立執行。

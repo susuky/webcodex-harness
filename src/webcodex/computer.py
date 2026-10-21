@@ -15,6 +15,51 @@ from .catalog import OutcomeUnknown
 from .store import new_id
 
 
+def macos_desktop(*, control: bool = False):
+    try:
+        import Quartz
+    except ImportError as error:
+        raise ValueError(
+            "Install macOS computer dependencies with uv sync --extra computer"
+        ) from error
+    session = Quartz.CGSessionCopyCurrentDictionary()
+    if (
+        not session
+        or not session.get("kCGSessionOnConsoleKey")
+        or session.get("CGSSessionScreenIsLocked")
+    ):
+        raise ValueError("Start the macOS Runner in an active, unlocked desktop session")
+    if not Quartz.CGPreflightScreenCaptureAccess():
+        raise ValueError(
+            "Grant Screen Recording to the app launching the macOS Runner in System Settings "
+            "> Privacy & Security, then restart that app"
+        )
+    if control and not Quartz.CGPreflightPostEventAccess():
+        raise ValueError(
+            "Grant Accessibility to the app launching the macOS Runner in System Settings "
+            "> Privacy & Security, then restart that app"
+        )
+    return Quartz
+
+
+def macos_text(text: str) -> None:
+    import Quartz
+
+    for char in text:
+        events = [Quartz.CGEventCreateKeyboardEvent(None, 0, down) for down in (True, False)]
+        if any(event is None for event in events):
+            raise OutcomeUnknown(
+                "macOS could not create text input; inspect the desktop before retrying"
+            )
+        for event in events:
+            Quartz.CGEventSetFlags(event, 0)
+            Quartz.CGEventKeyboardSetUnicodeString(event, len(char.encode("utf-16-le")) // 2, char)
+        try:
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, events[0])
+        finally:
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, events[1])
+
+
 def windows_desktop() -> None:
     import win32con
     import win32service
@@ -90,6 +135,11 @@ class Computer:
     def _size(api) -> tuple[int, int]:
         if sys.platform == "win32":
             return tuple(api.size())
+        if sys.platform == "darwin":
+            import Quartz
+
+            size = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID()).size
+            return int(size.width), int(size.height)
         # PyAutoGUI's X11 size is cached at import. Query the server so display
         # mode changes invalidate existing screenshot coordinates.
         from Xlib.display import Display
@@ -102,15 +152,17 @@ class Computer:
             display.close()
 
     def _load(self):
-        if sys.platform not in {"linux", "win32"}:
-            raise ValueError("Computer use supports Ubuntu X11 and native Windows desktops")
+        if sys.platform not in {"linux", "win32", "darwin"}:
+            raise ValueError("Computer use supports Ubuntu X11, macOS and native Windows desktops")
         if sys.platform == "linux":
             if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
                 raise ValueError("Wayland/WSLg is unsupported; use an Ubuntu on Xorg session")
             if not os.environ.get("DISPLAY"):
                 raise ValueError("No X11 display; start the Runner inside the desktop session")
-        else:
+        elif sys.platform == "win32":
             windows_desktop()
+        else:
+            macos_desktop()
         try:
             if sys.platform == "linux":
                 __import__("tkinter")  # Avoid mouseinfo exiting the Runner when Tk is missing.
@@ -130,11 +182,14 @@ class Computer:
                 width, height = self._size(api)
                 return {
                     "available": True,
-                    "backend": "windows" if sys.platform == "win32" else "x11",
+                    "backend": {"win32": "windows", "darwin": "macos", "linux": "x11"}[
+                        sys.platform
+                    ],
                     "source_width": width,
                     "source_height": height,
-                    "text_input": sys.platform == "win32" or shutil.which("xdotool") is not None,
-                    "scope": "primary_display" if sys.platform == "win32" else "x11_screen",
+                    "text_input": sys.platform in {"win32", "darwin"}
+                    or shutil.which("xdotool") is not None,
+                    "scope": "x11_screen" if sys.platform == "linux" else "primary_display",
                     "screenshot_verified": False,
                 }
             except Exception as error:
@@ -148,6 +203,13 @@ class Computer:
                 bbox=(0, 0, *size),
                 **({"xdisplay": os.environ["DISPLAY"]} if sys.platform == "linux" else {}),
             ).convert("RGB")
+            # macOS captures Retina pixels; mouse input and snapshot coordinates use points.
+            if sys.platform == "darwin" and picture.size != size:
+                if picture.width * size[1] != picture.height * size[0]:
+                    raise ValueError(
+                        "Display geometry changed during capture; take a new screenshot"
+                    )
+                picture = picture.resize(size)
             if picture.size != size or self._size(api) != size:
                 raise ValueError("Display geometry changed during capture; take a new screenshot")
             picture.thumbnail((max_dimension, max_dimension))
@@ -220,6 +282,8 @@ class Computer:
                     )
                 if sys.platform == "linux" and not shutil.which("xdotool"):
                     raise ValueError("Install xdotool on the Ubuntu Runner for Unicode text input")
+            if sys.platform == "darwin":
+                macos_desktop(control=True)
             api.failSafeCheck()
             self.snapshot = None  # One observed state authorizes at most one input operation.
             try:
@@ -251,6 +315,8 @@ class Computer:
                 elif action == "text":
                     if sys.platform == "win32":
                         windows_text(args["text"])
+                    elif sys.platform == "darwin":
+                        macos_text(args["text"])
                     else:
                         # A file/stdin payload cannot become an xdotool command or
                         # process-list argument; no shell or shared clipboard is used.
