@@ -13,6 +13,19 @@
 - 選擇啟用桌面截圖與控制，包含 Unicode 文字輸入。
 - 透過選用的 Playwright MCP plugin 操作網頁、填表、切換分頁及擷取資料。
 
+## ChatGPT 任務卡片
+
+WebCodex 透過 MCP Apps 提供互動式任務卡片。在 ChatGPT 等支援的用戶端呼叫 `task_present(task_id)` 即可開啟。
+
+![ChatGPT 中的 WebCodex 任務卡片，顯示任務進度、修改內容與執行結果](docs/images/chatgpt-task-card.png)
+
+- 查看任務狀態、工作步驟與連線狀態。
+- 檢視專案目前尚未提交的變更，點選檔案查看差異。
+- 查看此任務最近命令的執行結果、結束碼與輸出。
+- 暫停或啟用自動續接。透過 `task_wait` 登記等待的工作有結果後，前景卡片可請求接續對話；暫停自動續接時，已啟動的工作仍會執行。
+
+用戶端需求與續接流程見 [任務卡片與跨回合續接](docs/CHATGPT.md#任務卡片與跨回合續接)。
+
 ## 快速啟動
 
 需要 Python 3.11+、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Git 與 ripgrep（`rg`）。在本專案原始碼目錄執行：

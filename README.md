@@ -13,6 +13,19 @@ Let an MCP client work with repositories and desktop applications on your Ubuntu
 - Optionally capture and control the desktop, including Unicode text input.
 - Add browser navigation, forms, tabs and page data extraction with the optional Playwright MCP plugin.
 
+## Task card in ChatGPT
+
+WebCodex provides an interactive task card through MCP Apps. Open it with `task_present(task_id)` in a compatible client such as ChatGPT.
+
+![WebCodex task card in ChatGPT showing task progress, changes and execution results](docs/images/chatgpt-task-card.png)
+
+- Follow task status, work steps and connection state.
+- Inspect the project's current uncommitted changes and open individual file diffs.
+- View this task's recent command results, exit codes and output.
+- Pause or enable automatic continuation. When work registered with `task_wait` produces a result, the foreground card can request that the conversation continue; already running work continues while automatic continuation is paused.
+
+See [Task cards and continuation](docs/CHATGPT.md#任務卡片與跨回合續接) for client requirements and the continuation workflow.
+
 ## Quick start
 
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/getting-started/installation/), Git and ripgrep (`rg`). Run from this source checkout:
