@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +26,7 @@ from . import __version__
 from .catalog import definitions, tool
 from .config import MAX_PROJECTS, ServerConfig, identifier
 from .continuation import APP_MIME, APP_URI, Continuations, fingerprint
+from .diagnostics import Diagnostics, hash_id
 from .projects import PROJECT_OPERATIONS
 from .runtime import Runtime
 from .store import RunnerCompletion, Store, new_id
@@ -119,7 +122,9 @@ class TaskTools:
                     **(await self.project_roots_list()),
                 }
             task = await self.task_create(project, title or "開發：" + project, request_id)
-        workspace = await self.service.call(self.owner, "workspace_info", {"task_id": task["id"]})
+        workspace = await self.service.call(
+            self.owner, "workspace_info", {"task_id": task["id"]}, window=self.window
+        )
         return {
             "task": await self.task_get(task["id"]),
             "workspace": workspace,
@@ -157,7 +162,7 @@ class TaskTools:
 
     @tool()
     async def task_get(self, task_id: str) -> dict:
-        """Resume a task using progress: current approval policy, pending jobs and latest process observations/output. Saved status/summary/plan may be stale; use progress before claiming a blocker. When only waiting remains, use an available continuation.handoff.next_action and yield; otherwise follow next_actions in this turn without asking the user to say continue. This restores saved work records."""
+        """Resume a task using progress: current approval policy, pending jobs and latest process observations/output. Saved status/summary/plan may be stale. Follow progress.next_actions with their conditions: task_wait hands off waiting, task_present repairs a missing card, and read_process drains output. While independent work remains, continue it and use observation_actions to refresh the same work. Confirm task_wait succeeds before yielding. This restores saved work records."""
         task = self.task(task_id)
         task["jobs"] = self.store.rows(
             "SELECT id AS job_id,tool,status,created,updated FROM jobs WHERE task_id=? ORDER BY created DESC LIMIT 30",
@@ -170,7 +175,7 @@ class TaskTools:
         task["progress"] = self.service.task_progress(task)
         task["service"] = self.store.service
         task["continuation"] = self.service.task_continuation(task, self.window, task["progress"])
-        task["progress"]["next_step"] += self.service.handoff_guidance(task["continuation"])
+        self.service.route_waiting_progress(task["progress"], task["continuation"])
         return task
 
     @tool()
@@ -268,9 +273,16 @@ class TaskTools:
         generation: Annotated[int, Field(ge=1)] | None = None,
         wait_id: str | None = None,
         outcome: Literal["accepted", "unknown"] | None = None,
+        delivery_error: Literal[
+            "timeout", "rpc_error", "host_rejected", "interrupted", "invalid_prepare"
+        ]
+        | None = None,
+        delivery_error_code: Annotated[int, Field(ge=-(2**31), lt=2**31)] | None = None,
     ) -> dict:
         """App-only coordination for the exact task view. It observes existing work, renews the controller, and fences continuation delivery. It cannot execute a command, approve a job, or consume a model wake."""
         task = self.task(task_id)
+        if action != "finish" and (delivery_error is not None or delivery_error_code is not None):
+            raise ValueError("Delivery diagnostics belong to the finish action")
         if "write" not in self.service.config.clients[self.owner].permissions:
             if action not in {"bind", "state"}:
                 raise ValueError("Continuation control is not permitted for a read-only client")
@@ -338,7 +350,7 @@ class TaskTools:
     async def job_get(
         self, job_id: str, wait_seconds: Annotated[float, Field(ge=0, le=20)] = 0
     ) -> dict:
-        """Observe the same durable job after a timeout/disconnect/approval without repeating execution. Read outcome and next_action: job status succeeded only means the tool returned; a process may still be running or have failed. When only waiting remains, use an available continuation.handoff.next_action and yield; otherwise follow next_action in this turn. approved=0 is not a blocker unless status is pending_approval."""
+        """Observe the same durable job after a timeout/disconnect/approval without repeating execution. Read outcome and the conditional next_action: task_wait hands off waiting, task_present repairs the card, and read_process drains output. While independent work remains, continue it and use observation_action to refresh the same execution. Confirm task_wait succeeds before yielding. Job succeeded only means the tool returned; inspect the process outcome. approved=0 is not a blocker unless status is pending_approval."""
         job = self.store.job(job_id, self.owner)
         self.task(job["task_id"])
         deadline = time.monotonic() + wait_seconds
@@ -349,9 +361,7 @@ class TaskTools:
         job["continuation"] = self.service.task_continuation(
             task, self.window, self.service.task_progress(task)
         )
-        guidance = self.service.handoff_guidance(job["continuation"])
-        if guidance:
-            job["next_step"] = job.get("next_step", "") + guidance
+        self.service.route_waiting_job(job)
         return job
 
     @tool("write")
@@ -399,7 +409,10 @@ LOCAL = definitions(TaskTools, remote=False)
 
 class Service:
     def __init__(self, config: ServerConfig):
+        self.app_html = (Path(__file__).parent / "task_app.html").read_text(encoding="utf-8")
+        self.app_uri = f"{APP_URI}/{hashlib.sha256(self.app_html.encode()).hexdigest()[:16]}.html"
         self.config, self.store = config, Store(config.state_dir)
+        self.diagnostics = Diagnostics("server", config.state_dir / "diagnostics")
         self.continuations = Continuations(self.store)
         self.release_pending_approvals()
 
@@ -530,7 +543,84 @@ class Service:
                     }
         if reason:
             handoff.update(state="blocked", reason=reason)
+            if reason in {"not_connected", "expired"}:
+                handoff["next_action"] = {
+                    "tool": "task_present",
+                    "arguments": {"task_id": task["id"]},
+                }
         return {**continuation, "handoff": handoff}
+
+    @staticmethod
+    def route_waiting_job(job: dict):
+        continuation = job["continuation"]
+        handoff = continuation["handoff"]
+        result = job.get("result") or {}
+        waiting = job["status"] in {"queued", "running"} or (
+            job["status"] == "succeeded" and result.get("status") == "running"
+        )
+        action = job.get("next_action")
+        if waiting and action and not result.get("has_more"):
+            if handoff.get("next_action"):
+                job["observation_action"] = action
+                job["next_action"] = {
+                    **handoff["next_action"],
+                    "condition": "only_when_no_independent_work",
+                }
+                job["next_step"] = (
+                    "Inspect the current result. If only waiting remains, follow next_action. "
+                    "For task_wait, confirm success and yield; for task_present, wait for the card "
+                    "to bind and recheck the original job. If independent work remains, continue it "
+                    "and use observation_action when you need another observation."
+                )
+            elif handoff["state"] in {"watching", "ready", "prepared", "accepted", "unknown"}:
+                job["observation_action"] = job.pop("next_action")
+                job["next_step"] = Service.handoff_guidance(continuation).strip()
+            else:
+                job["next_step"] = job.get("next_step", "") + Service.handoff_guidance(continuation)
+        else:
+            job["next_step"] = job.get("next_step", "") + Service.handoff_guidance(continuation)
+
+    @staticmethod
+    def route_waiting_progress(progress: dict, continuation: dict):
+        handoff = continuation["handoff"]
+        actions = progress["next_actions"]
+        only_observations = actions and all(
+            action["tool"] in {"job_get", "read_process", "subagent_get"} for action in actions
+        )
+        output_actions = progress["output_actions"]
+        has_output = bool(output_actions)
+        has_issues = bool(progress["recent_issues"] or progress["recent_process_issues"])
+        if has_output and progress["state"] not in {
+            "waiting_runner",
+            "project_changed",
+            "completed",
+        }:
+            progress["next_actions"] = output_actions + [
+                action for action in actions if action not in output_actions
+            ]
+        if has_issues:
+            progress["next_step"] += (
+                " Inspect recent_issues and recent_process_issues before yielding; "
+                "preserve any existing continuation while diagnosing these results."
+            )
+            return
+        if progress["state"] == "observing" and only_observations and not has_output:
+            if handoff.get("next_action"):
+                progress["observation_actions"] = actions
+                progress["next_actions"] = [
+                    {**handoff["next_action"], "condition": "only_when_no_independent_work"}
+                ]
+                progress["next_step"] = (
+                    "Inspect current results. If only waiting remains, follow next_actions: "
+                    "confirm task_wait succeeds and yield, or present the card and recheck after it binds. "
+                    "If independent work remains, continue it; observation_actions refresh the original work."
+                )
+                return
+            if handoff["state"] in {"watching", "ready", "prepared", "accepted", "unknown"}:
+                progress["observation_actions"], progress["next_actions"] = actions, []
+                progress["next_step"] = Service.handoff_guidance(continuation).strip()
+                return
+        progress["next_step"] += Service.handoff_guidance(continuation)
 
     @staticmethod
     def handoff_guidance(continuation: dict) -> str:
@@ -646,10 +736,18 @@ class Service:
         pending = activity["pending_jobs"]
         actions = [job["next_action"] for job in pending if "next_action" in job]
         running = [p for p in activity["process_observations"] if p["status"] == "running"]
-        for process in running:
+        output_actions = []
+        for process in activity["process_observations"]:
+            observation = self.store.job(process["job_id"], task["owner"])
+            action = observation.get("next_action")
+            if action and (observation.get("result") or {}).get("has_more"):
+                output_actions.append(action)
+            if process["status"] != "running":
+                continue
             agent = process["tool"].startswith("subagent_")
             actions.append(
-                {
+                action
+                or {
                     "tool": "subagent_get" if agent else "read_process",
                     "arguments": {
                         "task_id": task["id"],
@@ -735,10 +833,12 @@ class Service:
             "runner_online": online,
             **activity,
             "recent_issues": issues,
+            "recent_process_issues": failed,
             "unanswered_operator_questions": questions,
             "next_actions": []
             if state in {"waiting_runner", "project_changed", "completed"}
             else actions,
+            "output_actions": output_actions,
         }
 
     def specs(self, owner: str) -> list[types.Tool]:
@@ -751,8 +851,8 @@ class Service:
         for spec in specs:
             if spec.name == "task_present":
                 spec.meta = {
-                    "ui": {"resourceUri": APP_URI},
-                    "openai/outputTemplate": APP_URI,
+                    "ui": {"resourceUri": self.app_uri},
+                    "openai/outputTemplate": self.app_uri,
                     "openai/widgetAccessible": True,
                 }
             elif spec.name == "task_app":
@@ -814,6 +914,77 @@ class Service:
                 allowed.append(job)
         return allowed
 
+    async def traced_call(
+        self,
+        owner: str,
+        name: str,
+        arguments: dict,
+        *,
+        window: str | None = None,
+        diagnostic_context: dict | None = None,
+    ) -> dict:
+        fields = {
+            "trace_id": new_id(),
+            **(diagnostic_context or {}),
+            "tool": name
+            if isinstance(name, str) and name in (LOCAL | REMOTE | PROJECT_OPERATIONS)
+            else "unknown",
+        }
+        if isinstance(arguments, dict):
+            for key in ("task_id", "job_id", "wait_id"):
+                fields[key] = arguments.get(key)
+            if name == "task_app":
+                for key in ("action", "delivery_error", "delivery_error_code"):
+                    fields[key] = arguments.get(key)
+                fields["delivery_outcome"] = arguments.get("outcome")
+        started = time.monotonic()
+        self.diagnostics.record("tool.started", **fields)
+        try:
+            result = await self.call(owner, name, arguments, window=window)
+        except asyncio.CancelledError:
+            self.diagnostics.record(
+                "tool.cancelled", **fields, duration_ms=(time.monotonic() - started) * 1000
+            )
+            raise
+        except Exception as error:
+            self.diagnostics.record(
+                "tool.error",
+                **fields,
+                duration_ms=(time.monotonic() - started) * 1000,
+                exception_type=type(error).__name__,
+            )
+            raise
+        fields["job_id"] = result.get("job_id", fields.get("job_id"))
+        fields["task_id"] = result.get("task_id", fields.get("task_id"))
+        if name in {"task_create", "task_get"}:
+            fields["task_id"] = result.get("id", fields.get("task_id"))
+        wait = (result.get("continuation") or {}).get("wait") or {}
+        fields.update(wait_id=wait.get("id", fields.get("wait_id")), wait_state=wait.get("state"))
+        handoff = (result.get("continuation") or {}).get("handoff") or {}
+        control = result.get("control") or {}
+        fields.update(
+            handoff_state=handoff.get("state"),
+            handoff_reason=handoff.get("reason"),
+            control_bound=control.get("bound"),
+            control_reason=control.get("reason"),
+            controller_generation=control.get("generation"),
+        )
+        payload = result.get("result")
+        payload = payload if isinstance(payload, dict) else {}
+        native = payload.get("mcp_result")
+        native = native if isinstance(native, dict) else {}
+        self.diagnostics.record(
+            "tool.completed",
+            **fields,
+            duration_ms=(time.monotonic() - started) * 1000,
+            outcome=result.get("status", "returned"),
+            process_outcome=payload.get("outcome", payload.get("status")),
+            exit_code=payload.get("exit_code"),
+            is_error=result.get("status") in {"failed", "cancelled", "unknown"}
+            or native.get("isError") is True,
+        )
+        return result
+
     async def call(
         self, owner: str, name: str, arguments: dict, *, window: str | None = None
     ) -> dict:
@@ -867,6 +1038,79 @@ def mcp_result(result: dict) -> types.CallToolResult:
             result["result"]["provider_result"] = converted.structuredContent
     content.insert(0, types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
     return types.CallToolResult(content=content, structuredContent=result, isError=error)
+
+
+class RequestDiagnostics:
+    """Observe ASGI traffic without reading ahead or changing disconnect handling."""
+
+    def __init__(self, app, diagnostics: Diagnostics):
+        self.app, self.diagnostics = app, diagnostics
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope["path"].rstrip("/")
+        routes = {
+            "/mcp",
+            "/healthz",
+            "/api/call",
+            "/api/tools",
+            "/api/runner/register",
+            "/api/runner/poll",
+            "/api/runner/complete",
+            "/api/admin/approvals",
+            "/api/admin/questions",
+        }
+        route = path if path in routes else "unknown"
+        for prefix in ("/api/admin/approvals/", "/api/admin/questions/"):
+            if path.startswith(prefix):
+                route = prefix + ":id"
+        http_id = new_id()
+        scope.setdefault("state", {})["http_id"] = http_id
+        fields = {"http_id": http_id, "route": route, "method": scope["method"]}
+        quiet = route in {"/healthz", "/api/runner/poll"}
+        started = time.monotonic()
+        status, size, disconnected, completed = None, 0, False, False
+        event = "http.completed"
+        if not quiet:
+            self.diagnostics.record("http.started", **fields)
+
+        async def observed_receive():
+            nonlocal disconnected
+            message = await receive()
+            disconnected |= message["type"] == "http.disconnect"
+            return message
+
+        async def observed_send(message):
+            nonlocal status, size, completed
+            await send(message)
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            elif message["type"] == "http.response.body":
+                size += len(message.get("body", b""))
+                completed |= not message.get("more_body", False)
+
+        try:
+            await self.app(scope, observed_receive, observed_send)
+        except asyncio.CancelledError:
+            event = "http.cancelled"
+            raise
+        except Exception as error:
+            event = "http.error"
+            fields["exception_type"] = type(error).__name__
+            raise
+        finally:
+            if event == "http.completed" and disconnected and not completed:
+                event = "http.disconnected"
+            if not quiet or event != "http.completed" or status != 200:
+                self.diagnostics.record(
+                    event,
+                    **fields,
+                    http_status=status,
+                    response_bytes=size,
+                    disconnected=disconnected,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                )
 
 
 class Security:
@@ -964,9 +1208,10 @@ def create_app(config: ServerConfig):
             "On resume, task_get.progress takes precedence over saved status/summary/plan. A stale waiting "
             "summary is not a current blocker. Read latest_execution: job status succeeded only means the "
             "tool returned; outcome/exit_code can show command failure. approved=0 is not pending approval. "
-            "Follow returned next_action/next_actions during the current turn while independent work "
-            "remains. When only waiting remains and continuation.handoff.state is available, call its "
-            "next_action with the exact arguments, then yield. An available handoff is not armed until "
+            "Follow returned next_action/next_actions and their conditions. While independent work "
+            "remains, continue it and use observation_action/observation_actions to refresh existing work. "
+            "When only waiting remains and next_action is task_wait, call it with the exact arguments, "
+            "confirm success, then yield. An available handoff is not armed until "
             "task_wait succeeds. Otherwise keep observing existing jobs in this turn until work finishes "
             "or a real blocker needs user input; do not require repeated 'continue' messages to poll. "
             "Tell the user what is starting before a long operation. While working, give a brief visible "
@@ -1016,20 +1261,25 @@ def create_app(config: ServerConfig):
         if "read" not in service.config.clients[owner].permissions:
             return []
         return [
-            types.Resource(uri=APP_URI, name="task-progress", title="任務進度", mimeType=APP_MIME)
+            types.Resource(
+                uri=service.app_uri, name="task-progress", title="任務進度", mimeType=APP_MIME
+            )
         ]
 
     # The resource has no task data or credentials. All live data goes through authenticated tools.
-    app_html = (Path(__file__).parent / "task_app.html").read_text(encoding="utf-8")
-
     @mcp.read_resource()
     async def read_resource(uri):
         owner = mcp.request_context.request.state.owner
-        if str(uri) != APP_URI or "read" not in service.config.clients[owner].permissions:
+        uri = str(uri)
+        if "read" not in service.config.clients[owner].permissions or (
+            uri != APP_URI and not re.fullmatch(re.escape(APP_URI) + r"/[0-9a-f]{16}\.html", uri)
+        ):
             raise ValueError("Resource not found")
         return [
             ReadResourceContents(
-                app_html, APP_MIME, {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}
+                service.app_html,
+                APP_MIME,
+                {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}},
             )
         ]
 
@@ -1048,24 +1298,48 @@ def create_app(config: ServerConfig):
             )
             else None
         )
+        bridge_trace = meta.get("webcodex/trace_id")
+        diagnostic_context = {
+            "trace_id": bridge_trace
+            if isinstance(bridge_trace, str) and re.fullmatch(r"[0-9a-f]{32}", bridge_trace)
+            else new_id(),
+            "bridge_trace_id": bridge_trace,
+            "http_id": getattr(context.request.state, "http_id", None),
+            "rpc_id_hash": hash_id(context.request_id),
+            "window_hash": window,
+        }
 
         async def heartbeat():
             started = time.monotonic()
             while True:
                 await asyncio.sleep(5)
                 elapsed = time.monotonic() - started
-                await context.session.send_progress_notification(
-                    token,
-                    elapsed,
-                    message=f"正在確認工作狀態，已等候 {int(elapsed)} 秒。",
-                    related_request_id=context.request_id,
-                )
+                try:
+                    await context.session.send_progress_notification(
+                        token,
+                        elapsed,
+                        message=f"正在確認工作狀態，已等候 {int(elapsed)} 秒。",
+                        related_request_id=context.request_id,
+                    )
+                except Exception as error:
+                    service.diagnostics.record(
+                        "progress.error",
+                        **diagnostic_context,
+                        exception_type=type(error).__name__,
+                    )
+                    return
 
         # Progress belongs to this request only; a failed notification must not cancel a durable job.
         progress = asyncio.create_task(heartbeat()) if token is not None else None
         try:
             return mcp_result(
-                await service.call(context.request.state.owner, name, arguments, window=window)
+                await service.traced_call(
+                    context.request.state.owner,
+                    name,
+                    arguments,
+                    window=window,
+                    diagnostic_context=diagnostic_context,
+                )
             )
         except (ValueError, ValidationError) as error:
             return types.CallToolResult(
@@ -1085,9 +1359,14 @@ def create_app(config: ServerConfig):
 
     @asynccontextmanager
     async def lifespan(app):
-        async with manager.run():
-            yield
-        service.store.close()
+        try:
+            async with manager.run():
+                yield
+        finally:
+            try:
+                service.store.close()
+            finally:
+                service.diagnostics.close()
 
     async def health(request):
         return JSONResponse(
@@ -1107,7 +1386,12 @@ def create_app(config: ServerConfig):
     async def api_call(request):
         body = await request.json()
         return JSONResponse(
-            await service.call(request.state.owner, body["name"], body.get("arguments", {}))
+            await service.traced_call(
+                request.state.owner,
+                body["name"],
+                body.get("arguments", {}),
+                diagnostic_context={"http_id": getattr(request.state, "http_id", None)},
+            )
         )
 
     async def register(request: Request):
@@ -1249,4 +1533,5 @@ def create_app(config: ServerConfig):
     app.state.service = service
     app.add_middleware(Security, config=config)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.allowed_hosts)
+    app.add_middleware(RequestDiagnostics, diagnostics=service.diagnostics)
     return app

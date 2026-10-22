@@ -9,7 +9,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from test_harness import SOURCE_ROOT
 
-from webcodex.continuation import APP_MIME, APP_URI, Continuations
+from webcodex.continuation import APP_MIME, Continuations, fingerprint
 
 pytest_plugins = ["test_harness"]
 
@@ -26,10 +26,11 @@ async def test_stdio_task_app_waits_for_same_execution_and_consumes_once(harness
         initialized = await client.initialize()
         assert initialized.capabilities.resources is not None
         specs = {tool.name: tool for tool in (await client.list_tools()).tools}
-        assert specs["task_present"].meta["ui"]["resourceUri"] == APP_URI
+        app_uri = harness.app.state.service.app_uri
+        assert specs["task_present"].meta["ui"]["resourceUri"] == app_uri
         assert specs["task_app"].meta["ui"]["visibility"] == ["app"]
         resource = (await client.list_resources()).resources[0]
-        assert str(resource.uri) == APP_URI and resource.mimeType == APP_MIME
+        assert str(resource.uri) == app_uri and resource.mimeType == APP_MIME
         html = (await client.read_resource(resource.uri)).contents[0]
         assert html.mimeType == APP_MIME and "ui/message" in html.text
 
@@ -131,6 +132,147 @@ async def test_task_view_replacement_restart_and_uncertain_delivery(harness):
             "task_app", {"task_id": task, "view_id": "5" * 32, "action": "bind"}
         )
         assert denied.isError and "Task not found" in denied.content[0].text
+
+
+@pytest.fixture
+async def replaced_views(harness):
+    service = harness.app.state.service
+    task = (
+        await service.call(
+            "owner", "task_create", {"project": "local/project", "title": "View recovery"}
+        )
+    )["id"]
+    first = service.continuations.bind(task, "1" * 32, "window")
+    second = service.continuations.bind(task, "2" * 32, "window")
+    return service, task, first, second
+
+
+async def test_retired_view_cannot_take_an_active_replacement(replaced_views):
+    service, task, _, second = replaced_views
+    continuation = service.continuations
+    before = service.store.one("SELECT * FROM task_controllers WHERE task_id=?", (task,))
+    assert continuation.bind(task, "1" * 32, "window") == {
+        "bound": False,
+        "reason": "replaced_view",
+    }
+    assert service.store.one("SELECT * FROM task_controllers WHERE task_id=?", (task,)) == before
+    assert continuation.action(task, "2" * 32, second["generation"], "window", "state")["bound"]
+    assert not service.store.rows("SELECT id FROM events WHERE kind='continuation.view_recovered'")
+
+
+@pytest.mark.parametrize("window", [None, "", "other-window"])
+async def test_expired_retired_view_still_requires_the_same_window(replaced_views, window):
+    service, task, _, second = replaced_views
+    with service.store.db:
+        service.store.db.execute(
+            "UPDATE task_controllers SET lease_until=0 WHERE task_id=?", (task,)
+        )
+    assert service.continuations.bind(task, "1" * 32, window) == {
+        "bound": False,
+        "reason": "missing_window" if not window else "replaced_view",
+    }
+    controller = service.store.one("SELECT * FROM task_controllers WHERE task_id=?", (task,))
+    assert controller["generation"] == second["generation"]
+    assert controller["lease_until"] == 0
+
+
+async def test_retired_view_recovers_expired_controller_with_a_new_generation(replaced_views):
+    service, task, first, second = replaced_views
+    continuation = service.continuations
+    with service.store.db:
+        service.store.db.execute(
+            "UPDATE task_controllers SET lease_until=0 WHERE task_id=?", (task,)
+        )
+    recovered = continuation.bind(task, "1" * 32, "window")
+    assert recovered == {"bound": True, "generation": second["generation"] + 1}
+    assert continuation.connected(task, "window")
+    for view, retired in [("1" * 32, 0), ("2" * 32, 1)]:
+        assert service.store.one(
+            "SELECT retired FROM task_views WHERE task_id=? AND view_hash=?",
+            (task, fingerprint(view)),
+        ) == {"retired": retired}
+    for view, generation in [("1" * 32, first["generation"]), ("2" * 32, second["generation"])]:
+        for action in ["state", "finish", "unbind"]:
+            with pytest.raises(ValueError, match="no longer the active controller"):
+                continuation.action(task, view, generation, "window", action)
+    assert continuation.bind(task, "1" * 32, "window") == recovered
+    events = service.store.rows("SELECT data FROM events WHERE kind='continuation.view_recovered'")
+    assert [json.loads(event["data"]) for event in events] == [
+        {"generation": recovered["generation"]}
+    ]
+
+
+@pytest.mark.parametrize("state", ["prepared", "accepted", "unknown"])
+async def test_retired_view_recovery_preserves_uncertain_notice_and_consumes_once(
+    replaced_views, state
+):
+    service, task, _, second = replaced_views
+    continuation = service.continuations
+    wait = continuation.arm(task, [], "original-wait")
+    continuation.refresh(wait["id"], wait["jobs"], [], True)
+    prepared = continuation.action(
+        task, "2" * 32, second["generation"], "window", "prepare", wait["id"]
+    )
+    resume = json.loads(re.search(r"\{[^{}]+\}", prepared["app_protocol"]["message"])[0])
+    if state != "prepared":
+        continuation.action(
+            task, "2" * 32, second["generation"], "window", "finish", wait["id"], state
+        )
+    before = continuation.current(task)
+    with service.store.db:
+        service.store.db.execute(
+            "UPDATE task_controllers SET lease_until=0 WHERE task_id=?", (task,)
+        )
+    recovered = continuation.bind(task, "1" * 32, "window")
+    current = continuation.current(task)
+    assert current["state"] == "unknown"
+    assert current["id"] == wait["id"] and current["consume_hash"] == before["consume_hash"]
+    with pytest.raises(ValueError, match="not available"):
+        continuation.action(
+            task, "1" * 32, recovered["generation"], "window", "prepare", wait["id"]
+        )
+    with pytest.raises(ValueError, match="unconsumed"):
+        continuation.arm(task, [], "automatic-replacement")
+    assert (
+        continuation.consume(task, wait["id"], resume["consume_token"])["already_consumed"] is False
+    )
+    assert (
+        continuation.consume(task, wait["id"], resume["consume_token"])["already_consumed"] is True
+    )
+    kinds = [
+        event["kind"]
+        for event in service.store.rows("SELECT kind FROM events WHERE task_id=?", (task,))
+    ]
+    assert kinds.count("continuation.prepared") == 1
+    assert kinds.count("continuation.consumed") == 1
+    recovered_event = service.store.one(
+        "SELECT data FROM events WHERE task_id=? AND kind='continuation.view_recovered'", (task,)
+    )
+    assert recovered_event["data"] == {"generation": recovered["generation"]}
+
+
+@pytest.mark.parametrize("order", [("1" * 32, "2" * 32), ("2" * 32, "1" * 32)])
+async def test_competing_retired_views_only_allow_the_first_expired_claim(replaced_views, order):
+    service, task, _, _ = replaced_views
+    continuation = service.continuations
+    third = continuation.bind(task, "3" * 32, "window")
+    with service.store.db:
+        service.store.db.execute(
+            "UPDATE task_controllers SET lease_until=0 WHERE task_id=?", (task,)
+        )
+    winner, loser = order
+    recovered = continuation.bind(task, winner, "window")
+    assert recovered == {"bound": True, "generation": third["generation"] + 1}
+    assert continuation.bind(task, loser, "window") == {
+        "bound": False,
+        "reason": "replaced_view",
+    }
+    assert continuation.bind(task, "3" * 32, "window")["bound"] is False
+    assert continuation.action(task, winner, recovered["generation"], "window", "state")["bound"]
+    assert (
+        len(service.store.rows("SELECT id FROM events WHERE kind='continuation.view_recovered'"))
+        == 1
+    )
 
 
 async def test_manual_recovery_pause_revocation_and_completion(harness):

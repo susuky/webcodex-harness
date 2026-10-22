@@ -61,7 +61,11 @@ def definitions(cls, *, remote: bool) -> dict[str, Definition]:
         if remote:
             description += (
                 " Requires an explicit task_id from task_create/task_list. Returns a durable job_id; "
-                "follow next_action in this turn to observe queued/running work and remaining output. "
+                "follow the returned next_action and its condition. When it is task_wait and only "
+                "waiting remains, confirm it succeeds and yield. When it is task_present, repair the "
+                "card connection and recheck; otherwise observe the same execution. "
+                "When independent work remains, continue it and use observation_action to refresh "
+                "the same execution. Drain remaining output before handing off. "
                 "Only pending_approval needs an operator decision; show the returned details once, "
                 "then resume that job after the decision. Check outcome/exit_code for the command result. "
                 "Supply a stable request_id when retrying the same call to avoid duplicate effects. "

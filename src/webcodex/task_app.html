@@ -60,11 +60,17 @@
     completed: ["任務已完成", "已保存工作摘要，下方可檢查目前的修改與執行紀錄。"],
   };
   function notify(method, params={}) { parent.postMessage({jsonrpc:"2.0",method,params},"*"); }
+  function deliveryError(category, code) {
+    const error = new Error(category);
+    error.delivery_error = category;
+    if (Number.isSafeInteger(code) && code >= -(2**31) && code < 2**31) error.delivery_error_code = code;
+    return error;
+  }
   function request(method, params={}) {
-    if (stopped) return Promise.reject(new Error("stopped"));
+    if (stopped) return Promise.reject(deliveryError("interrupted"));
     const id = ++sequence;
     return new Promise((resolve,reject) => {
-      const timeout = setTimeout(() => { pending.delete(id); reject(new Error("timeout")); },10000);
+      const timeout = setTimeout(() => { pending.delete(id); reject(deliveryError("timeout")); },10000);
       pending.set(id,{resolve,reject,timeout});
       parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
     });
@@ -319,9 +325,15 @@
     clearTimeout(timer);
     if (!stopped && last?.task.status !== "completed") timer = setTimeout(poll,document.hidden ? 15000 : 3000);
   }
-  async function finish(waitId,outcome) {
-    pendingFinish = {wait_id:waitId,outcome,generation};
-    const result = await call("finish",{wait_id:waitId,outcome});
+  async function finish(waitId,outcome,error={}) {
+    const metadata = {};
+    if (["timeout","rpc_error","host_rejected","interrupted","invalid_prepare"].includes(error.delivery_error)) {
+      metadata.delivery_error = error.delivery_error;
+      const code = error.delivery_error_code;
+      if (Number.isSafeInteger(code) && code >= -(2**31) && code < 2**31) metadata.delivery_error_code = code;
+    }
+    pendingFinish = {wait_id:waitId,outcome,generation,...metadata};
+    const result = await call("finish",{wait_id:waitId,outcome,...metadata});
     pendingFinish = null; render(result);
   }
   async function dispatch(wait) {
@@ -333,21 +345,23 @@
       prepared = await call("prepare",{wait_id:wait.id});
       const control = prepared.control;
       if (!control || control.wait_id !== wait.id || control.state !== "prepared"
-          || typeof control.app_protocol?.message !== "string" || control.app_protocol.message.length > 4096) throw new Error("invalid-prepare");
-    } catch (_) {
+          || typeof control.app_protocol?.message !== "string" || control.app_protocol.message.length > 4096) throw deliveryError("invalid_prepare");
+    } catch (error) {
       // A later confirmed ready state may recover a request that never reached the Server.
       failedPrepare = {wait_id:wait.id,generation:attemptGeneration};
-      try { await finish(wait.id,"unknown"); } catch (_) {}
+      try { await finish(wait.id,"unknown",error?.delivery_error ? error : deliveryError("invalid_prepare")); } catch (_) {}
       return;
     }
     let outcome = "unknown";
+    let error = deliveryError("interrupted");
     if (!stopped && !document.hidden && !paused) {
       try {
         const response = await request("ui/message",{role:"user",content:[{type:"text",text:prepared.control.app_protocol.message}]});
-        if (!response?.isError) outcome = "accepted";
-      } catch (_) {}
+        if (response?.isError) error = deliveryError("host_rejected");
+        else { outcome = "accepted"; error = {}; }
+      } catch (failure) { error = failure?.delivery_error ? failure : deliveryError("interrupted"); }
     }
-    if (!stopped) { try { await finish(wait.id,outcome); } catch (_) {} }
+    if (!stopped) { try { await finish(wait.id,outcome,error); } catch (_) {} }
   }
   async function poll() {
     if (!ready || !taskId || stopped || busy) return;
@@ -381,11 +395,11 @@
       if (pendingFinish) {
         if (pendingFinish.generation !== generation || pendingFinish.wait_id !== wait?.id
             || !["prepared","accepted","unknown"].includes(wait?.state)) pendingFinish = null;
-        else { await finish(pendingFinish.wait_id,pendingFinish.outcome); return; }
+        else { await finish(pendingFinish.wait_id,pendingFinish.outcome,pendingFinish); return; }
       }
       if (wait?.state === "prepared") {
         attempted.add(wait.id);
-        await finish(wait.id,"unknown");
+        await finish(wait.id,"unknown",deliveryError("interrupted"));
       } else if (wait?.state === "ready") await dispatch(wait);
     } catch (_) {
       generation = null;
@@ -418,7 +432,7 @@
       parent.postMessage({jsonrpc:"2.0",id:++sequence,method:"tools/call",params:{name:"task_app",arguments:{task_id:taskId,action:"unbind",view_id:viewId,generation}}},"*");
     }
     stopped = true; clearTimeout(timer);
-    for (const value of pending.values()) { clearTimeout(value.timeout); value.reject(new Error("stopped")); }
+    for (const value of pending.values()) { clearTimeout(value.timeout); value.reject(deliveryError("interrupted")); }
     pending.clear();
   }
   addEventListener("message",event => {
@@ -426,7 +440,7 @@
     const data = event.data;
     if (pending.has(data.id)) {
       const item = pending.get(data.id); pending.delete(data.id); clearTimeout(item.timeout);
-      if (data.error) item.reject(new Error("host-error")); else item.resolve(data.result);
+      if (data.error) item.reject(deliveryError("rpc_error",data.error.code)); else item.resolve(data.result);
       return;
     }
     if (data.method === "ui/notifications/tool-input") select(data.params?.arguments?.task_id);

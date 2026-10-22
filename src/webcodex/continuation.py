@@ -142,7 +142,7 @@ class Continuations:
         )
 
     def bind(self, task_id: str, view_id: str, window: str | None) -> dict:
-        if window is None:
+        if not window:
             return {"bound": False, "reason": "missing_window"}
         now, view = time.time(), fingerprint(view_id)
         with self.transaction():
@@ -153,10 +153,11 @@ class Continuations:
             known = self.store.one(
                 "SELECT retired FROM task_views WHERE task_id=? AND view_hash=?", (task_id, view)
             )
-            if known and known["retired"]:
-                return {"bound": False, "reason": "replaced_view"}
             same_view = current["view_hash"] == view
             same_window = window is not None and current["window_hash"] == window
+            recovering = bool(known and known["retired"])
+            if recovering and (not same_window or current["lease_until"] > now):
+                return {"bound": False, "reason": "replaced_view"}
             if not same_view and current["lease_until"] > now and not same_window:
                 return {"bound": False, "reason": "another_view"}
             if not same_view or current["lease_until"] <= now:
@@ -170,11 +171,20 @@ class Continuations:
             self.db.execute(
                 "INSERT OR IGNORE INTO task_views(task_id,view_hash) VALUES (?,?)", (task_id, view)
             )
+            if recovering:
+                self.db.execute(
+                    "UPDATE task_views SET retired=0 WHERE task_id=? AND view_hash=?",
+                    (task_id, view),
+                )
             self.db.execute(
                 "UPDATE task_controllers SET generation=?,window_hash=?,view_hash=?,lease_until=? "
                 "WHERE task_id=?",
                 (current["generation"], window, view, now + LEASE_SECONDS, task_id),
             )
+            if recovering:
+                self.store.event(
+                    task_id, "continuation.view_recovered", {"generation": current["generation"]}
+                )
         return {"bound": True, "generation": current["generation"]}
 
     def controller(self, task_id: str, view_id: str, generation: int, window: str | None) -> dict:

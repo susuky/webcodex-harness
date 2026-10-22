@@ -11,11 +11,18 @@ const start = html.indexOf("  function schedule()");
 const end = html.indexOf('  el("pause").addEventListener', start);
 assert.ok(start >= 0 && end > start);
 const source = html.slice(start, end);
+const requestStart = html.indexOf("  function deliveryError(");
+const requestEnd = html.indexOf("  function payload(", requestStart);
+const messageStart = html.indexOf('  addEventListener("message",');
+const messageEnd = html.indexOf('  addEventListener("visibilitychange",', messageStart);
+assert.ok(requestStart >= 0 && requestEnd > requestStart && messageStart >= 0 && messageEnd > messageStart);
+const requestSource = html.slice(requestStart, requestEnd);
+const messageSource = html.slice(messageStart, messageEnd);
 
 function fixture(options = {}) {
   const host = {
     waitId: "wait-one", state: "ready", generation: 1, bound: true, paused: false,
-    prepareCalls: 0, messages: 0, failedStates: 0, failedFinishes: 0,
+    prepareCalls: 0, messages: 0, failedStates: 0, failedFinishes: 0, finishCalls: [],
     failPrepare: "before", ...options,
   };
   const state = control => ({
@@ -24,11 +31,15 @@ function fixture(options = {}) {
     control,
   });
   const elements = {};
+  const timers = new Map();
+  let timerId = 0;
   const context = {
     ready: true, taskId: "task", stopped: false, busy: false, generation: 1,
     paused: false, last: null, timer: null, pendingFinish: null, failedPrepare: null,
-    attempted: new Set(), document: {hidden: false},
-    clearTimeout() {}, setTimeout() { return 1; },
+    attempted: new Set(), pending: new Map(), sequence: 0, document: {hidden: false},
+    clearTimeout(id) { timers.delete(id); },
+    setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
+    addEventListener(name, listener) { assert.equal(name, "message"); context.onMessage = listener; },
     el(id) { return elements[id] ||= {}; },
     render(value) { context.last = value; context.paused = value.continuation.paused; },
     async call(action, args = {}) {
@@ -44,21 +55,32 @@ function fixture(options = {}) {
         assert.equal(host.state, "ready");
         host.state = "prepared";
         if (fail === "after") throw new Error("prepared response lost");
-        return state({wait_id: args.wait_id, state: "prepared", app_protocol: {message: "resume"}});
+        if (host.pauseAfterPrepare) context.paused = true;
+        return state({wait_id: args.wait_id, state: "prepared", app_protocol: {message: host.invalidPrepare ? null : "resume"}});
       }
       assert.equal(action, "finish");
+      host.finishCalls.push({...args});
       if (host.failedFinishes > 0) { host.failedFinishes--; throw new Error("finish unavailable"); }
       if (host.state === "ready") throw new Error("wait was not prepared");
       host.state = host.state === "unknown" ? "unknown" : args.outcome;
       return state({state: host.state});
     },
-    async request(method) {
-      assert.equal(method, "ui/message"); host.messages++;
-      if (host.failMessage) throw new Error("Host acknowledgement lost");
-      return host.failMessageResult ? {isError: true} : {};
+  };
+  context.parent = {
+    postMessage(message) {
+      assert.equal(message.method, "ui/message"); host.messages++;
+      if (host.messageTimeout) {
+        timers.get(context.pending.get(message.id).timeout)();
+        return;
+      }
+      const response = host.failMessage
+        ? {error: host.messageError || {code: -32603, message: "Host acknowledgement lost"}}
+        : {result: host.failMessageResult ? {isError: true, message: "consume_token=private-rejected-token"} : {}};
+      context.onMessage({source: context.parent, data: {jsonrpc: "2.0", id: message.id, ...response}});
     },
   };
   vm.createContext(context);
+  vm.runInContext(requestSource + messageSource, context);
   vm.runInContext(source, context);
   return {host, context, poll: () => context.poll()};
 }
@@ -155,3 +177,90 @@ test("a rejected Host message result never becomes accepted or resends the messa
   assert.equal(host.state, "unknown");
   assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 1);
 });
+
+test("Host RPC errors retain only a fixed category and a valid JSON-RPC code", async () => {
+  const {context} = fixture({
+    failMessage: true,
+    messageError: {code: -32042, message: "consume_token=private-rpc-token", data: {consume_token: "private-rpc-token"}},
+  });
+  await assert.rejects(context.request("ui/message"), error => {
+    assert.equal(error.message, "rpc_error");
+    assert.equal(error.delivery_error, "rpc_error");
+    assert.equal(error.delivery_error_code, -32042);
+    assert.deepEqual(Object.keys(error).sort(), ["delivery_error", "delivery_error_code"]);
+    assert.doesNotMatch(JSON.stringify(error), /consume_token|private-rpc-token/);
+    return true;
+  });
+});
+
+test("invalid or out-of-range Host RPC codes are omitted", async () => {
+  for (const code of [undefined, "-32000", 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER, -(2**31) - 1, 2**31]) {
+    const {context} = fixture({failMessage: true, messageError: {code, message: "private"}});
+    await assert.rejects(context.request("ui/message"), error => {
+      assert.equal(error.delivery_error, "rpc_error");
+      assert.equal(Object.hasOwn(error, "delivery_error_code"), false);
+      return true;
+    });
+  }
+  for (const code of [-(2**31), 2**31 - 1]) {
+    const {context} = fixture({failMessage: true, messageError: {code}});
+    await assert.rejects(context.request("ui/message"), error => error.delivery_error_code === code);
+  }
+});
+
+test("an uncertain RPC delivery retries finish with the same safe metadata and sends once", async () => {
+  const {host, context, poll} = fixture({
+    failPrepare: null, failMessage: true, failedFinishes: 1,
+    messageError: {code: -32042, message: "consume_token=private-rpc-token", data: {consume_token: "private-rpc-token"}},
+  });
+  await poll();
+  assert.equal(host.state, "prepared");
+  assert.equal(context.pendingFinish.delivery_error, "rpc_error");
+  assert.equal(context.pendingFinish.delivery_error_code, -32042);
+  assert.doesNotMatch(JSON.stringify(context.pendingFinish), /consume_token|private-rpc-token|message|data/);
+  await poll(); await poll();
+  assert.equal(host.state, "unknown");
+  assert.equal(host.messages, 1); assert.equal(host.prepareCalls, 1);
+  assert.equal(context.pendingFinish, null);
+  assert.deepEqual(host.finishCalls, [
+    {wait_id: "wait-one", outcome: "unknown", delivery_error: "rpc_error", delivery_error_code: -32042},
+    {wait_id: "wait-one", outcome: "unknown", delivery_error: "rpc_error", delivery_error_code: -32042},
+  ]);
+});
+
+for (const [options, category] of [
+  [{messageTimeout: true}, "timeout"],
+  [{failMessageResult: true}, "host_rejected"],
+  [{pauseAfterPrepare: true}, "interrupted"],
+  [{invalidPrepare: true}, "invalid_prepare"],
+]) {
+  test(`${category} is recorded without retaining Host content or resending`, async () => {
+    const {host, poll} = fixture({failPrepare: null, ...options});
+    await poll(); await poll();
+    assert.equal(host.state, "unknown");
+    assert.equal(host.prepareCalls, 1);
+    assert.equal(host.messages, ["timeout", "host_rejected"].includes(category) ? 1 : 0);
+    assert.deepEqual(host.finishCalls, [{wait_id: "wait-one", outcome: "unknown", delivery_error: category}]);
+    assert.doesNotMatch(JSON.stringify(host.finishCalls), /consume_token|private-rejected-token|message|data/);
+  });
+}
+
+for (const change of ["wait", "generation"]) {
+  test(`a stale pending finish cannot carry diagnostics into a new ${change}`, async () => {
+    const {host, context, poll} = fixture({failPrepare: null, messageTimeout: true, failedFinishes: 1});
+    await poll();
+    assert.equal(context.pendingFinish.delivery_error, "timeout");
+    host.messageTimeout = false;
+    if (change === "wait") {
+      host.waitId = "wait-two"; host.state = "ready";
+    } else {
+      context.generation = null; host.generation++;
+    }
+    await poll(); await poll();
+    assert.equal(context.pendingFinish, null);
+    assert.deepEqual(host.finishCalls[1], change === "wait"
+      ? {wait_id: "wait-two", outcome: "accepted"}
+      : {wait_id: "wait-one", outcome: "unknown", delivery_error: "interrupted"});
+    assert.equal(host.messages, change === "wait" ? 2 : 1);
+  });
+}

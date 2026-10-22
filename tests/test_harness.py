@@ -571,6 +571,8 @@ async def test_stdio_bridge_uses_the_authenticated_http_harness(harness, tmp_pat
             initialized = await client.initialize()
             assert "task_create" in initialized.instructions
             assert "host execution blocked" in initialized.instructions
+            assert "observation_action/observation_actions" in initialized.instructions
+            assert "next_action is task_wait" in initialized.instructions
             specs = (await client.list_tools()).tools
             assert len(specs) >= 40
             assert "developer MCPs" in next(

@@ -27,6 +27,19 @@ WebCodex provides an interactive task card through MCP Apps. Open it with `task_
 
 See [Task cards and continuation](docs/CHATGPT.md#任務卡片與跨回合續接) for client requirements and the continuation workflow.
 
+## Accounts and computers
+
+Names such as `WebCodex ll1` label a ChatGPT connection. The task's project and Runner determine which computer executes its tools.
+
+| Situation | Setup |
+| --- | --- |
+| Same ChatGPT account and workspace, ChatGPT web on another computer | Use the existing installed plugin |
+| Another ChatGPT account | Install or create a connection with access to the same Server/tunnel; share the existing Server and Runner |
+| Execute tools on Windows | Register a Windows Runner and its project with the existing Server, authorize the client to use it and keep the same plugin |
+| Run a separate Server on another computer | Add a connection to that Server's endpoint; use a different name to distinguish it |
+
+When switching accounts, check the tunnel's workspace associations and use permissions. To resume saved tasks, retain the same WebCodex client identity and use `task_list`/`task_get`. See [Account and computer setup](docs/CHATGPT.md#換帳號與換電腦).
+
 ## Quick start
 
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/getting-started/installation/), Git and ripgrep (`rg`). Run from this source checkout:

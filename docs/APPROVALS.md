@@ -47,8 +47,9 @@
 - `approval_mode`、`approval_required`：這個用戶端在該專案的現行核准政策。
 - `summary_stale`：儲存摘要後是否又有工作更新；為 `true` 時，依最新工作狀態判斷是否仍需核准。
 - `pending_jobs`、`job_counts`：未結束的工作及各狀態總數；即使待核准工作已超出最近 30 筆紀錄，仍會列出。清單最多 100 筆，超過時標記 `pending_jobs_truncated`。
-- `process_observations`、`latest_execution`：最近保存的程序狀態與最新一筆執行結果。它們是觀測紀錄；程序仍顯示執行中時，依 `next_actions` 呼叫 `read_process` 更新。
+- `process_observations`、`latest_execution`：最近保存的程序狀態與最新一筆執行結果。它們是觀測紀錄；依 `next_actions` 及其 `condition` 讀取剩餘輸出、修復卡片或交接等待。仍有獨立工作時，可用 `observation_actions` 更新原程序；`output_actions` 保留未讀輸出的精確 cursor。
 - `state`、`next_step`：區分等待核准、等待 Runner、繼續觀測、需要處理執行問題及可接續工作。已完成或專案位置已改變的任務也會明確標示。
+- `recent_issues`、`recent_process_issues`：交接摘要後新增的工作或程序問題；先檢查這些結果，再決定是否交接等待。已登記的等待不會因此被自動重建。
 
 新工作回覆中的 `outcome` 直接顯示已知的程序結果。例如：
 

@@ -27,6 +27,19 @@ WebCodex 透過 MCP Apps 提供互動式任務卡片。在 ChatGPT 等支援的�
 
 用戶端需求與續接流程見 [任務卡片與跨回合續接](docs/CHATGPT.md#任務卡片與跨回合續接)。
 
+## 換帳號與換電腦
+
+`WebCodex ll1` 等名稱是 ChatGPT 連線的標籤。任務所選的專案與 Runner 決定工具實際在哪台電腦執行。
+
+| 情境 | 設定方式 |
+| --- | --- |
+| 同一 ChatGPT 帳號與工作區，換電腦開啟 ChatGPT 網頁 | 選用已安裝的原外掛 |
+| 換 ChatGPT 帳號 | 在新帳號安裝或建立連線，確認可使用原 Server／tunnel；Server 與 Runner 可共用 |
+| 希望工具在 Windows 執行 | 將 Windows Runner 與專案登記到原 Server，授權用戶端使用該專案，可沿用同一外掛 |
+| 另一台電腦獨立架設另一個 Server | 新增指向該 Server 入口的連線，可用不同名稱區分 |
+
+換帳號時需確認 tunnel 的工作區關聯與使用權限。接續原任務還需保留相同的 WebCodex 用戶端身分，再用 `task_list`／`task_get` 讀取紀錄。詳見 [換帳號與換電腦的連線設定](docs/CHATGPT.md#換帳號與換電腦)。
+
 ## 快速啟動
 
 需要 Python 3.11+、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Git 與 ripgrep（`rg`）。在本專案原始碼目錄執行：
