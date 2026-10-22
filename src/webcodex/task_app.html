@@ -5,34 +5,36 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>任務與修改內容</title>
   <style>
-    :root{color-scheme:light dark;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;color:var(--color-text-primary,#202322);background:var(--color-background-primary,#fff);font-size:14px;line-height:1.6}
-    *{box-sizing:border-box}body{margin:0}main{padding:22px;max-width:720px;margin:auto}
-    header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}h1{font-size:18px;line-height:1.5;letter-spacing:-.02em;margin:0;font-weight:650;overflow-wrap:anywhere}
-    .signal{display:flex;align-items:center;gap:7px;white-space:nowrap;font-size:12px;color:var(--color-text-secondary,#616964);padding-top:4px}.dot{width:7px;height:7px;border-radius:50%;background:#929b96;flex:none}.dot.live{background:#248653}.dot.attention{background:#b4771b}
-    #status{margin:15px 0 3px;font-weight:600;font-size:15px}#detail{margin:0;color:var(--color-text-secondary,#616964);font-size:13px}
-    ol{list-style:none;margin:18px 0;padding:0;max-height:250px;overflow:auto}li{display:flex;gap:10px;margin:9px 0;font-size:13px;align-items:baseline}li span:last-child{overflow-wrap:anywhere}.step{flex:none;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;background:#edf0ee;color:#5e6761}.done .step{background:#e2f1e7;color:#22603a}.current{font-weight:600}.current .step{background:#202f26;color:#fff}
-    footer{border-top:1px solid var(--color-border-tertiary,#e5e9e6);padding-top:14px;display:flex;align-items:center;justify-content:space-between;gap:12px}.updated{font-size:11px;color:var(--color-text-secondary,#727b75)}button{font-family:inherit;font-size:12px;font-weight:500;line-height:1.5;padding:6px 11px;border:1px solid var(--color-border-secondary,#d9dfdb);border-radius:7px;background:transparent;color:inherit;cursor:pointer}button:hover{background:var(--color-background-secondary,#f2f5f3)}button:focus-visible{outline:2px solid #248653;outline-offset:3px}button:disabled{opacity:.45;cursor:default}[hidden]{display:none!important}
-    @media(prefers-color-scheme:dark){:root{color:var(--color-text-primary,#edf2ee);background:var(--color-background-primary,#202422)}.step{background:#353e38;color:#d0d8d2}.done .step{background:#244632;color:#a9dbba}.current .step{background:#a9dbba;color:#183623}#detail,.signal,.updated{color:var(--color-text-secondary,#b2beb5)}footer{border-color:var(--color-border-tertiary,#414b44)}button{border-color:var(--color-border-secondary,#58625b)}button:hover{background:var(--color-background-secondary,#303a33)}}
-    @media(max-width:400px){main{padding:16px}header{gap:10px}.signal{font-size:11px}footer{align-items:flex-start}}
-    :root{font-size:16px}main{max-width:860px}h1{font-size:20px}.signal,#detail,li,.updated,button{font-size:14px}#status{font-size:16px}.step{font-size:12px}button{min-height:40px}
-    .review{margin:24px 0;border-top:1px solid var(--color-border-tertiary,#dce2de);padding-top:20px}.review header{align-items:center}h2{font-size:17px;margin:0;font-weight:650}.review-note{font-size:14px;color:var(--color-text-secondary,#616964);margin:12px 0}.review-tabs{display:flex;gap:8px;margin-top:14px}.review-tabs button[aria-pressed=true]{background:var(--color-background-secondary,#edf3ef);font-weight:650}.review-layout{display:grid;grid-template-columns:minmax(150px,220px) minmax(0,1fr);gap:16px;margin-top:12px}.file-list{max-height:340px;overflow:auto;display:flex;flex-direction:column;gap:4px}.file-list button{text-align:left;display:block;width:100%;overflow-wrap:anywhere;border-color:transparent;padding:8px}.file-list button[aria-pressed=true]{border-color:var(--color-border-secondary,#c4d4c8);background:var(--color-background-secondary,#edf3ef)}.file-state{display:block;font-size:14px;color:var(--color-text-secondary,#616964)}.preview{min-width:0}.preview h3{font-size:14px;overflow-wrap:anywhere;margin:0 0 8px}.preview p,.run p{font-size:14px;margin:8px 0}pre{font:13px/1.65 ui-monospace,"Noto Sans Mono",monospace;tab-size:4;padding:14px;background:var(--color-background-secondary,#f4f6f4);border:1px solid var(--color-border-tertiary,#dce2de);border-radius:6px;overflow:auto;max-height:380px;margin:8px 0;white-space:pre}.run{border-bottom:1px solid var(--color-border-tertiary,#dce2de);padding:12px 0}.run summary{cursor:pointer;font-size:14px;overflow-wrap:anywhere;min-height:40px}.outcome{font-weight:650;margin-right:8px}.review-state{font-size:14px;min-height:22px;margin:12px 0 0}#runs{margin-top:12px}
-    @media(prefers-color-scheme:dark){.review-note,.file-state{color:var(--color-text-secondary,#b2beb5)}.review,.run{border-color:#414b44}.file-list button[aria-pressed=true],.review-tabs button[aria-pressed=true],pre{background:var(--color-background-secondary,#303a33)}pre{border-color:var(--color-border-tertiary,#414b44)}}
-    @media(max-width:600px){.review-layout{grid-template-columns:1fr}.file-list{max-height:220px}button,.run summary{min-height:44px}.signal{font-size:14px}}
+    :root{color-scheme:light dark;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;font-size:16px;line-height:1.6;--ink:var(--color-text-primary,#202322);--muted:var(--color-text-secondary,#616964);--surface:var(--color-background-primary,#fff);--soft:var(--color-background-secondary,#f4f6f4);--line:var(--color-border-tertiary,#dce2de);--control-line:var(--color-border-secondary,#c4cec7);--accent:#22603a;--good:#22603a;--good-bg:#e2f1e7;--bad:#943d36;--bad-bg:#fbece9;color:var(--ink);background:var(--surface)}
+    *{box-sizing:border-box}body{margin:0}main{padding:24px;max-width:900px;margin:auto}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}h1{font-size:20px;line-height:1.5;letter-spacing:-.02em;margin:0;font-weight:650;overflow-wrap:anywhere;min-width:0}h2{font-size:17px;margin:0;font-weight:650}
+    .signal{display:flex;align-items:center;gap:7px;white-space:nowrap;color:var(--muted);padding-top:5px;font-size:13px}.dot{width:7px;height:7px;border-radius:50%;background:#929b96;flex:none}.dot.live{background:var(--good)}.dot.attention{background:#a46b15}#status{margin:18px 0 3px;font-weight:650;font-size:17px}#detail{margin:0;color:var(--muted);font-size:14px;max-width:65ch}
+    .plan-progress{margin-top:20px;display:flex;align-items:center;gap:12px}.plan-progress span{font-size:13px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}progress{appearance:none;width:140px;max-width:40%;height:5px;border:0;border-radius:3px;background:var(--soft);color:var(--accent)}progress::-webkit-progress-bar{background:var(--soft);border-radius:3px}progress::-webkit-progress-value{background:var(--accent);border-radius:3px}progress::-moz-progress-bar{background:var(--accent);border-radius:3px}
+    ol{list-style:none;margin:12px 0 0;padding:0;max-height:250px;overflow:auto}li{display:flex;gap:10px;margin:10px 0;font-size:14px;align-items:baseline}li .step-text{overflow-wrap:anywhere;min-width:0}.step{flex:none;width:20px;height:20px;border-radius:50%;font-size:12px;line-height:20px;text-align:center;background:var(--soft);color:var(--muted)}.done .step{background:var(--good-bg);color:var(--good)}.current{font-weight:650}.current .step{background:var(--accent);color:var(--surface)}.step-state{color:var(--accent);font-size:12px;white-space:nowrap}
+    button,input{font:inherit;font-size:14px;color:inherit}button{font-weight:500;line-height:1.5;min-height:40px;padding:7px 12px;border:1px solid var(--control-line);border-radius:7px;background:transparent;cursor:pointer}button:hover{background:var(--soft)}button:active{background:var(--line)}button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}::selection{background:var(--good-bg);color:var(--ink)}
+    .review{margin:24px 0;border-top:1px solid var(--line);padding-top:20px}.review header{align-items:center}.review-tabs{display:flex;gap:20px;margin-top:12px;border-bottom:1px solid var(--line)}.review-tabs button{border:0;border-radius:0;padding:9px 0;border-bottom:2px solid transparent;color:var(--muted)}.review-tabs button[aria-selected=true]{border-bottom-color:var(--accent);color:var(--ink);font-weight:650}.count{font-variant-numeric:tabular-nums;font-size:12px;margin-left:6px;color:var(--muted)}.review-state{font-size:13px;min-height:22px;margin:12px 0 0;color:var(--muted)}.review-note{font-size:13px;color:var(--muted);margin:10px 0}.review-layout{display:grid;grid-template-columns:minmax(150px,210px) minmax(0,1fr);gap:20px;margin-top:12px}.review-layout.empty{grid-template-columns:1fr}.file-list{max-height:340px;overflow:auto;display:flex;flex-direction:column;gap:4px}.file-list button{flex:none;text-align:left;display:block;width:100%;overflow-wrap:anywhere;border-color:transparent;padding:9px 10px}.file-list button[aria-pressed=true]{border-color:var(--control-line);background:var(--soft)}.file-name{display:block;font-weight:600}.file-directory,.file-state{display:block;font-size:12px;color:var(--muted)}.preview{min-width:0}.preview h3{font-size:14px;overflow-wrap:anywhere;margin:0 0 8px}.preview p,.run p{font-size:13px;margin:8px 0}
+    pre{font:13px/1.65 ui-monospace,"Noto Sans Mono",monospace;tab-size:4;padding:12px;background:var(--soft);border:1px solid var(--line);border-radius:6px;overflow:auto;max-height:380px;margin:8px 0;white-space:pre}.diff{padding:12px 0}.diff span{display:block;min-width:max-content;padding:0 12px}.diff-add{color:var(--good);background:var(--good-bg)}.diff-remove{color:var(--bad);background:var(--bad-bg)}.diff-heading{color:var(--muted)}#runs{margin-top:12px}.run{border-bottom:1px solid var(--line);padding:12px 0}.run summary{cursor:pointer;font-size:14px;overflow-wrap:anywhere;min-height:40px}.outcome{display:inline-block;font-size:12px;font-weight:650;margin-right:10px;padding:2px 7px;border-radius:4px;background:var(--soft)}.run[data-status=completed] .outcome{color:var(--good);background:var(--good-bg)}.run[data-status=failed] .outcome,.run[data-status=timed_out] .outcome{color:var(--bad);background:var(--bad-bg)}.run code{font:13px/1.6 ui-monospace,monospace}.run-summary{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;margin:8px 0}.run-count-failed{color:var(--bad);font-weight:650}
+    .continuation-state{font-size:13px;color:var(--muted);margin:16px 0 0}footer{border-top:1px solid var(--line);padding-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px}.updated{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.footer-actions{display:flex;gap:8px;flex-wrap:wrap}
+    @media(prefers-color-scheme:dark){:root:not([data-theme=light]){--ink:var(--color-text-primary,#edf2ee);--muted:var(--color-text-secondary,#b2beb5);--surface:var(--color-background-primary,#202422);--soft:var(--color-background-secondary,#303a33);--line:var(--color-border-tertiary,#414b44);--control-line:var(--color-border-secondary,#58625b);--accent:#a9dbba;--good:#a9dbba;--good-bg:#244632;--bad:#f0aaa2;--bad-bg:#4b2926}}
+    :root[data-theme=dark]{color-scheme:dark;--ink:var(--color-text-primary,#edf2ee);--muted:var(--color-text-secondary,#b2beb5);--surface:var(--color-background-primary,#202422);--soft:var(--color-background-secondary,#303a33);--line:var(--color-border-tertiary,#414b44);--control-line:var(--color-border-secondary,#58625b);--accent:#a9dbba;--good:#a9dbba;--good-bg:#244632;--bad:#f0aaa2;--bad-bg:#4b2926}
+    :root[data-theme=light]{color-scheme:light}
+    @media(max-width:600px){main{padding:18px}main>header{flex-wrap:wrap;gap:4px}.signal{padding-top:0}.review-layout{grid-template-columns:1fr;gap:16px}.file-list{max-height:180px;border-bottom:1px solid var(--line);padding-bottom:10px}button,.run summary{min-height:44px}footer{align-items:flex-start;flex-direction:column;gap:10px}.footer-actions{width:100%}.review-tabs{gap:24px}h1{font-size:18px}}
   </style>
 </head>
 <body>
 <main aria-label="任務進度">
   <header><h1 id="title">任務進度</h1><div class="signal"><span id="dot" class="dot"></span><span id="connection">連線中</span></div></header>
   <section aria-live="polite" aria-atomic="true"><p id="status">正在讀取任務</p><p id="detail">連線後會顯示目前進度。</p></section>
+  <div id="plan-progress" class="plan-progress" hidden><span id="step-summary"></span><progress id="step-progress" aria-labelledby="step-summary"></progress></div>
   <ol id="steps" aria-label="工作步驟"></ol>
+  <p id="continuation-state" class="continuation-state" role="status">尚未安排自動續接</p>
   <section class="review" aria-labelledby="review-title">
     <header><h2 id="review-title">檢查成果</h2><button id="review-refresh" type="button">讀取修改與結果</button></header>
-    <div class="review-tabs" aria-label="檢視內容"><button id="changes-tab" type="button" aria-pressed="true" aria-controls="changes">修改內容</button><button id="runs-tab" type="button" aria-pressed="false" aria-controls="runs">執行結果</button></div>
+    <div class="review-tabs" role="tablist" aria-label="檢視內容"><button id="changes-tab" type="button" role="tab" aria-selected="true" aria-controls="changes">修改內容<span id="changes-count" class="count"></span></button><button id="runs-tab" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="runs">執行結果<span id="runs-count" class="count"></span></button></div>
     <p id="review-state" class="review-state" role="status">讀取後可選擇檔案，查看修改內容與執行紀錄。</p>
-    <div id="changes"><p class="review-note" id="changes-note">顯示專案目前尚未提交的變更。</p><div class="review-layout"><div id="files" class="file-list" aria-label="檔案清單"></div><div id="preview" class="preview"><p>選取檔案以查看內容。</p></div></div></div>
-    <div id="runs" hidden><p class="review-note">顯示此任務最近的命令紀錄。</p><div id="executions"></div></div>
+    <div id="changes" role="tabpanel" aria-labelledby="changes-tab"><p class="review-note" id="changes-note">專案目前尚未提交的變更。</p><div id="review-layout" class="review-layout"><div id="files" class="file-list" aria-label="檔案清單"></div><div id="preview" class="preview"><p>讀取後會顯示檔案差異。</p></div></div></div>
+    <div id="runs" role="tabpanel" aria-labelledby="runs-tab" hidden><p class="review-note">此任務最近的命令紀錄。</p><p id="run-summary" class="run-summary"></p><div id="executions"></div></div>
   </section>
-  <footer><span id="updated" class="updated">尚未取得更新</span><button id="pause" type="button" hidden>暫停自動續接</button></footer>
+  <footer><span id="updated" class="updated">尚未取得進度</span><div class="footer-actions"><button id="reconnect" type="button" hidden>重新連線</button><button id="pause" type="button" hidden>暫停自動續接</button></div></footer>
 </main>
 <script>
 (() => {
@@ -49,11 +51,11 @@
   const viewId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,"0")).join("");
   const states = {
     ready: ["準備接續工作", "目前沒有等待中的工作。"],
-    observing: ["工作進行中", "完成目前工作後，會確認結果並接續。"],
+    observing: ["工作進行中", ""],
     waiting_approval: ["等待核准", "請依對話中的說明完成核准，原工作會保留。"],
     waiting_runner: ["等待重新連線", "工作紀錄已保留，連線恢復後會再確認。"],
     waiting_operator: ["等待回覆", "請先回答任務中的待確認事項。"],
-    needs_attention: ["有結果需要處理", "接下來會檢查執行結果。"],
+    needs_attention: ["有結果需要處理", "請在對話中接續檢查結果。"],
     project_changed: ["需要確認專案", "專案位置已變更，請先在對話中確認。"],
     completed: ["任務已完成", "已保存工作摘要，下方可檢查目前的修改與執行紀錄。"],
   };
@@ -105,25 +107,56 @@
     el("title").textContent = value.task.title;
     let [status,detail] = states[value.progress.state];
     const wait = value.continuation.wait;
+    const handoff = value.continuation.handoff;
+    const blocked = handoff?.state === "blocked" && ["watching","ready"].includes(wait?.state);
     if (paused && value.task.status !== "completed") {
       status = "自動續接已暫停"; detail = "已啟動的工作仍會執行，進度會持續更新。";
-    } else if (wait && ["prepared","accepted"].includes(wait.state)) {
-      status = "已請求接續"; detail = "正在等候對話回覆，工作紀錄已保留。";
+    } else if (wait?.state === "prepared") {
+      status = "正在傳送接續通知"; detail = "";
+    } else if (wait?.state === "accepted") {
+      status = "已送出接續通知"; detail = "正在等候對話回覆。";
     } else if (wait && wait.state === "unknown") {
       status = "尚未確認是否接續"; detail = "請在對話中確認目前任務。";
+    } else if (blocked) {
+      const blockedStates = {
+        expired:["自動續接尚未連線","請在對話中重新開啟任務卡片。"],
+        not_connected:["自動續接尚未連線","請在對話中重新開啟任務卡片。"],
+        missing_window:["此對話無法自動續接","請在對話中繼續原任務。"],
+        another_window:["由其他視窗接續","請回到已連線的視窗繼續原任務。"],
+        read_only:["此對話僅能檢視進度","請使用有修改權限的連線繼續任務。"],
+      };
+      [status,detail] = blockedStates[handoff.reason] || states[handoff.reason] || ["自動續接目前無法使用","請在對話中確認任務狀態並繼續。"];
+    } else if (wait?.state === "ready") {
+      status = "工作結果已就緒"; detail = document.hidden ? "切回此對話後會請求接續。" : "正在準備接續原任務。";
     }
     el("status").textContent = status; el("detail").textContent = detail;
+    const activeWait = wait && ["watching","ready","prepared","accepted","unknown"].includes(wait.state);
+    const continuationLabels = {
+      watching: document.hidden ? "已安排接續，回到此對話後處理結果" : "已安排自動續接，等待工作結果",
+      ready:"已安排自動續接，結果已就緒", prepared:"正在傳送接續通知",
+      accepted:"已送出接續通知", unknown:"接續請求尚未確認", consumed:"先前的接續通知已處理", cancelled:"先前的自動續接已取消",
+    };
+    el("continuation-state").hidden = value.task.status === "completed" || paused || blocked || ["prepared","accepted","unknown"].includes(wait?.state);
+    el("continuation-state").textContent = paused ? "自動續接已暫停"
+      : continuationLabels[wait?.state] || "尚未安排自動續接";
+    const completed = value.task.plan.filter(item => item.status === "completed").length;
+    el("plan-progress").hidden = value.task.plan.length === 0;
+    el("step-summary").textContent = `已完成 ${completed} / ${value.task.plan.length} 步驟`;
+    el("step-progress").max = value.task.plan.length || 1;
+    el("step-progress").value = completed;
     el("steps").replaceChildren();
     value.task.plan.forEach((item,index) => {
       const li = document.createElement("li"), marker = document.createElement("span"), text = document.createElement("span");
       li.className = item.status === "completed" ? "done" : item.status === "in_progress" ? "current" : "";
       marker.className = "step"; marker.textContent = item.status === "completed" ? "✓" : String(index+1);
       marker.setAttribute("aria-label",item.status === "completed" ? "已完成" : item.status === "in_progress" ? "進行中" : "待處理");
-      text.textContent = item.step; li.append(marker,text); el("steps").append(li);
+      text.textContent = item.step; text.className = "step-text"; li.append(marker,text);
+      if (item.status === "in_progress") li.append(node("span","進行中","step-state"));
+      el("steps").append(li);
     });
-    el("pause").hidden = generation === null || value.task.status === "completed";
+    el("pause").hidden = generation === null || value.task.status === "completed" || (!activeWait && !paused);
     el("pause").textContent = paused ? "啟用自動續接" : "暫停自動續接";
-    el("updated").textContent = "更新於 " + new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    el("updated").textContent = "進度更新 " + new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
     if (generation !== null) {
       el("connection").textContent = document.hidden ? "背景連線" : "已連線";
       el("dot").className = "dot live";
@@ -138,21 +171,33 @@
   }
   function showReview(review) {
     const labels = {untracked:"新增檔案",added:"新增檔案",modified:"已修改",deleted:"已刪除",renamed:"已重新命名",conflict:"需要處理衝突",file:"檔案"};
+    const files = review.files || [], executions = review.executions || [];
+    el("files").hidden = files.length === 0;
+    el("review-layout").className = files.length ? "review-layout" : "review-layout empty";
     el("files").replaceChildren();
-    for (const file of review.files || []) {
-      const button = node("button",file.path); button.type = "button";
+    for (const file of files) {
+      const button = node("button",""); button.type = "button";
+      const separator = file.path.lastIndexOf("/");
+      button.append(node("span",file.path.slice(separator+1),"file-name"));
+      if (separator >= 0) button.append(node("span",file.path.slice(0,separator),"file-directory"));
+      button.title = file.path;
+      button.setAttribute("aria-label",file.path + "，" + (labels[file.status] || "已變更"));
       button.setAttribute("aria-pressed",String(file.path === selectedPath));
       button.append(node("span",labels[file.status] || "已變更","file-state"));
       button.addEventListener("click",() => void loadReview(file.path));
       el("files").append(button);
     }
     el("changes-note").textContent = review.is_git_repository
-      ? "顯示專案目前尚未提交的變更。"
+      ? "專案目前尚未提交的變更。"
       : "這個專案尚未使用 Git。以下可檢視目前檔案，無法比較修改前後。";
     const count = review.total_files ?? review.files?.length ?? 0;
-    el("review-state").textContent = (review.is_git_repository ? `目前有 ${count} 個變更檔案` : `已讀取 ${count} 個檔案`)
-      + (review.files_truncated ? "，清單未全部顯示。可在對話中指定檔案。" : "。")
-      + " 更新於 " + new Date(review.observed_at*1000).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    el("changes-count").textContent = String(count) + (review.files_truncated ? "+" : "");
+    el("runs-count").textContent = String(executions.length);
+    el("changes-tab").setAttribute("aria-label",`修改內容，${count}${review.files_truncated ? " 個以上" : " 個"}檔案`);
+    el("runs-tab").setAttribute("aria-label",`執行結果，最近 ${executions.length} 筆命令`);
+    el("review-state").textContent = "成果更新 " + new Date(review.observed_at*1000).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"})
+      + (review.files_truncated ? " · 清單未全部顯示，可在對話中指定檔案。" : "");
+    el("review-state").dataset.loaded = "true";
     const preview = review.preview;
     el("preview").replaceChildren();
     if (!preview) {
@@ -162,7 +207,13 @@
       if (preview.kind === "diff") {
         for (const diff of preview.diffs || []) {
           if (!diff.text) continue;
-          el("preview").append(node("p",diff.staged ? "已暫存的修改" : "尚未暫存的修改"),node("pre",diff.text));
+          const pre = node("pre","","diff"), code = document.createElement("code");
+          for (const line of diff.text.split("\n")) {
+            const kind = /^(diff |index |@@|--- |\+\+\+ )/.test(line) ? "diff-heading" : line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-remove" : "";
+            code.append(node("span",line || " ",kind));
+          }
+          pre.append(code);
+          el("preview").append(node("p",diff.staged ? "已暫存的修改" : "尚未暫存的修改"),pre);
           if (diff.truncated) el("preview").append(node("p","內容較長，這裡只顯示部分差異。"));
         }
       } else if (preview.kind === "text") {
@@ -173,37 +224,59 @@
         el("preview").append(node("p",messages[preview.kind] || "目前無法顯示內容。"));
       }
     }
+    const expanded = new Map(Array.from(el("executions").children, item => [item.dataset.processId,item.open]));
     el("executions").replaceChildren();
     const outcomes = {completed:"執行成功",failed:"執行失敗",running:"執行中",timed_out:"執行逾時",interrupted:"執行中斷",cancelled:"已停止",unavailable:"尚無可讀取的執行紀錄"};
-    for (const run of review.executions || []) {
+    const running = executions.filter(run => run.status === "running").length;
+    const failed = executions.filter(run => ["failed","timed_out","interrupted"].includes(run.status)).length;
+    const succeeded = executions.filter(run => run.status === "completed").length;
+    el("run-summary").replaceChildren();
+    if (executions.length) {
+      el("run-summary").append(document.createTextNode(`最近 ${executions.length} 筆 · ${succeeded} 筆成功`));
+      if (running) el("run-summary").append(document.createTextNode(` · ${running} 筆執行中`));
+      if (failed) el("run-summary").append(node("span",` · ${failed} 筆失敗或中斷`,"run-count-failed"));
+    }
+    for (const run of executions) {
       const details = document.createElement("details"); details.className = "run";
+      details.dataset.processId = run.process_id; details.dataset.status = run.status;
       const summary = document.createElement("summary");
       const argv = Array.isArray(run.command) ? run.command : [];
       const shellIndex = argv.findIndex(arg => arg === "-c" || arg === "-Command");
       const command = shellIndex >= 0 ? argv[shellIndex+1] : argv.join(" ");
-      summary.append(node("span",outcomes[run.status] || "狀態待確認","outcome"),document.createTextNode(command || "命令"));
+      summary.append(node("span",outcomes[run.status] || "狀態待確認","outcome"),node("code",command || "命令"));
       details.append(summary);
+      if (run.created) details.append(node("p","開始於 " + new Date(run.created*1000).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"})));
       if (run.exit_code !== null && run.exit_code !== undefined) details.append(node("p",`結束碼：${run.exit_code}`));
       if (run.output) details.append(node("pre",run.output));
       else details.append(node("p",run.status === "running" ? "尚未有輸出，稍後重新整理可確認。" : "沒有文字輸出。"));
       if (run.output_is_tail || run.truncated) details.append(node("p","輸出較長，這裡只顯示部分紀錄；完整內容可在對話中查閱。"));
-      if (run.status === "failed" || run.status === "timed_out") details.open = true;
+      details.open = expanded.get(run.process_id) ?? ["failed","timed_out","running"].includes(run.status);
+      details.addEventListener("toggle",() => notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight}));
       el("executions").append(details);
     }
-    if (!review.executions?.length) el("executions").append(node("p","此任務尚無命令執行紀錄。"));
+    if (!executions.length) el("executions").append(node("p","此任務尚無命令執行紀錄。"));
     notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
   }
   async function loadReview(path=null, jobId=null) {
     if (!ready || !taskId || stopped) return;
     const version = ++reviewVersion; reviewLoaded = true; selectedPath = path;
-    el("review-refresh").disabled = true; el("review-state").textContent = "正在讀取修改與執行結果…";
+    el("review-refresh").disabled = true; el("review-refresh").textContent = "讀取中…";
+    el("review-state").textContent = "正在讀取修改與執行結果…";
+    el("changes").setAttribute("aria-busy","true"); el("runs").setAttribute("aria-busy","true");
     pendingReview = jobId ? {path,jobId} : null;
     try {
       for (let attempt=0; attempt<12 && !stopped && version === reviewVersion; attempt++) {
         const value = payload(await request("tools/call",{name:"task_review",arguments:{task_id:taskId,path,job_id:jobId}}));
         if (version !== reviewVersion || stopped) return;
         if (value.task_id !== taskId) throw new Error("wrong-task");
-        if (value.review) { pendingReview = null; showReview(value.review); return; }
+        if (value.review) {
+          pendingReview = null;
+          const files = value.review.files || [];
+          if (selectedPath && !files.some(file => file.path === selectedPath) && !value.review.files_truncated) selectedPath = null;
+          showReview(value.review);
+          if (!selectedPath && files.length) { void loadReview(files[0].path); }
+          return;
+        }
         const job = value.review_job;
         if (!job || !["queued","running"].includes(job.status)) {
           el("review-state").textContent = job?.status === "pending_approval" ? "檢視需要核准。請在對話中處理這筆請求。" : "目前無法取得修改內容，請在對話中確認原因後重試。";
@@ -215,16 +288,33 @@
       }
       el("review-state").textContent = "仍在讀取，可稍後繼續查看同一筆結果。";
     } catch (_) {
-      if (version === reviewVersion) el("review-state").textContent = "暫時無法更新修改內容，請稍後重試。";
+      if (version === reviewVersion) el("review-state").textContent = el("review-state").dataset.loaded === "true"
+        ? "更新失敗，目前顯示上次結果。請重新整理。" : "暫時無法讀取成果，請重新整理。";
     } finally {
-      if (version === reviewVersion) { el("review-refresh").disabled = false; el("review-refresh").textContent = pendingReview ? "繼續讀取" : "重新整理"; }
+      if (version === reviewVersion) {
+        el("review-refresh").disabled = false; el("review-refresh").textContent = pendingReview ? "繼續讀取" : "重新整理";
+        el("changes").setAttribute("aria-busy","false"); el("runs").setAttribute("aria-busy","false");
+      }
     }
   }
   el("review-refresh").addEventListener("click",() => void loadReview(pendingReview?.path ?? selectedPath,pendingReview?.jobId ?? null));
-  for (const tab of ["changes","runs"]) el(tab+"-tab").addEventListener("click",() => {
-    for (const name of ["changes","runs"]) { el(name).hidden = name !== tab; el(name+"-tab").setAttribute("aria-pressed",String(name === tab)); }
+  function selectTab(tab) {
+    for (const name of ["changes","runs"]) {
+      el(name).hidden = name !== tab;
+      el(name+"-tab").setAttribute("aria-selected",String(name === tab));
+      el(name+"-tab").tabIndex = name === tab ? 0 : -1;
+    }
     notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
-  });
+  }
+  for (const tab of ["changes","runs"]) {
+    el(tab+"-tab").addEventListener("click",() => selectTab(tab));
+    el(tab+"-tab").addEventListener("keydown",event => {
+      if (!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? "changes" : event.key === "End" ? "runs" : tab === "changes" ? "runs" : "changes";
+      selectTab(next); el(next+"-tab").focus();
+    });
+  }
   function schedule() {
     clearTimeout(timer);
     if (!stopped && last?.task.status !== "completed") timer = setTimeout(poll,document.hidden ? 15000 : 3000);
@@ -253,8 +343,8 @@
     let outcome = "unknown";
     if (!stopped && !document.hidden && !paused) {
       try {
-        await request("ui/message",{role:"user",content:[{type:"text",text:prepared.control.app_protocol.message}]});
-        outcome = "accepted";
+        const response = await request("ui/message",{role:"user",content:[{type:"text",text:prepared.control.app_protocol.message}]});
+        if (!response?.isError) outcome = "accepted";
       } catch (_) {}
     }
     if (!stopped) { try { await finish(wait.id,outcome); } catch (_) {} }
@@ -268,14 +358,19 @@
         if (!result.control?.bound) {
           render(result);
           const unsupported = ["missing_window","read_only"].includes(result.control?.reason);
-          el("connection").textContent = unsupported ? "僅顯示進度" : "其他視窗已連線";
-          if (result.task.status !== "completed") el("detail").textContent = unsupported ? "此對話無法自動續接，仍可在對話中繼續原任務。" : "此卡片會更新進度，由已連線的視窗接續工作。";
+          const replaced = result.control?.reason === "replaced_view";
+          el("connection").textContent = unsupported ? "僅顯示進度" : replaced ? "已由新卡片接手" : "其他視窗已連線";
+          if (result.task.status !== "completed") {
+            el("detail").textContent = unsupported ? "請在對話中繼續原任務。" : replaced ? "請使用此任務最新的卡片。" : "請回到已連線的視窗接續工作。";
+            el("continuation-state").textContent = unsupported ? "此對話僅顯示進度" : replaced ? "此卡片已由新卡片接手" : "由其他視窗接續";
+          }
           return;
         }
         if (!Number.isSafeInteger(result.control.generation) || result.control.generation < 1) throw new Error("invalid-bind");
         generation = result.control.generation; render(result);
       }
       const value = await call("state"); render(value);
+      el("reconnect").hidden = true;
       if (value.task.status === "completed") return;
       const wait = value.continuation.wait;
       if (wait?.state === "ready" && failedPrepare?.wait_id === wait.id
@@ -296,6 +391,7 @@
       generation = null;
       el("connection").textContent = "重新連線中"; el("dot").className = "dot attention";
       el("detail").textContent = "暫時無法更新，正在重新連線；工作紀錄已保留。";
+      el("reconnect").hidden = false;
     } finally { busy = false; schedule(); }
   }
   el("pause").addEventListener("click",async () => {
@@ -306,6 +402,15 @@
     try { const value = await call(action); changingPause = false; render(value); }
     catch (_) { el("detail").textContent = "設定尚未確認，請稍後再試。"; }
     finally { changingPause = false; el("pause").disabled = false; }
+  });
+  el("reconnect").addEventListener("click",async () => {
+    if (stopped || busy) return;
+    el("reconnect").disabled = true;
+    try {
+      if (!ready) { await initialize(); return; }
+      await poll();
+      if (ready && taskId) await loadReview(selectedPath,pendingReview?.jobId ?? null);
+    } finally { el("reconnect").disabled = false; }
   });
   function teardown() {
     if (stopped) return;
@@ -328,6 +433,7 @@
     if (data.method === "ui/notifications/tool-result") {
       try { const value = payload(data.params); select(value.task?.id); if (value.task?.id === taskId) render(value); } catch (_) {}
     }
+    if (data.method === "ui/notifications/host-context-changed") applyTheme(data.params);
     if (data.method === "ui/resource-teardown") {
       teardown();
       if (data.id !== undefined) parent.postMessage({jsonrpc:"2.0",id:data.id,result:{}},"*");
@@ -336,9 +442,22 @@
   addEventListener("visibilitychange",() => { clearTimeout(timer); if (!document.hidden) void poll(); else schedule(); });
   addEventListener("pagehide",teardown,{once:true});
   addEventListener("beforeunload",teardown,{once:true});
-  request("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"webcodex-task-progress",version:"1.0.0"},appCapabilities:{}})
-    .then(() => { ready = true; notify("ui/notifications/initialized"); void poll(); if (taskId && !reviewLoaded) void loadReview(); })
-    .catch(() => { el("connection").textContent = "尚未連線"; el("status").textContent = "無法載入任務卡片"; el("detail").textContent = "仍可在對話中查詢與接續原任務。"; });
+  function applyTheme(context) {
+    if (["dark","light"].includes(context?.theme)) document.documentElement.dataset.theme = context.theme;
+  }
+  async function initialize() {
+    try {
+      const result = await request("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"webcodex-task-progress",version:"1.0.0"},appCapabilities:{}});
+      applyTheme(result?.hostContext);
+      ready = true; el("reconnect").hidden = true;
+      notify("ui/notifications/initialized"); void poll(); if (taskId && !reviewLoaded) void loadReview();
+    } catch (_) {
+      el("connection").textContent = "尚未連線"; el("status").textContent = "無法載入任務卡片";
+      el("detail").textContent = "請重新連線，或在對話中重新開啟任務卡片。";
+      el("reconnect").hidden = false;
+    }
+  }
+  void initialize();
 })();
 </script>
 </body>

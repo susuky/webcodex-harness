@@ -37,6 +37,32 @@ async def review(client, task_id, path=None):
     pytest.fail("Review did not finish")
 
 
+async def test_each_user_turn_can_present_the_same_task_again(harness):
+    async with harness.mcp() as client:
+        specs = (await client.list_tools()).tools
+        assert {spec.name for spec in specs if spec.meta.get("ui", {}).get("resourceUri")} == {
+            "task_present"
+        }
+        selection = await call(client, "work_on_project")
+        assert selection["selection_required"] and "next_action" not in selection
+
+        opened = await call(
+            client,
+            "work_on_project",
+            {"project": "local/project", "title": "Repeat presentation", "request_id": "start"},
+        )
+        task_id = opened["task"]["id"]
+        for turn in range(2):
+            if turn:
+                opened = await call(client, "work_on_project", {"task_id": task_id})
+            action = opened["next_action"]
+            assert action == {"tool": "task_present", "arguments": {"task_id": task_id}}
+            presented = await call(client, action["tool"], action["arguments"])
+            assert presented["task"]["id"] == task_id
+            assert presented["task"]["status"] == "active"
+        assert [task["id"] for task in (await call(client, "task_list"))["tasks"]] == [task_id]
+
+
 async def test_new_project_inherits_trust_and_completed_work_remains_reviewable(tmp_path):
     harness = Harness(tmp_path)
     root = tmp_path / "projects"

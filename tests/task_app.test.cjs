@@ -55,7 +55,7 @@ function fixture(options = {}) {
     async request(method) {
       assert.equal(method, "ui/message"); host.messages++;
       if (host.failMessage) throw new Error("Host acknowledgement lost");
-      return {};
+      return host.failMessageResult ? {isError: true} : {};
     },
   };
   vm.createContext(context);
@@ -79,6 +79,22 @@ test("a failed state query can recover on a later poll with the same generation"
   await poll(); assert.equal(context.generation, null);
   await poll();
   assert.equal(host.prepareCalls, 2); assert.equal(host.messages, 1);
+});
+
+test("reconnect appears after polling fails and clears without resending an uncertain message", async () => {
+  const {host, context, poll} = fixture({failPrepare: null, failMessage: true});
+  await poll();
+  assert.equal(host.state, "unknown");
+  assert.equal(context.el("reconnect").hidden, true);
+  host.failedStates = 1;
+  await poll();
+  assert.equal(context.el("reconnect").hidden, false);
+  assert.equal(context.el("connection").textContent, "重新連線中");
+  await poll();
+  assert.equal(context.el("reconnect").hidden, true);
+  assert.equal(host.state, "unknown");
+  assert.equal(host.prepareCalls, 1);
+  assert.equal(host.messages, 1);
 });
 
 test("a lost prepared response never causes another prepare or Host message", async () => {
@@ -125,6 +141,16 @@ test("a new wait cannot clear the old wait's attempted fence", async () => {
 
 test("a lost Host message acknowledgement never resends the message", async () => {
   const {host, poll} = fixture({failPrepare: null, failMessage: true});
+  await poll(); await poll();
+  assert.equal(host.state, "unknown");
+  assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 1);
+});
+
+test("a rejected Host message result never becomes accepted or resends the message", async () => {
+  const {host, poll} = fixture({failPrepare: null, failMessageResult: true});
+  await poll();
+  assert.equal(host.state, "unknown");
+  host.failMessageResult = false;
   await poll(); await poll();
   assert.equal(host.state, "unknown");
   assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 1);

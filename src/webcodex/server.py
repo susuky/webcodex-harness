@@ -102,7 +102,7 @@ class TaskTools:
         title: Annotated[str, Field(min_length=1, max_length=500)] | None = None,
         request_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None,
     ) -> dict:
-        """Start or resume coding in one call. For new work pass an exact project ID and title; reuse request_id on retries. To continue pass an existing task_id, which supplies its authorized project. Returns current progress plus workspace_info (Git, instructions, tools). Follow workspace.next_action if it is still running. A completed task stays completed until task_update explicitly reopens it. Never infer an ambiguous project or silently create a replacement task."""
+        """Start or resume coding in one call. For new work pass an exact project ID and title; reuse request_id on retries. To continue pass an existing task_id, which supplies its authorized project. Returns current progress plus workspace_info (Git, instructions, tools). Follow next_action to present the task card for this user-initiated turn, then follow workspace.next_action if it is still running. A completed task stays completed until task_update explicitly reopens it. Never infer an ambiguous project or silently create a replacement task."""
         if "read" not in self.service.config.clients[self.owner].permissions:
             raise ValueError("Starting a workspace requires read permission")
         if task_id:
@@ -120,7 +120,11 @@ class TaskTools:
                 }
             task = await self.task_create(project, title or "開發：" + project, request_id)
         workspace = await self.service.call(self.owner, "workspace_info", {"task_id": task["id"]})
-        return {"task": await self.task_get(task["id"]), "workspace": workspace}
+        return {
+            "task": await self.task_get(task["id"]),
+            "workspace": workspace,
+            "next_action": {"tool": "task_present", "arguments": {"task_id": task["id"]}},
+        }
 
     @tool()
     async def task_list(
@@ -153,7 +157,7 @@ class TaskTools:
 
     @tool()
     async def task_get(self, task_id: str) -> dict:
-        """Resume a task using progress: current approval policy, pending jobs and latest process observations/output. Saved status/summary/plan may be stale; use progress before claiming a blocker. Follow next_actions in this turn without asking the user to say continue. This restores saved work records."""
+        """Resume a task using progress: current approval policy, pending jobs and latest process observations/output. Saved status/summary/plan may be stale; use progress before claiming a blocker. When only waiting remains, use an available continuation.handoff.next_action and yield; otherwise follow next_actions in this turn without asking the user to say continue. This restores saved work records."""
         task = self.task(task_id)
         task["jobs"] = self.store.rows(
             "SELECT id AS job_id,tool,status,created,updated FROM jobs WHERE task_id=? ORDER BY created DESC LIMIT 30",
@@ -165,14 +169,15 @@ class TaskTools:
         )
         task["progress"] = self.service.task_progress(task)
         task["service"] = self.store.service
-        task["continuation"] = self.service.continuations.public(task_id)
+        task["continuation"] = self.service.task_continuation(task, self.window, task["progress"])
+        task["progress"]["next_step"] += self.service.handoff_guidance(task["continuation"])
         return task
 
     @tool()
     async def task_present(self, task_id: str) -> dict:
-        """Show one persistent task progress App in this conversation. Present it once when beginning/resuming sustained work, then use ordinary tools. The App refreshes authoritative state and can request a later model turn for an explicit task_wait; displaying it does not approve or run work. Clients without App support can keep using task_get/job_get."""
+        """Show the task progress App for the current turn. Call once in each user-initiated turn that starts or resumes sustained work, even if an earlier turn already showed this task's card. Reuse that card for ordinary tool calls within the turn and for automatic task_resume continuation. The App refreshes authoritative state and can request a later model turn for an explicit task_wait; displaying it does not approve or run work. Clients without App support can keep using task_get/job_get."""
         task = self.task(task_id)
-        return self.service.task_presentation(task)
+        return self.service.task_presentation(task, self.window)
 
     @tool()
     async def task_review(
@@ -238,7 +243,7 @@ class TaskTools:
                 raise ValueError("Every waiting job must belong to this exact task")
         self.service.continuations.arm(task_id, job_ids, request_id, replace_wait_id)
         await self.service.refresh_task_wait(task)
-        return self.service.task_presentation(task)
+        return self.service.task_presentation(task, self.window)
 
     @tool("write")
     async def task_resume(
@@ -270,7 +275,7 @@ class TaskTools:
             if action not in {"bind", "state"}:
                 raise ValueError("Continuation control is not permitted for a read-only client")
             return {
-                **self.service.task_presentation(task),
+                **self.service.task_presentation(task, self.window),
                 "control": {"bound": False, "reason": "read_only"},
             }
         continuation = self.service.continuations
@@ -286,7 +291,7 @@ class TaskTools:
             )
         if action in {"bind", "state"}:
             await self.service.refresh_task_wait(task)
-        return {**self.service.task_presentation(task), "control": control}
+        return {**self.service.task_presentation(task, self.window), "control": control}
 
     @tool("write")
     async def task_update(
@@ -333,13 +338,20 @@ class TaskTools:
     async def job_get(
         self, job_id: str, wait_seconds: Annotated[float, Field(ge=0, le=20)] = 0
     ) -> dict:
-        """Observe the same durable job after a timeout/disconnect/approval without repeating execution. Read outcome and next_action: job status succeeded only means the tool returned; a process may still be running or have failed. Follow next_action in this turn. approved=0 is not a blocker unless status is pending_approval."""
+        """Observe the same durable job after a timeout/disconnect/approval without repeating execution. Read outcome and next_action: job status succeeded only means the tool returned; a process may still be running or have failed. When only waiting remains, use an available continuation.handoff.next_action and yield; otherwise follow next_action in this turn. approved=0 is not a blocker unless status is pending_approval."""
         job = self.store.job(job_id, self.owner)
         self.task(job["task_id"])
         deadline = time.monotonic() + wait_seconds
         while job["status"] in {"queued", "running"} and time.monotonic() < deadline:
             await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
             job = self.store.job(job_id, self.owner)
+        task = self.task(job["task_id"])
+        job["continuation"] = self.service.task_continuation(
+            task, self.window, self.service.task_progress(task)
+        )
+        guidance = self.service.handoff_guidance(job["continuation"])
+        if guidance:
+            job["next_step"] = job.get("next_step", "") + guidance
         return job
 
     @tool("write")
@@ -445,8 +457,114 @@ class Service:
                 ready = False
         self.continuations.refresh(wait["id"], wait["jobs"], jobs, ready)
 
-    def task_presentation(self, task: dict) -> dict:
+    def task_continuation(self, task: dict, window: str | None, progress: dict) -> dict:
+        continuation = self.continuations.public(task["id"])
+        wait = continuation["wait"]
+        handoff = {"state": "not_armed", "condition": "only_when_no_independent_work"}
+        reason = None
+        if task["status"] == "completed":
+            reason = "completed"
+        elif task["kind"] != "coding":
+            reason = "unsupported_task"
+        elif "write" not in self.config.clients[task["owner"]].permissions:
+            reason = "read_only"
+        elif continuation["paused"]:
+            reason = "paused"
+        elif progress["state"] in {
+            "project_changed",
+            "waiting_approval",
+            "waiting_operator",
+            "waiting_runner",
+        }:
+            reason = progress["state"]
+        elif window is None:
+            reason = "missing_window"
+        else:
+            controller = self.store.one(
+                "SELECT window_hash,lease_until FROM task_controllers WHERE task_id=?",
+                (task["id"],),
+            )
+            if not controller:
+                reason = "not_connected"
+            elif controller["window_hash"] != window:
+                reason = "another_window"
+            elif controller["lease_until"] <= time.time():
+                reason = "expired"
+            elif wait and wait["state"] in {"watching", "ready", "prepared", "accepted", "unknown"}:
+                handoff["state"] = wait["state"]
+            elif progress["pending_jobs_truncated"]:
+                reason = "incomplete_job_list"
+            else:
+                # Check all process histories: task_activity only lists the newest 100 processes.
+                running = self.store.rows(
+                    "WITH latest AS (SELECT id,process_status,"
+                    "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
+                    "FROM jobs WHERE task_id=? AND status='succeeded' AND process_id IS NOT NULL "
+                    "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
+                    "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
+                    "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id)) "
+                    "SELECT id FROM latest WHERE rank=1 AND process_status='running' "
+                    "UNION SELECT agent_id AS id FROM agent_observations "
+                    "WHERE task_id=? AND status='running' LIMIT 9",
+                    (task["id"], task["id"]),
+                )
+                jobs = sorted(
+                    {job["job_id"] for job in progress["pending_jobs"]}
+                    | {job["id"] for job in running}
+                )
+                if len(jobs) > 8:
+                    reason = "too_many_jobs"
+                elif not jobs:
+                    handoff["state"] = wait["state"] if wait else "not_armed"
+                    handoff["reason"] = "no_pending_jobs"
+                else:
+                    handoff["state"] = "available"
+                    request = json.dumps([task["id"], jobs, wait["id"] if wait else None])
+                    handoff["next_action"] = {
+                        "tool": "task_wait",
+                        "arguments": {
+                            "task_id": task["id"],
+                            "job_ids": jobs,
+                            "request_id": "handoff:" + fingerprint(request),
+                        },
+                    }
+        if reason:
+            handoff.update(state="blocked", reason=reason)
+        return {**continuation, "handoff": handoff}
+
+    @staticmethod
+    def handoff_guidance(continuation: dict) -> str:
+        handoff = continuation["handoff"]
+        if handoff["state"] == "available":
+            return (
+                " If no independent work remains, call continuation.handoff.next_action with its exact "
+                "arguments, then yield. Otherwise continue working in this turn. Automatic continuation "
+                "requires a successful task_wait; an available handoff has not been armed."
+            )
+        if handoff.get("reason") in {
+            "missing_window",
+            "not_connected",
+            "another_window",
+            "expired",
+        }:
+            return (
+                " To hand off waiting, call task_present for this task in this conversation, then recheck "
+                "continuation.handoff after the card binds. Presenting alone does not confirm a connected "
+                "card. Until handoff is available, keep observing the original jobs in this turn."
+            )
+        if handoff["state"] in {"watching", "ready"}:
+            return (
+                " Waiting has been handed off to the task App. After a successful task_wait, report "
+                "what is running and yield; the App observes those jobs. On its continuation message, "
+                "call task_resume before resuming work."
+            )
+        if handoff["state"] in {"prepared", "accepted", "unknown"}:
+            return " Preserve the current continuation; do not arm or replace an uncertain delivery automatically."
+        return ""
+
+    def task_presentation(self, task: dict, window: str | None = None) -> dict:
         progress = self.task_progress(task)
+        continuation = self.task_continuation(task, window, progress)
         return {
             "task": {
                 "id": task["id"],
@@ -459,8 +577,9 @@ class Service:
                 "runner_online": progress["runner_online"],
                 "pending_count": len(progress["pending_jobs"]),
                 "updated": progress["last_job_update"] or task["updated"],
+                "next_step": progress["next_step"] + self.handoff_guidance(continuation),
             },
-            "continuation": self.continuations.public(task["id"]),
+            "continuation": continuation,
         }
 
     def release_pending_approvals(self):
@@ -845,12 +964,18 @@ def create_app(config: ServerConfig):
             "On resume, task_get.progress takes precedence over saved status/summary/plan. A stale waiting "
             "summary is not a current blocker. Read latest_execution: job status succeeded only means the "
             "tool returned; outcome/exit_code can show command failure. approved=0 is not pending approval. "
-            "Follow returned next_action/next_actions during the current turn until work finishes or a real "
-            "blocker needs user input; do not require repeated 'continue' messages to poll an active job. "
+            "Follow returned next_action/next_actions during the current turn while independent work "
+            "remains. When only waiting remains and continuation.handoff.state is available, call its "
+            "next_action with the exact arguments, then yield. An available handoff is not armed until "
+            "task_wait succeeds. Otherwise keep observing existing jobs in this turn until work finishes "
+            "or a real blocker needs user input; do not require repeated 'continue' messages to poll. "
             "Tell the user what is starting before a long operation. While working, give a brief visible "
             "update when the state changes or after about 30 seconds of waiting; don't silently chain "
             "tool calls. Base updates on observed results, not estimated completion percentages. "
-            "For sustained work, call task_present once to show the task progress App. "
+            "In each user-initiated turn that starts or resumes sustained work, call task_present "
+            "once to show the task progress App, even if an earlier turn already showed it. "
+            "Follow work_on_project.next_action to present it. Reuse that card for ordinary tool "
+            "calls within the turn and for automatic task_resume continuation. "
             "When only existing jobs remain to wait for and the App is connected, call task_wait "
             "with those exact job IDs, tell the user what is running, and yield. The App can request "
             "a later turn. On that request call task_resume first; already_consumed=true means "
