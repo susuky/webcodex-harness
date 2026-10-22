@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import re
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -172,7 +173,7 @@ class TaskTools:
             "SELECT id,question,answer FROM questions WHERE task_id=? ORDER BY created DESC LIMIT 20",
             (task_id,),
         )
-        task["progress"] = self.service.task_progress(task)
+        task["progress"] = self.service.task_progress(task, self.window)
         task["service"] = self.store.service
         task["continuation"] = self.service.task_continuation(task, self.window, task["progress"])
         self.service.route_waiting_progress(task["progress"], task["continuation"])
@@ -359,7 +360,7 @@ class TaskTools:
             job = self.store.job(job_id, self.owner)
         task = self.task(job["task_id"])
         job["continuation"] = self.service.task_continuation(
-            task, self.window, self.service.task_progress(task)
+            task, self.window, self.service.task_progress(task, self.window)
         )
         self.service.route_waiting_job(job)
         return job
@@ -413,6 +414,7 @@ class Service:
         self.app_uri = f"{APP_URI}/{hashlib.sha256(self.app_html.encode()).hexdigest()[:16]}.html"
         self.config, self.store = config, Store(config.state_dir)
         self.diagnostics = Diagnostics("server", config.state_dir / "diagnostics")
+        self.observe_tool_activity(self.store.interrupt_tool_activity)
         self.continuations = Continuations(self.store)
         self.release_pending_approvals()
 
@@ -653,7 +655,7 @@ class Service:
         return ""
 
     def task_presentation(self, task: dict, window: str | None = None) -> dict:
-        progress = self.task_progress(task)
+        progress = self.task_progress(task, window)
         continuation = self.task_continuation(task, window, progress)
         return {
             "task": {
@@ -668,6 +670,7 @@ class Service:
                 "pending_count": len(progress["pending_jobs"]),
                 "updated": progress["last_job_update"] or task["updated"],
                 "next_step": progress["next_step"] + self.handoff_guidance(continuation),
+                "liveness": progress["liveness"],
             },
             "continuation": continuation,
         }
@@ -717,8 +720,9 @@ class Service:
         if project not in allowed:
             raise ValueError("Project is not authorized for this client")
 
-    def task_progress(self, task: dict) -> dict:
+    def task_progress(self, task: dict, window: str | None = None) -> dict:
         activity = self.store.task_activity(task)
+        work = activity.pop("work")
         client = self.config.clients[task["owner"]]
         required = (
             self.approvals_for(task["owner"], task["runner"] + "/" + task["project"], task["kind"])
@@ -839,6 +843,12 @@ class Service:
             if state in {"waiting_runner", "project_changed", "completed"}
             else actions,
             "output_actions": output_actions,
+            "liveness": {
+                "observed_at": time.time(),
+                "runner_last_seen": runner["seen"] if runner else None,
+                "conversation": self.store.tool_activity(task["id"], window),
+                "work": work,
+            },
         }
 
     def specs(self, owner: str) -> list[types.Tool]:
@@ -914,6 +924,45 @@ class Service:
                 allowed.append(job)
         return allowed
 
+    def tool_activity_task(
+        self, owner: str, name: str, arguments: dict, result: dict | None = None
+    ) -> str | None:
+        if not isinstance(name, str) or name in {"task_app", "task_review"}:
+            return None
+        definition = LOCAL.get(name) or REMOTE.get(name) or PROJECT_OPERATIONS.get(name)
+        if definition is None:
+            return None
+        try:
+            if result is not None:
+                if name == "task_create":
+                    task_id = result.get("id")
+                elif name == "work_on_project":
+                    task_id = (result.get("task") or {}).get("id")
+                else:
+                    task_id = result.get("task_id")
+            elif not isinstance(arguments, dict):
+                return None
+            elif name in {"job_get", "job_cancel"}:
+                job_id = arguments.get("job_id")
+                if not isinstance(job_id, str):
+                    return None
+                task_id = self.store.job(job_id, owner)["task_id"]
+            elif "task_id" in definition.model.model_fields:
+                task_id = arguments.get("task_id")
+            else:
+                return None
+            if isinstance(task_id, str):
+                return TaskTools(self, owner).task(task_id)["id"]
+        except (ValueError, KeyError):
+            pass
+        return None
+
+    def observe_tool_activity(self, operation, *args, **kwargs):
+        try:
+            operation(*args, **kwargs)
+        except sqlite3.Error as error:
+            self.diagnostics.record("activity.error", exception_type=type(error).__name__)
+
     async def traced_call(
         self,
         owner: str,
@@ -922,6 +971,7 @@ class Service:
         *,
         window: str | None = None,
         diagnostic_context: dict | None = None,
+        track_activity: bool = False,
     ) -> dict:
         fields = {
             "trace_id": new_id(),
@@ -938,15 +988,43 @@ class Service:
                     fields[key] = arguments.get(key)
                 fields["delivery_outcome"] = arguments.get("outcome")
         started = time.monotonic()
+        activity_started = time.time()
+        activity_task = self.tool_activity_task(owner, name, arguments) if track_activity else None
+        activity_trace = new_id()
+        if activity_task:
+            self.observe_tool_activity(
+                self.store.start_tool_activity,
+                activity_task,
+                activity_trace,
+                name,
+                activity_started,
+                window=window,
+            )
         self.diagnostics.record("tool.started", **fields)
         try:
             result = await self.call(owner, name, arguments, window=window)
         except asyncio.CancelledError:
+            if activity_task:
+                self.observe_tool_activity(
+                    self.store.finish_tool_activity,
+                    activity_task,
+                    activity_trace,
+                    activity_started,
+                    "cancelled",
+                )
             self.diagnostics.record(
                 "tool.cancelled", **fields, duration_ms=(time.monotonic() - started) * 1000
             )
             raise
         except Exception as error:
+            if activity_task:
+                self.observe_tool_activity(
+                    self.store.finish_tool_activity,
+                    activity_task,
+                    activity_trace,
+                    activity_started,
+                    "error",
+                )
             self.diagnostics.record(
                 "tool.error",
                 **fields,
@@ -973,6 +1051,30 @@ class Service:
         payload = payload if isinstance(payload, dict) else {}
         native = payload.get("mcp_result")
         native = native if isinstance(native, dict) else {}
+        is_error = (
+            result.get("status") in {"failed", "cancelled", "unknown"}
+            or native.get("isError") is True
+        )
+        if track_activity and activity_task is None:
+            activity_task = self.tool_activity_task(owner, name, arguments, result)
+            if activity_task:
+                self.observe_tool_activity(
+                    self.store.start_tool_activity,
+                    activity_task,
+                    activity_trace,
+                    name,
+                    activity_started,
+                    late_bound=True,
+                    window=window,
+                )
+        if activity_task:
+            self.observe_tool_activity(
+                self.store.finish_tool_activity,
+                activity_task,
+                activity_trace,
+                activity_started,
+                "error" if is_error else "returned",
+            )
         self.diagnostics.record(
             "tool.completed",
             **fields,
@@ -980,8 +1082,7 @@ class Service:
             outcome=result.get("status", "returned"),
             process_outcome=payload.get("outcome", payload.get("status")),
             exit_code=payload.get("exit_code"),
-            is_error=result.get("status") in {"failed", "cancelled", "unknown"}
-            or native.get("isError") is True,
+            is_error=is_error,
         )
         return result
 
@@ -1339,6 +1440,7 @@ def create_app(config: ServerConfig):
                     arguments,
                     window=window,
                     diagnostic_context=diagnostic_context,
+                    track_activity=True,
                 )
             )
         except (ValueError, ValidationError) as error:

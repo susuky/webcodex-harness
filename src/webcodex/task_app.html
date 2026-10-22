@@ -13,7 +13,7 @@
     button,input{font:inherit;font-size:14px;color:inherit}button{font-weight:500;line-height:1.5;min-height:40px;padding:7px 12px;border:1px solid var(--control-line);border-radius:7px;background:transparent;cursor:pointer}button:hover{background:var(--soft)}button:active{background:var(--line)}button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}::selection{background:var(--good-bg);color:var(--ink)}
     .review{margin:24px 0;border-top:1px solid var(--line);padding-top:20px}.review header{align-items:center}.review-tabs{display:flex;gap:20px;margin-top:12px;border-bottom:1px solid var(--line)}.review-tabs button{border:0;border-radius:0;padding:9px 0;border-bottom:2px solid transparent;color:var(--muted)}.review-tabs button[aria-selected=true]{border-bottom-color:var(--accent);color:var(--ink);font-weight:650}.count{font-variant-numeric:tabular-nums;font-size:12px;margin-left:6px;color:var(--muted)}.review-state{font-size:13px;min-height:22px;margin:12px 0 0;color:var(--muted)}.review-note{font-size:13px;color:var(--muted);margin:10px 0}.review-layout{display:grid;grid-template-columns:minmax(150px,210px) minmax(0,1fr);gap:20px;margin-top:12px}.review-layout.empty{grid-template-columns:1fr}.file-list{max-height:340px;overflow:auto;display:flex;flex-direction:column;gap:4px}.file-list button{flex:none;text-align:left;display:block;width:100%;overflow-wrap:anywhere;border-color:transparent;padding:9px 10px}.file-list button[aria-pressed=true]{border-color:var(--control-line);background:var(--soft)}.file-name{display:block;font-weight:600}.file-directory,.file-state{display:block;font-size:12px;color:var(--muted)}.preview{min-width:0}.preview h3{font-size:14px;overflow-wrap:anywhere;margin:0 0 8px}.preview p,.run p{font-size:13px;margin:8px 0}
     pre{font:13px/1.65 ui-monospace,"Noto Sans Mono",monospace;tab-size:4;padding:12px;background:var(--soft);border:1px solid var(--line);border-radius:6px;overflow:auto;max-height:380px;margin:8px 0;white-space:pre}.diff{padding:12px 0}.diff span{display:block;min-width:max-content;padding:0 12px}.diff-add{color:var(--good);background:var(--good-bg)}.diff-remove{color:var(--bad);background:var(--bad-bg)}.diff-heading{color:var(--muted)}#runs{margin-top:12px}.run{border-bottom:1px solid var(--line);padding:12px 0}.run summary{cursor:pointer;font-size:14px;overflow-wrap:anywhere;min-height:40px}.outcome{display:inline-block;font-size:12px;font-weight:650;margin-right:10px;padding:2px 7px;border-radius:4px;background:var(--soft)}.run[data-status=completed] .outcome{color:var(--good);background:var(--good-bg)}.run[data-status=failed] .outcome,.run[data-status=timed_out] .outcome{color:var(--bad);background:var(--bad-bg)}.run code{font:13px/1.6 ui-monospace,monospace}.run-summary{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;margin:8px 0}.run-count-failed{color:var(--bad);font-weight:650}
-    .continuation-state{font-size:13px;color:var(--muted);margin:16px 0 0}footer{border-top:1px solid var(--line);padding-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px}.updated{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.footer-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .activity{margin:18px 0 0;font-size:14px}.activity dl{margin:0}.activity dl>div{display:grid;grid-template-columns:100px minmax(0,1fr);gap:12px;margin:7px 0}.activity dt{color:var(--muted)}.activity dd{margin:0;min-width:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.work-observation{display:block;color:var(--muted);font-size:13px}.activity button{margin-top:5px}.activity[data-attention=true]{border-top:1px solid var(--line);padding-top:12px}footer{border-top:1px solid var(--line);padding-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px}.updated{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.footer-actions{display:flex;gap:8px;flex-wrap:wrap}
     @media(prefers-color-scheme:dark){:root:not([data-theme=light]){--ink:var(--color-text-primary,#edf2ee);--muted:var(--color-text-secondary,#b2beb5);--surface:var(--color-background-primary,#202422);--soft:var(--color-background-secondary,#303a33);--line:var(--color-border-tertiary,#414b44);--control-line:var(--color-border-secondary,#58625b);--accent:#a9dbba;--good:#a9dbba;--good-bg:#244632;--bad:#f0aaa2;--bad-bg:#4b2926}}
     :root[data-theme=dark]{color-scheme:dark;--ink:var(--color-text-primary,#edf2ee);--muted:var(--color-text-secondary,#b2beb5);--surface:var(--color-background-primary,#202422);--soft:var(--color-background-secondary,#303a33);--line:var(--color-border-tertiary,#414b44);--control-line:var(--color-border-secondary,#58625b);--accent:#a9dbba;--good:#a9dbba;--good-bg:#244632;--bad:#f0aaa2;--bad-bg:#4b2926}
     :root[data-theme=light]{color-scheme:light}
@@ -22,11 +22,18 @@
 </head>
 <body>
 <main aria-label="任務進度">
-  <header><h1 id="title">任務進度</h1><div class="signal"><span id="dot" class="dot"></span><span id="connection">連線中</span></div></header>
+  <header><h1 id="title">任務進度</h1><div class="signal"><span id="dot" class="dot"></span><span id="connection">卡片連線中</span></div></header>
   <section aria-live="polite" aria-atomic="true"><p id="status">正在讀取任務</p><p id="detail">連線後會顯示目前進度。</p></section>
+  <section id="activity" class="activity" aria-label="連線與工作狀態">
+    <dl>
+      <div><dt>ChatGPT 工具</dt><dd id="conversation-activity">尚未取得工具活動紀錄</dd></div>
+      <div><dt>工作電腦</dt><dd><span id="runner-activity">確認中</span><span id="work-observation" class="work-observation"></span></dd></div>
+      <div id="continuation-row"><dt>自動續接</dt><dd id="continuation-state">尚未安排</dd></div>
+    </dl>
+    <button id="check-status" type="button" disabled>檢查狀態</button>
+  </section>
   <div id="plan-progress" class="plan-progress" hidden><span id="step-summary"></span><progress id="step-progress" aria-labelledby="step-summary"></progress></div>
   <ol id="steps" aria-label="工作步驟"></ol>
-  <p id="continuation-state" class="continuation-state" role="status">尚未安排自動續接</p>
   <section class="review" aria-labelledby="review-title">
     <header><h2 id="review-title">檢查成果</h2><button id="review-refresh" type="button">讀取修改與結果</button></header>
     <div class="review-tabs" role="tablist" aria-label="檢視內容"><button id="changes-tab" type="button" role="tab" aria-selected="true" aria-controls="changes">修改內容<span id="changes-count" class="count"></span></button><button id="runs-tab" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="runs">執行結果<span id="runs-count" class="count"></span></button></div>
@@ -46,6 +53,7 @@
   let sequence = 0, taskId = null, generation = null, ready = false, stopped = false;
   let busy = false, timer = null, paused = false, last = null, pendingFinish = null, changingPause = false;
   let failedPrepare = null;
+  let activityReceivedAt = 0, connectionFailed = false, stateCopy = null;
   let pauseRevision = 0;
   let reviewVersion = 0, reviewLoaded = false, selectedPath = null, pendingReview = null;
   const viewId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,"0")).join("");
@@ -53,7 +61,7 @@
     ready: ["準備接續工作", "目前沒有等待中的工作。"],
     observing: ["工作進行中", ""],
     waiting_approval: ["等待核准", "請依對話中的說明完成核准，原工作會保留。"],
-    waiting_runner: ["等待重新連線", "工作紀錄已保留，連線恢復後會再確認。"],
+    waiting_runner: ["工作電腦未連線", "連線恢復後會確認原工作。"],
     waiting_operator: ["等待回覆", "請先回答任務中的待確認事項。"],
     needs_attention: ["有結果需要處理", "請在對話中接續檢查結果。"],
     project_changed: ["需要確認專案", "專案位置已變更，請先在對話中確認。"],
@@ -104,11 +112,62 @@
     taskId = id;
     if (ready) { void poll(); if (!reviewLoaded) void loadReview(); }
   }
+  function activityView(value, elapsed=0) {
+    const progress = value.progress, live = progress.liveness;
+    const now = Number.isFinite(live?.observed_at) ? live.observed_at + Math.max(0,elapsed) : null;
+    const age = stamp => now !== null && Number.isFinite(stamp) ? Math.max(0,now-stamp) : null;
+    const ago = seconds => seconds < 10 ? "剛剛" : seconds < 60 ? `${Math.floor(seconds)} 秒前`
+      : seconds < 3600 ? `${Math.floor(seconds/60)} 分鐘前` : `${Math.floor(seconds/3600)} 小時前`;
+    const clock = stamp => new Date(stamp*1000).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    const conversation = live?.conversation;
+    const stamp = conversation?.finished_at ?? conversation?.started_at;
+    const seconds = age(stamp);
+    const outcomes = {running:"工具等候回應",returned:"最近工具回應",error:"最近工具失敗",cancelled:"最近工具已取消",interrupted:"上次工具連線中斷"};
+    const text = seconds === null ? "尚未取得工具活動紀錄"
+      : `${outcomes[conversation.outcome] || "最近工具活動"} ${clock(stamp)}（${ago(seconds)}）`;
+    const seen = age(live?.runner_last_seen);
+    const runner = progress.runner_online ? `已連線${seen === null ? "" : `（${ago(seen)}確認）`}`
+      : `尚未連線${seen === null ? "" : `，最後活動 ${clock(live.runner_last_seen)}（${ago(seen)}）`}`;
+    const observed = live?.work, observedAge = age(observed?.observed_at);
+    const work = !observed ? "尚未取得工作狀態"
+      : observed.running_count ? `上次觀察有 ${observed.running_count} 項工作執行中${observedAge === null ? "" : `（${ago(observedAge)}）`}`
+      : observed.pending_count ? `有 ${observed.pending_count} 項未完成工作` : "目前沒有執行中的工作紀錄";
+    const wait = value.continuation.wait;
+    const waiting = ["watching","ready","prepared","accepted","unknown"].includes(wait?.state);
+    const quiet = seconds !== null && seconds >= 180 && value.task.status !== "completed"
+      && value.control?.bound !== false && !value.continuation.paused && !waiting
+      && ["ready","observing"].includes(progress.state);
+    const notice = quiet ? conversation.outcome === "running" ? "工具回應已等候超過 3 分鐘"
+      : `已有 ${ago(seconds).replace(/前$/,"")}沒有新的對話工具活動` : null;
+    return {conversation:text,runner,work,notice};
+  }
+  function refreshActivity() {
+    if (!last) return;
+    const elapsed = Math.max(0,(Date.now()-activityReceivedAt)/1000);
+    const view = activityView(last,elapsed);
+    const stale = last.task.status !== "completed" && elapsed >= 45;
+    const unavailable = connectionFailed || stale;
+    el("conversation-activity").textContent = view.conversation;
+    el("runner-activity").textContent = unavailable ? "尚無最新連線狀態"
+      : last.task.status === "completed" && elapsed >= 45 ? "任務完成後未再檢查連線" : view.runner;
+    el("work-observation").textContent = view.work;
+    el("activity").dataset.attention = String(Boolean(view.notice) || unavailable);
+    if (unavailable) {
+      el("connection").textContent = connectionFailed ? "卡片重新連線中" : "卡片等待更新"; el("dot").className = "dot attention";
+      el("status").textContent = connectionFailed ? "卡片暫時無法更新" : "卡片資料待更新";
+      el("detail").textContent = "目前顯示上次紀錄。請重新連線，確認最新工作狀態。";
+      el("reconnect").hidden = false;
+    } else if (stateCopy) {
+      el("status").textContent = view.notice || stateCopy[0];
+      el("detail").textContent = view.notice
+        ? "若 ChatGPT 顯示「思考失敗」或計時停住，請在原對話按「重試」。" : stateCopy[1];
+    }
+  }
   function render(value) {
     if (!value.task || value.task.id !== taskId || !value.progress || !value.continuation) throw new Error("invalid-state");
     if (!states[value.progress.state] || !Array.isArray(value.task.plan)) throw new Error("invalid-state");
     const justCompleted = value.task.status === "completed" && last && last.task.status !== "completed";
-    last = value;
+    last = value; activityReceivedAt = Date.now(); connectionFailed = false;
     if (!changingPause && value.pauseRevision === pauseRevision) paused = value.continuation.paused;
     el("title").textContent = value.task.title;
     let [status,detail] = states[value.progress.state];
@@ -120,7 +179,7 @@
     } else if (wait?.state === "prepared") {
       status = "正在傳送接續通知"; detail = "";
     } else if (wait?.state === "accepted") {
-      status = "已送出接續通知"; detail = "正在等候對話回覆。";
+      status = "已送出接續通知"; detail = "若對話顯示失敗或計時停住，請在原對話按「重試」。";
     } else if (wait && wait.state === "unknown") {
       status = "尚未確認是否接續"; detail = "請在對話中確認目前任務。";
     } else if (blocked) {
@@ -135,16 +194,17 @@
     } else if (wait?.state === "ready") {
       status = "工作結果已就緒"; detail = document.hidden ? "切回此對話後會請求接續。" : "正在準備接續原任務。";
     }
+    stateCopy = [status,detail];
     el("status").textContent = status; el("detail").textContent = detail;
     const activeWait = wait && ["watching","ready","prepared","accepted","unknown"].includes(wait.state);
     const continuationLabels = {
-      watching: document.hidden ? "已安排接續，回到此對話後處理結果" : "已安排自動續接，等待工作結果",
-      ready:"已安排自動續接，結果已就緒", prepared:"正在傳送接續通知",
-      accepted:"已送出接續通知", unknown:"接續請求尚未確認", consumed:"先前的接續通知已處理", cancelled:"先前的自動續接已取消",
+      watching: document.hidden ? "已安排，回到此對話後處理結果" : "已安排，等待工作結果",
+      ready:"已安排，結果已就緒", prepared:"正在傳送通知",
+      accepted:"已送出通知", unknown:"接續請求尚未確認", consumed:"先前通知已處理，目前未安排", cancelled:"先前等待已取消，目前未安排",
     };
-    el("continuation-state").hidden = value.task.status === "completed" || paused || blocked || ["prepared","accepted","unknown"].includes(wait?.state);
-    el("continuation-state").textContent = paused ? "自動續接已暫停"
-      : continuationLabels[wait?.state] || "尚未安排自動續接";
+    el("continuation-row").hidden = value.task.status === "completed" || paused || blocked || ["prepared","accepted","unknown"].includes(wait?.state);
+    el("continuation-state").textContent = paused ? "已暫停"
+      : continuationLabels[wait?.state] || "尚未安排";
     const completed = value.task.plan.filter(item => item.status === "completed").length;
     el("plan-progress").hidden = value.task.plan.length === 0;
     el("step-summary").textContent = `已完成 ${completed} / ${value.task.plan.length} 步驟`;
@@ -162,11 +222,12 @@
     });
     el("pause").hidden = generation === null || value.task.status === "completed" || (!activeWait && !paused);
     el("pause").textContent = paused ? "啟用自動續接" : "暫停自動續接";
-    el("updated").textContent = "進度更新 " + new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    el("updated").textContent = "卡片更新 " + new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
     if (generation !== null) {
-      el("connection").textContent = document.hidden ? "背景連線" : "已連線";
+      el("connection").textContent = document.hidden ? "卡片背景連線" : "卡片已連線";
       el("dot").className = "dot live";
     }
+    refreshActivity();
     notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
     if (justCompleted && ready && reviewLoaded) void loadReview(selectedPath);
   }
@@ -365,18 +426,20 @@
   }
   async function poll() {
     if (!ready || !taskId || stopped || busy) return;
-    busy = true;
+    busy = true; el("check-status").disabled = true;
     try {
       if (generation === null) {
         const result = await call("bind");
         if (!result.control?.bound) {
           render(result);
+          el("reconnect").hidden = true;
           const unsupported = ["missing_window","read_only"].includes(result.control?.reason);
           const replaced = result.control?.reason === "replaced_view";
           el("connection").textContent = unsupported ? "僅顯示進度" : replaced ? "已由新卡片接手" : "其他視窗已連線";
           if (result.task.status !== "completed") {
             el("detail").textContent = unsupported ? "請在對話中繼續原任務。" : replaced ? "請使用此任務最新的卡片。" : "請回到已連線的視窗接續工作。";
             el("continuation-state").textContent = unsupported ? "此對話僅顯示進度" : replaced ? "此卡片已由新卡片接手" : "由其他視窗接續";
+            stateCopy = [el("status").textContent,el("detail").textContent];
           }
           return;
         }
@@ -402,11 +465,13 @@
         await finish(wait.id,"unknown",deliveryError("interrupted"));
       } else if (wait?.state === "ready") await dispatch(wait);
     } catch (_) {
-      generation = null;
-      el("connection").textContent = "重新連線中"; el("dot").className = "dot attention";
-      el("detail").textContent = "暫時無法更新，正在重新連線；工作紀錄已保留。";
+      generation = null; connectionFailed = true;
+      el("connection").textContent = "卡片重新連線中"; el("dot").className = "dot attention";
+      el("status").textContent = "卡片暫時無法更新";
+      el("detail").textContent = "目前顯示上次紀錄。請重新連線，確認最新工作狀態。";
       el("reconnect").hidden = false;
-    } finally { busy = false; schedule(); }
+      refreshActivity();
+    } finally { busy = false; el("check-status").disabled = false; schedule(); }
   }
   el("pause").addEventListener("click",async () => {
     if (generation === null || stopped) return;
@@ -416,6 +481,10 @@
     try { const value = await call(action); changingPause = false; render(value); }
     catch (_) { el("detail").textContent = "設定尚未確認，請稍後再試。"; }
     finally { changingPause = false; el("pause").disabled = false; }
+  });
+  el("check-status").addEventListener("click",async () => {
+    if (stopped || busy) return;
+    if (!ready) await initialize(); else await poll();
   });
   el("reconnect").addEventListener("click",async () => {
     if (stopped || busy) return;
@@ -431,7 +500,7 @@
     if (taskId && generation !== null) {
       parent.postMessage({jsonrpc:"2.0",id:++sequence,method:"tools/call",params:{name:"task_app",arguments:{task_id:taskId,action:"unbind",view_id:viewId,generation}}},"*");
     }
-    stopped = true; clearTimeout(timer);
+    stopped = true; clearTimeout(timer); clearInterval(activityTimer);
     for (const value of pending.values()) { clearTimeout(value.timeout); value.reject(deliveryError("interrupted")); }
     pending.clear();
   }
@@ -460,17 +529,22 @@
     if (["dark","light"].includes(context?.theme)) document.documentElement.dataset.theme = context.theme;
   }
   async function initialize() {
+    el("check-status").disabled = true;
     try {
       const result = await request("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"webcodex-task-progress",version:"1.0.0"},appCapabilities:{}});
       applyTheme(result?.hostContext);
       ready = true; el("reconnect").hidden = true;
       notify("ui/notifications/initialized"); void poll(); if (taskId && !reviewLoaded) void loadReview();
     } catch (_) {
-      el("connection").textContent = "尚未連線"; el("status").textContent = "無法載入任務卡片";
+      el("connection").textContent = "卡片尚未連線"; el("status").textContent = "無法載入任務卡片";
       el("detail").textContent = "請重新連線，或在對話中重新開啟任務卡片。";
       el("reconnect").hidden = false;
-    }
+    } finally { el("check-status").disabled = false; }
   }
+  const activityTimer = setInterval(() => {
+    refreshActivity();
+    if (!stopped) notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
+  },5000);
   void initialize();
 })();
 </script>

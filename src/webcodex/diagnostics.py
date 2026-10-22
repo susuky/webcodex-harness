@@ -18,7 +18,7 @@ _EVENTS = {
     f"{kind}.{phase}"
     for kind in ("http", "tool", "resource", "discovery", "bridge")
     for phase in ("started", "completed", "cancelled", "error", "disconnected")
-} | {"progress.error"}
+} | {"progress.error", "activity.error"}
 _IDS = {"trace_id", "bridge_trace_id", "http_id", "task_id", "job_id", "wait_id"}
 _HASHES = {"rpc_id_hash", "resource_hash", "owner_hash", "window_hash"}
 _ENUMS = {

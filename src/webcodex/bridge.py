@@ -5,6 +5,7 @@ import base64
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import timedelta
 
 import httpx
 from mcp import ClientSession
@@ -15,6 +16,8 @@ from mcp.server.stdio import stdio_server
 
 from .config import server_url as validate_server_url
 from .diagnostics import Diagnostics, hash_id
+
+RESPONSE_TIMEOUT = timedelta(seconds=60)
 
 
 @contextmanager
@@ -72,7 +75,9 @@ async def _run_bridge(server_url: str, token: str, diagnostics: Diagnostics):
         async with streamable_http_client(
             server_url.rstrip("/") + "/mcp", http_client=http
         ) as streams:
-            async with ClientSession(streams[0], streams[1]) as client:
+            async with ClientSession(
+                streams[0], streams[1], read_timeout_seconds=RESPONSE_TIMEOUT
+            ) as client:
                 initialized = await client.initialize()
                 bridge.instructions = initialized.instructions
 

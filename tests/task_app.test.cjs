@@ -41,6 +41,7 @@ function fixture(options = {}) {
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
     addEventListener(name, listener) { assert.equal(name, "message"); context.onMessage = listener; },
     el(id) { return elements[id] ||= {}; },
+    refreshActivity() {},
     render(value) { context.last = value; context.paused = value.continuation.paused; },
     async call(action, args = {}) {
       if (action === "bind") return state({bound: true, generation: host.generation});
@@ -111,7 +112,7 @@ test("reconnect appears after polling fails and clears without resending an unce
   host.failedStates = 1;
   await poll();
   assert.equal(context.el("reconnect").hidden, false);
-  assert.equal(context.el("connection").textContent, "重新連線中");
+  assert.equal(context.el("connection").textContent, "卡片重新連線中");
   await poll();
   assert.equal(context.el("reconnect").hidden, true);
   assert.equal(host.state, "unknown");
@@ -134,6 +135,95 @@ for (const waitState of ["prepared", "accepted", "unknown"]) {
     assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 0);
   });
 }
+
+const activityStart = html.indexOf("  function activityView(");
+const activityEnd = html.indexOf("  function render(", activityStart);
+assert.ok(activityStart >= 0 && activityEnd > activityStart);
+const activitySource = html.slice(activityStart, activityEnd);
+function activityFixture() {
+  const now = 1800000000;
+  const value = {
+    task: {status: "active"},
+    progress: {
+      state: "observing", runner_online: true, pending_jobs: [], process_observations: [],
+      liveness: {observed_at: now, runner_last_seen: now - 1,
+        work: {running_count: 0, pending_count: 0, observed_at: null},
+        conversation: {started_at: now - 722, finished_at: now - 720, outcome: "returned"}},
+    },
+    continuation: {paused: false, wait: null},
+  };
+  const elements = {};
+  const context = {last: value, activityReceivedAt: 1000000, connectionFailed: false,
+    stateCopy: ["工作進行中", ""], Date: class extends Date { static now() { return 1000000; } },
+    el(id) { return elements[id] ||= {dataset: {}}; }};
+  vm.createContext(context);
+  vm.runInContext(activitySource, context);
+  return {value, context, view: (elapsed=0) => context.activityView(value, elapsed)};
+}
+
+test("a live card and Runner do not turn old conversation activity into a live-model claim", () => {
+  const {view} = activityFixture();
+  const result = view();
+  assert.match(result.conversation, /最近工具回應.*12 分鐘前/);
+  assert.match(result.runner, /已連線/);
+  assert.match(result.notice, /12 分鐘沒有新的對話工具活動/);
+});
+
+test("quiet warnings respect registered waits, explicit blockers, completion and pause", () => {
+  const {value, view} = activityFixture();
+  for (const state of ["watching", "ready", "prepared", "accepted", "unknown"]) {
+    value.continuation.wait = {state};
+    assert.equal(view().notice, null);
+  }
+  value.continuation.wait = null;
+  for (const state of ["waiting_runner", "waiting_approval", "waiting_operator", "needs_attention", "completed"]) {
+    value.progress.state = state;
+    assert.equal(view().notice, null);
+  }
+  value.progress.state = "observing"; value.continuation.paused = true;
+  assert.equal(view().notice, null);
+  value.continuation.paused = false; value.task.status = "completed";
+  assert.equal(view().notice, null);
+});
+
+test("activity ages use the server observation plus elapsed time and preserve missing data", () => {
+  const {value, view} = activityFixture();
+  value.progress.liveness.conversation.finished_at = value.progress.liveness.observed_at - 179;
+  assert.equal(view().notice, null);
+  assert.match(view(1).notice, /3 分鐘/);
+  value.progress.liveness.conversation = null;
+  assert.equal(view().conversation, "尚未取得工具活動紀錄");
+  assert.equal(view(10000).notice, null);
+  delete value.progress.liveness;
+  assert.equal(view().conversation, "尚未取得工具活動紀錄");
+});
+
+test("an in-flight request or old process observation is identified by its own timestamp", () => {
+  const {value, view} = activityFixture();
+  value.progress.liveness.conversation.outcome = "running";
+  value.progress.liveness.conversation.finished_at = null;
+  value.progress.liveness.work = {running_count: 1, pending_count: 0, observed_at: value.progress.liveness.observed_at - 600};
+  assert.match(view().conversation, /工具等候回應/);
+  assert.match(view().notice, /工具回應已等候/);
+  assert.equal(view().work, "上次觀察有 1 項工作執行中（10 分鐘前）");
+});
+
+test("failed polling and stale card data cannot keep showing a green connection", () => {
+  const {context} = activityFixture();
+  context.connectionFailed = true;
+  context.refreshActivity();
+  assert.equal(context.el("connection").textContent, "卡片重新連線中");
+  assert.equal(context.el("runner-activity").textContent, "尚無最新連線狀態");
+  assert.equal(context.el("reconnect").hidden, false);
+  context.connectionFailed = false;
+  context.activityReceivedAt -= 45000;
+  context.refreshActivity();
+  assert.equal(context.el("status").textContent, "卡片資料待更新");
+  context.activityReceivedAt = context.Date.now();
+  context.refreshActivity();
+  assert.match(context.el("status").textContent, /沒有新的對話工具活動/);
+  assert.match(context.el("runner-activity").textContent, /已連線/);
+});
 
 test("ready from an unbound controller does not clear the attempted fence", async () => {
   const {host, context, poll} = fixture();

@@ -119,6 +119,13 @@ class Store:
                 exit_code INTEGER, created REAL NOT NULL, updated REAL NOT NULL,
                 PRIMARY KEY(task_id,agent_id)
             );
+            CREATE TABLE IF NOT EXISTS task_tool_activity (
+                task_id TEXT PRIMARY KEY REFERENCES tasks(id), trace_id TEXT NOT NULL,
+                tool TEXT NOT NULL, started_at REAL NOT NULL, finished_at REAL,
+                outcome TEXT NOT NULL CHECK(outcome IN (
+                    'running','returned','error','cancelled','interrupted'
+                )), window_hash TEXT
+            );
         """)
         # Keep added columns and their backfill atomic across interrupted startup.
         self.db.execute("BEGIN IMMEDIATE")
@@ -130,6 +137,7 @@ class Store:
             ("jobs", "process_id", "TEXT"),
             ("jobs", "process_status", "TEXT"),
             ("jobs", "process_exit_code", "INTEGER"),
+            ("task_tool_activity", "window_hash", "TEXT"),
         ):
             if column not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
@@ -198,6 +206,54 @@ class Store:
             "INSERT INTO events(task_id,kind,data,created) VALUES (?,?,?,?)",
             (task, kind, json.dumps(data, ensure_ascii=False), time.time()),
         )
+
+    def start_tool_activity(
+        self,
+        task_id: str,
+        trace_id: str,
+        tool: str,
+        started_at: float,
+        *,
+        late_bound: bool = False,
+        window: str | None = None,
+    ):
+        comparison = ">" if late_bound else ">="
+        with self.db:
+            self.db.execute(
+                "INSERT INTO task_tool_activity "
+                "(task_id,trace_id,tool,started_at,finished_at,outcome,window_hash) "
+                "VALUES (?,?,?,?,NULL,'running',?) "
+                "ON CONFLICT(task_id) DO UPDATE SET trace_id=excluded.trace_id,tool=excluded.tool,"
+                "started_at=excluded.started_at,finished_at=NULL,outcome='running',window_hash=excluded.window_hash "
+                f"WHERE excluded.started_at {comparison} task_tool_activity.started_at",
+                (task_id, trace_id, tool, started_at, window),
+            )
+
+    def finish_tool_activity(self, task_id: str, trace_id: str, started_at: float, outcome: str):
+        with self.db:
+            self.db.execute(
+                "UPDATE task_tool_activity SET outcome=?,finished_at=? "
+                "WHERE task_id=? AND trace_id=? AND started_at=? AND outcome='running'",
+                (outcome, time.time(), task_id, trace_id, started_at),
+            )
+
+    def interrupt_tool_activity(self):
+        with self.db:
+            self.db.execute(
+                "UPDATE task_tool_activity SET outcome='interrupted',finished_at=? "
+                "WHERE outcome='running'",
+                (time.time(),),
+            )
+
+    def tool_activity(self, task_id: str, window: str | None = None) -> dict | None:
+        try:
+            return self.one(
+                "SELECT tool,started_at,finished_at,outcome FROM task_tool_activity "
+                "WHERE task_id=? AND window_hash IS ?",
+                (task_id, window),
+            )
+        except sqlite3.Error:
+            return None
 
     def register(
         self,
@@ -525,6 +581,22 @@ class Store:
         )
         processes.sort(key=lambda process: (-process["started_at"], process["process_id"]))
         processes = processes[:100]
+        work = self.one(
+            "WITH observations AS (SELECT process_status AS status,updated AS observed_at,"
+            "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
+            "FROM jobs WHERE task_id=? AND status='succeeded' AND process_id IS NOT NULL "
+            "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
+            "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
+            "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id)), "
+            "running AS (SELECT observed_at FROM observations WHERE rank=1 AND status='running' "
+            "UNION ALL SELECT updated AS observed_at FROM agent_observations "
+            "WHERE task_id=? AND status='running') "
+            "SELECT count(*) AS running_count,min(observed_at) AS observed_at FROM running",
+            (task_id, task_id),
+        )
+        work["pending_count"] = sum(
+            counts.get(s, 0) for s in ("pending_approval", "queued", "running")
+        )
         return {
             "summary_stale": bool(last["updated"] and last["updated"] > task["updated"]),
             "last_job_update": last["updated"],
@@ -538,6 +610,7 @@ class Store:
             "latest_execution": self.job(processes[0]["job_id"], task["owner"])
             if processes
             else None,
+            "work": work,
         }
 
     def claim(self, runner_id: str, instance: str, limit: int) -> list[dict]:
