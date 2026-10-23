@@ -8,7 +8,7 @@ import pytest
 from webcodex.config import Client, ServerConfig
 from webcodex.continuation import fingerprint
 from webcodex.server import Service
-from webcodex.store import new_id
+from webcodex.store import Store, new_id
 
 pytest_plugins = ["test_harness"]
 
@@ -106,8 +106,49 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
         state = await client.call_tool(
             "task_app", {**view, "action": "state"}, meta={"openai/session": "chat"}
         )
-        assert state.structuredContent["progress"]["liveness"]["conversation"] is None
-    assert service.store.one("SELECT count(*) AS count FROM task_tool_activity")["count"] == 1
+        assert state.structuredContent["progress"]["liveness"]["conversation"] == previous
+        assert (
+            service.store.tool_activity(task_id, fingerprint("window\0other-chat"))["tool"]
+            == "task_get"
+        )
+        assert service.store.tool_activity(task_id, fingerprint("window\0unseen-chat")) is None
+    assert service.store.one("SELECT count(*) AS count FROM task_tool_activity")["count"] == 2
+
+
+@pytest.mark.parametrize("window", [None, "1" * 64])
+def test_legacy_activity_migration_preserves_each_conversation(activity_service, window):
+    service, task = activity_service
+    store = service.store
+    trace = new_id()
+    with store.db:
+        store.db.execute("DROP TABLE task_tool_activity")
+        store.db.execute(
+            "CREATE TABLE task_tool_activity (task_id TEXT PRIMARY KEY REFERENCES tasks(id),"
+            "trace_id TEXT NOT NULL,tool TEXT NOT NULL,started_at REAL NOT NULL,"
+            "finished_at REAL,outcome TEXT NOT NULL,window_hash TEXT)"
+        )
+        store.db.execute(
+            "INSERT INTO task_tool_activity VALUES (?,?,?,1,2,'returned',?)",
+            (task["id"], trace, "read_file", window),
+        )
+    previous = {"tool": "read_file", "started_at": 1.0, "finished_at": 2.0, "outcome": "returned"}
+    directory = service.config.state_dir
+    migrated = Store(directory)
+    try:
+        assert migrated.tool_activity(task["id"], window) == previous
+        other_window = "2" * 64
+        migrated.start_tool_activity(task["id"], new_id(), "task_get", 3, window=other_window)
+        assert migrated.tool_activity(task["id"], window) == previous
+        assert migrated.tool_activity(task["id"], other_window)["outcome"] == "running"
+    finally:
+        migrated.close()
+    restored = Store(directory)
+    try:
+        assert restored.tool_activity(task["id"], window) == previous
+        assert restored.tool_activity(task["id"], other_window)["tool"] == "task_get"
+        assert restored.one("SELECT count(*) AS count FROM task_tool_activity")["count"] == 2
+    finally:
+        restored.close()
 
 
 async def test_mcp_request_is_visible_while_running_then_finishes(harness, monkeypatch):

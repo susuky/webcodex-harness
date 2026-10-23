@@ -13,6 +13,13 @@ from . import __version__
 from .config import StrictModel, identifier, private_dir
 
 PROCESS_STATUSES = {"running", "completed", "failed", "timed_out", "interrupted", "cancelled"}
+_ACTIVITY_COLUMNS = """
+    task_id TEXT NOT NULL REFERENCES tasks(id), trace_id TEXT NOT NULL,
+    tool TEXT NOT NULL, started_at REAL NOT NULL, finished_at REAL,
+    outcome TEXT NOT NULL CHECK(outcome IN (
+        'running','returned','error','cancelled','interrupted'
+    )), window_hash TEXT NOT NULL DEFAULT '', PRIMARY KEY(task_id,window_hash)
+"""
 ResultIdentifier = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(identifier)]
 
 
@@ -119,16 +126,10 @@ class Store:
                 exit_code INTEGER, created REAL NOT NULL, updated REAL NOT NULL,
                 PRIMARY KEY(task_id,agent_id)
             );
-            CREATE TABLE IF NOT EXISTS task_tool_activity (
-                task_id TEXT PRIMARY KEY REFERENCES tasks(id), trace_id TEXT NOT NULL,
-                tool TEXT NOT NULL, started_at REAL NOT NULL, finished_at REAL,
-                outcome TEXT NOT NULL CHECK(outcome IN (
-                    'running','returned','error','cancelled','interrupted'
-                )), window_hash TEXT
-            );
         """)
         # Keep added columns and their backfill atomic across interrupted startup.
         self.db.execute("BEGIN IMMEDIATE")
+        self.db.execute(f"CREATE TABLE IF NOT EXISTS task_tool_activity ({_ACTIVITY_COLUMNS})")
         process_columns_added = False
         for table, column, declaration in (
             ("runners", "project_roots", "TEXT NOT NULL DEFAULT '{}'"),
@@ -142,6 +143,18 @@ class Store:
             if column not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
                 process_columns_added |= table == "jobs"
+        if not any(
+            row[1] == "window_hash" and row[5]
+            for row in self.db.execute("PRAGMA table_info(task_tool_activity)")
+        ):
+            self.db.execute("ALTER TABLE task_tool_activity RENAME TO old_task_tool_activity")
+            self.db.execute(f"CREATE TABLE task_tool_activity ({_ACTIVITY_COLUMNS})")
+            self.db.execute(
+                "INSERT INTO task_tool_activity "
+                "SELECT task_id,trace_id,tool,started_at,finished_at,outcome,coalesce(window_hash,'') "
+                "FROM old_task_tool_activity"
+            )
+            self.db.execute("DROP TABLE old_task_tool_activity")
         if process_columns_added:
             # Parse old payloads once; progress queries then read only their small projection.
             for row in self.db.execute(
@@ -223,10 +236,10 @@ class Store:
                 "INSERT INTO task_tool_activity "
                 "(task_id,trace_id,tool,started_at,finished_at,outcome,window_hash) "
                 "VALUES (?,?,?,?,NULL,'running',?) "
-                "ON CONFLICT(task_id) DO UPDATE SET trace_id=excluded.trace_id,tool=excluded.tool,"
-                "started_at=excluded.started_at,finished_at=NULL,outcome='running',window_hash=excluded.window_hash "
+                "ON CONFLICT(task_id,window_hash) DO UPDATE SET trace_id=excluded.trace_id,tool=excluded.tool,"
+                "started_at=excluded.started_at,finished_at=NULL,outcome='running' "
                 f"WHERE excluded.started_at {comparison} task_tool_activity.started_at",
-                (task_id, trace_id, tool, started_at, window),
+                (task_id, trace_id, tool, started_at, window or ""),
             )
 
     def finish_tool_activity(self, task_id: str, trace_id: str, started_at: float, outcome: str):
@@ -249,8 +262,8 @@ class Store:
         try:
             return self.one(
                 "SELECT tool,started_at,finished_at,outcome FROM task_tool_activity "
-                "WHERE task_id=? AND window_hash IS ?",
-                (task_id, window),
+                "WHERE task_id=? AND window_hash=?",
+                (task_id, window or ""),
             )
         except sqlite3.Error:
             return None
