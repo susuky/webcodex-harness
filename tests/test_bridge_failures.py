@@ -14,7 +14,7 @@ from mcp.shared.message import SessionMessage
 from starlette.applications import Starlette
 from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
-from test_harness import SOURCE_ROOT
+from test_harness import SOURCE_ROOT, call, process_result
 
 from webcodex.server import create_app
 
@@ -237,14 +237,9 @@ async def test_incomplete_sse_times_out_one_rpc_without_replay_or_poisoning_the_
                         "SELECT id FROM jobs WHERE task_id=? AND tool='exec_command'", (task_id,)
                     )
                     assert len(jobs) == 1
-                    recovered = await client.call_tool("job_get", {"job_id": jobs[0]["id"]})
-                    assert not recovered.isError
-                    process_id = recovered.structuredContent["result"]["process_id"]
-                    observed = await client.call_tool(
-                        "read_process", {"task_id": task_id, "process_id": process_id}
-                    )
-                    assert not observed.isError
-                    assert observed.structuredContent["result"]["status"] == "completed"
+                    recovered = await call(client, "job_get", {"job_id": jobs[0]["id"]})
+                    observed = await process_result(client, task_id, recovered)
+                    assert observed["status"] == "completed"
                     assert (harness.repo / "once.txt").read_text() == "x"
                     assert len(harness.runner.processes.list(task_id)) == 1
                 finally:
