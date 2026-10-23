@@ -7,17 +7,42 @@ import uuid
 from contextlib import contextmanager
 from datetime import timedelta
 
+import anyio
 import httpx
-from mcp import ClientSession
+from mcp import ClientSession, types
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server import Server
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.stdio import stdio_server
+from mcp.shared.message import SessionMessage
 
 from .config import server_url as validate_server_url
 from .diagnostics import Diagnostics, hash_id
 
 RESPONSE_TIMEOUT = timedelta(seconds=60)
+
+
+async def _legacy_requests(reader, writer, forwarded):
+    async with forwarded:
+        async for message in reader:
+            request = message.message.root if isinstance(message, SessionMessage) else None
+            if isinstance(request, types.JSONRPCRequest) and request.method == "server/discover":
+                # Legacy discovery probes need method-not-found so clients can initialize instead.
+                await writer.send(
+                    SessionMessage(
+                        types.JSONRPCMessage(
+                            types.JSONRPCError(
+                                jsonrpc="2.0",
+                                id=request.id,
+                                error=types.ErrorData(
+                                    code=types.METHOD_NOT_FOUND, message="Method not found"
+                                ),
+                            )
+                        )
+                    )
+                )
+            else:
+                await forwarded.send(message)
 
 
 @contextmanager
@@ -166,4 +191,8 @@ async def _run_bridge(server_url: str, token: str, diagnostics: Diagnostics):
                         return result
 
                 async with stdio_server() as (reader, writer):
-                    await bridge.run(reader, writer, bridge.create_initialization_options())
+                    forwarded, incoming = anyio.create_memory_object_stream(0)
+                    async with anyio.create_task_group() as group:
+                        group.start_soon(_legacy_requests, reader, writer, forwarded)
+                        await bridge.run(incoming, writer, bridge.create_initialization_options())
+                        group.cancel_scope.cancel()

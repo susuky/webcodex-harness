@@ -8,14 +8,49 @@ from datetime import timedelta
 
 import pytest
 import uvicorn
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
+from mcp.shared.message import SessionMessage
 from starlette.applications import Starlette
 from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 from test_harness import SOURCE_ROOT
 
 pytest_plugins = ["test_harness"]
+
+
+async def test_modern_discovery_probe_falls_back_to_legacy_and_reads_current_ui(harness, tmp_path):
+    config = tmp_path / "client.json"
+    config.write_text(json.dumps({"server_url": harness.url, "token": "c" * 40}), encoding="utf-8")
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "webcodex", "bridge", "--config", str(config)],
+        env={"PYTHONPATH": SOURCE_ROOT},
+    )
+    with (tmp_path / "discovery.log").open("w", encoding="utf-8") as log:
+        async with stdio_client(parameters, errlog=log) as streams:
+            await streams[1].send(
+                SessionMessage(
+                    types.JSONRPCMessage(
+                        types.JSONRPCRequest(
+                            jsonrpc="2.0", id=41, method="server/discover", params={"_meta": {}}
+                        )
+                    )
+                )
+            )
+            async with asyncio.timeout(5):
+                response = (await streams[0].receive()).message.root
+            assert isinstance(response, types.JSONRPCError)
+            assert response.id == 41 and response.error.code == types.METHOD_NOT_FOUND
+            async with ClientSession(*streams) as client:
+                await client.initialize()
+                tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+                uri = tools["task_present"].meta["ui"]["resourceUri"]
+                contents = (await client.read_resource(uri)).contents
+                assert contents[0].text == harness.app.state.service.app_html
+    assert "Failed to validate request" not in (tmp_path / "discovery.log").read_text(
+        encoding="utf-8"
+    )
 
 
 @asynccontextmanager
@@ -71,7 +106,9 @@ async def interrupted_proxy(harness, mode):
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
         server = uvicorn.Server(
-            uvicorn.Config(app, log_level="error", access_log=False, lifespan="off")
+            uvicorn.Config(
+                app, log_level="error", access_log=False, lifespan="off", timeout_keep_alive=0
+            )
         )
         server.capture_signals = nullcontext
         serving = asyncio.create_task(server.serve(sockets=[listener]))
@@ -82,8 +119,10 @@ async def interrupted_proxy(harness, mode):
             yield f"http://127.0.0.1:{port}", dropped, progress_sent
         finally:
             server.should_exit = True
-            await asyncio.wait_for(serving, 10)
-            listener.close()
+            try:
+                await asyncio.wait_for(serving, 10)
+            finally:
+                listener.close()
 
 
 @pytest.mark.parametrize("mode", ["eof", "progress"])

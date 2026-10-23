@@ -12,7 +12,7 @@ from .config import RunnerConfig, identifier
 from .filesystem import Workspace
 from .processes import Processes, environment, executable
 
-MAX_EVENT_BYTES = 256 * 1024
+MAX_EVENT_BYTES = 512 * 1024
 MAX_PARSE_BYTES = 8 * 1024 * 1024
 MAX_FINAL_CHARS = 64000
 
@@ -103,6 +103,8 @@ class Subagents:
             "-c",
             "sandbox_workspace_write.exclude_slash_tmp=true",
         ]
+        if sys.platform == "win32":
+            argv.extend(["-c", 'windows.sandbox="elevated"'])
         for feature in (
             "hooks",
             "plugins",

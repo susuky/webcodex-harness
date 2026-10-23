@@ -67,9 +67,11 @@ sudo install -o root -g root -m 0644 examples/apparmor/webcodex-bwrap /etc/appar
 
 Worker 共用原 Codex 登入，但忽略使用者設定與 execpolicy rules，並將工作目錄及祖先的 project config 設為不受信任；停用 hooks、外掛、Apps 與遞迴代理。主對話透過 `prompt` 傳遞子任務背景，專案的 `AGENTS.md` 不會自動繼承；主對話需先用 `read_instructions` 讀取相關指引，再將適用規則與使用者限制寫入 `prompt`。原 Codex 登入目錄中的全域指引仍按 CLI 規則載入。
 
-目前以 Codex CLI **0.162.1** 實測；其他版本需確認支援上述執行旗標。Runner 的環境不應含額外 `OPENAI_*` 或 `CODEX_*` 供應商／內部覆寫；`CODEX_HOME` 可指定原有登入目錄。若只有作業系統憑證庫登入而沒有 `auth.json`，此版本會要求改用 CLI 可讀取的登入檔。
+目前以 Linux Codex CLI **0.162.1** 與 Windows **0.163.0-alpha.11.2** 實測；其他版本需確認支援上述執行旗標。Runner 的環境不應含額外 `OPENAI_*` 或 `CODEX_*` 供應商／內部覆寫；`CODEX_HOME` 可指定原有登入目錄。若只有作業系統憑證庫登入而沒有 `auth.json`，此版本會要求改用 CLI 可讀取的登入檔。
 
-Linux 需要可用的 Codex sandbox。macOS 使用 Codex 的原生沙箱；Windows 的原生執行檔及 sandbox backend 需另做平台整合驗證，目前子代理實測證據來自 ll1 的 Linux。
+Linux 需要可用的 Codex sandbox，macOS 使用 Codex 的原生沙箱。Windows 使用原生 Codex CLI，需先完成 [Windows 沙箱設定](https://learn.chatgpt.com/docs/windows/windows-sandbox)。Runner 會明確指定 `windows.sandbox="elevated"`，避免忽略使用者設定時連沙箱設定也被略過。Windows 已驗證唯讀盤點、兩路隔離教材寫入與字幕複核並行執行。
+
+單筆 CLI 事件上限為 512 KiB，整份結果解析上限維持 8 MiB；超出上限會標記輸出截斷並回報失敗。
 
 ## 重現測試
 

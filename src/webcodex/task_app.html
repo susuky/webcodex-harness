@@ -52,7 +52,7 @@
   const taskPattern = /^[0-9a-f]{32}$/;
   let sequence = 0, taskId = null, generation = null, ready = false, stopped = false;
   let busy = false, timer = null, paused = false, last = null, pendingFinish = null, changingPause = false;
-  let failedPrepare = null;
+  let failedPrepare = null, pollingBlocked = false;
   let activityReceivedAt = 0, connectionFailed = false, stateCopy = null;
   let pauseRevision = 0;
   let reviewVersion = 0, reviewLoaded = false, selectedPath = null, pendingReview = null;
@@ -384,7 +384,7 @@
   }
   function schedule() {
     clearTimeout(timer);
-    if (!stopped && last?.task.status !== "completed") timer = setTimeout(poll,document.hidden ? 15000 : 3000);
+    if (!stopped && !pollingBlocked && last?.task.status !== "completed") timer = setTimeout(poll,document.hidden ? 15000 : 3000);
   }
   async function finish(waitId,outcome,error={}) {
     const metadata = {};
@@ -424,15 +424,18 @@
     }
     if (!stopped) { try { await finish(wait.id,outcome,error); } catch (_) {} }
   }
-  async function poll() {
-    if (!ready || !taskId || stopped || busy) return;
+  async function poll(manual=false) {
+    if (!ready || !taskId || stopped || busy || (pollingBlocked && !manual)) return;
+    pollingBlocked = false;
     busy = true; el("check-status").disabled = true;
     try {
       if (generation === null) {
         const result = await call("bind");
         if (!result.control?.bound) {
+          pollingBlocked = true;
           render(result);
-          el("reconnect").hidden = true;
+          el("dot").className = "dot attention";
+          el("reconnect").hidden = false;
           const unsupported = ["missing_window","read_only"].includes(result.control?.reason);
           const replaced = result.control?.reason === "replaced_view";
           el("connection").textContent = unsupported ? "僅顯示進度" : replaced ? "已由新卡片接手" : "其他視窗已連線";
@@ -447,6 +450,13 @@
         generation = result.control.generation; render(result);
       }
       const value = await call("state"); render(value);
+      if (value.control?.bound === false) {
+        generation = null; pollingBlocked = true;
+        el("connection").textContent = "卡片已中斷連線";
+        el("dot").className = "dot attention";
+        el("reconnect").hidden = false;
+        return;
+      }
       el("reconnect").hidden = true;
       if (value.task.status === "completed") return;
       const wait = value.continuation.wait;
@@ -484,14 +494,14 @@
   });
   el("check-status").addEventListener("click",async () => {
     if (stopped || busy) return;
-    if (!ready) await initialize(); else await poll();
+    if (!ready) await initialize(); else await poll(true);
   });
   el("reconnect").addEventListener("click",async () => {
     if (stopped || busy) return;
     el("reconnect").disabled = true;
     try {
       if (!ready) { await initialize(); return; }
-      await poll();
+      await poll(true);
       if (ready && taskId) await loadReview(selectedPath,pendingReview?.jobId ?? null);
     } finally { el("reconnect").disabled = false; }
   });

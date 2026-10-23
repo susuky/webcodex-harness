@@ -38,7 +38,7 @@ async def agents(tmp_path, monkeypatch):
         "time.sleep(request.get('delay',0))\n"
         "def emit(value): print(json.dumps(value),flush=True)\n"
         "print('diagnostic on stderr',file=sys.stderr,flush=True)\n"
-        "if request.get('oversized'): emit({'type':'ignored','text':'x'*300000})\n"
+        f"if request.get('oversized'): emit({{'type':'ignored','text':'x'*{subagent_module.MAX_EVENT_BYTES + 1}}})\n"
         "if request.get('error'): emit({'type':'turn.failed','error':{'message':'quota reached'}})\n"
         "if 'final' in request:\n"
         " emit({'type':'item.completed','item':{'type':'agent_message','text':request['final']}})\n"

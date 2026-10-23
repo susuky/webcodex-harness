@@ -774,17 +774,16 @@ class Service:
             and p["observed_at"] > task["updated"]
         ]
         for process in failed:
-            if process["job_id"] != activity["latest_execution"]["job_id"]:
-                agent = process["tool"].startswith("subagent_")
-                actions.append(
-                    {
-                        "tool": "subagent_get" if agent else "read_process",
-                        "arguments": {
-                            "task_id": task["id"],
-                            "agent_id" if agent else "process_id": process["process_id"],
-                        },
-                    }
-                )
+            agent = process["tool"].startswith("subagent_")
+            actions.append(
+                {
+                    "tool": "subagent_get" if agent else "read_process",
+                    "arguments": {
+                        "task_id": task["id"],
+                        "agent_id" if agent else "process_id": process["process_id"],
+                    },
+                }
+            )
         questions = self.store.one(
             "SELECT count(*) AS count FROM questions WHERE task_id=? AND answer IS NULL",
             (task["id"],),

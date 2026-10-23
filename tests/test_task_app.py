@@ -11,6 +11,7 @@ def test_task_app_continuation_recovery():
         [shutil.which("node"), "--test", str(Path(__file__).with_name("task_app.test.cjs"))],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
     )
     assert result.returncode == 0, result.stdout + result.stderr

@@ -18,11 +18,13 @@ const messageEnd = html.indexOf('  addEventListener("visibilitychange",', messag
 assert.ok(requestStart >= 0 && requestEnd > requestStart && messageStart >= 0 && messageEnd > messageStart);
 const requestSource = html.slice(requestStart, requestEnd);
 const messageSource = html.slice(messageStart, messageEnd);
+const manualSource = html.slice(html.indexOf('  el("check-status").addEventListener'), html.indexOf("  function teardown()"));
+const visibilitySource = html.slice(messageEnd, html.indexOf('  addEventListener("pagehide",', messageEnd));
 
 function fixture(options = {}) {
   const host = {
     waitId: "wait-one", state: "ready", generation: 1, bound: true, paused: false,
-    prepareCalls: 0, messages: 0, failedStates: 0, failedFinishes: 0, finishCalls: [],
+    prepareCalls: 0, messages: 0, failedStates: 0, failedFinishes: 0, finishCalls: [], bindCalls: 0,
     failPrepare: "before", ...options,
   };
   const state = control => ({
@@ -35,16 +37,23 @@ function fixture(options = {}) {
   let timerId = 0;
   const context = {
     ready: true, taskId: "task", stopped: false, busy: false, generation: 1,
-    paused: false, last: null, timer: null, pendingFinish: null, failedPrepare: null,
+    paused: false, last: null, timer: null, pendingFinish: null, failedPrepare: null, pollingBlocked: false,
+    selectedPath: null, pendingReview: null, async loadReview() {},
     attempted: new Set(), pending: new Map(), sequence: 0, document: {hidden: false},
     clearTimeout(id) { timers.delete(id); },
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
-    addEventListener(name, listener) { assert.equal(name, "message"); context.onMessage = listener; },
-    el(id) { return elements[id] ||= {}; },
+    addEventListener(name, listener) {
+      if (name === "message") context.onMessage = listener;
+      else { assert.equal(name, "visibilitychange"); context.onVisibility = listener; }
+    },
+    el(id) { return elements[id] ||= {addEventListener(name, listener) { this[name] = listener; }}; },
     refreshActivity() {},
     render(value) { context.last = value; context.paused = value.continuation.paused; },
     async call(action, args = {}) {
-      if (action === "bind") return state({bound: true, generation: host.generation});
+      if (action === "bind") {
+        host.bindCalls++;
+        return state({bound: host.bound, generation: host.generation, reason: host.reason});
+      }
       if (action === "state") {
         if (host.failedStates > 0) { host.failedStates--; throw new Error("state unavailable"); }
         return state({bound: host.bound, generation: host.generation});
@@ -82,9 +91,47 @@ function fixture(options = {}) {
   };
   vm.createContext(context);
   vm.runInContext(requestSource + messageSource, context);
-  vm.runInContext(source, context);
-  return {host, context, poll: () => context.poll()};
+  vm.runInContext(source + manualSource + visibilitySource, context);
+  return {host, context, timers, poll: () => context.poll()};
 }
+
+for (const reason of ["missing_window", "read_only", "replaced_view", "another_view"]) {
+  test(`an unbound ${reason} card stops automatic polling until a manual reconnect`, async () => {
+    const {host, context, timers, poll} = fixture({bound: false, reason, failPrepare: null});
+    context.generation = null;
+    await poll();
+    assert.equal(host.bindCalls, 1);
+    assert.equal(context.pollingBlocked, true);
+    assert.equal(timers.size, 0);
+    assert.equal(context.el("reconnect").hidden, false);
+    context.onVisibility(); await poll();
+    assert.equal(host.bindCalls, 1);
+    assert.equal(host.messages, 0);
+    host.bound = true;
+    await context.el("reconnect").click();
+    assert.equal(host.bindCalls, 2);
+    assert.equal(context.pollingBlocked, false);
+    assert.equal(host.messages, 1);
+    assert.equal(timers.size, 1);
+  });
+}
+
+test("losing an existing controller stops polling and permits a manual status check", async () => {
+  const {host, context, timers, poll} = fixture({failPrepare: null});
+  await poll();
+  host.bound = false;
+  await poll();
+  assert.equal(context.generation, null);
+  assert.equal(timers.size, 0);
+  context.document.hidden = true; context.onVisibility();
+  context.document.hidden = false; context.onVisibility();
+  assert.equal(host.bindCalls, 0);
+  host.bound = true;
+  await context.el("check-status").click();
+  assert.equal(host.bindCalls, 1);
+  assert.equal(timers.size, 1);
+  assert.equal(host.messages, 1);
+});
 
 test("a prepare that never reached Server recovers after confirmed same-controller ready state", async () => {
   const {host, context, poll} = fixture();

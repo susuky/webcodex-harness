@@ -359,6 +359,10 @@ async def test_waiting_never_hides_new_execution_problems(waiting_service, wait_
         wait = service.continuations.arm(task["id"], [pending["job_id"]], "keep-wait")
     with service.store.db:
         service.store.db.execute("UPDATE tasks SET updated=0 WHERE id=?", (task["id"],))
+        # Windows clock resolution can give consecutive process launches the same timestamp.
+        service.store.db.execute(
+            "UPDATE jobs SET created=1 WHERE id IN (?,?)", (failed["job_id"], newer["job_id"])
+        )
         if wait:
             service.store.db.execute(
                 "UPDATE task_waits SET state=? WHERE id=?", (wait_state, wait["id"])
