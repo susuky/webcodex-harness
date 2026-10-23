@@ -1,7 +1,0 @@
-abi <abi/4.0>,
-include <tunables/global>
-
-# Allow only the root-owned system bubblewrap executable to create user namespaces.
-profile webcodex-bwrap /usr/bin/bwrap flags=(unconfined) {
-  userns,
-}

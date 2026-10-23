@@ -23,7 +23,6 @@ from .extensions import Extensions
 from .filesystem import MAX_FILE, Workspace, sha256
 from .processes import Processes, environment, executable
 from .store import new_id
-from .subagents import Subagents
 
 PathArg = Annotated[str, Field(min_length=1, max_length=4096)]
 ShortText = Annotated[str, Field(max_length=16000)]
@@ -45,13 +44,11 @@ class Runtime:
         task_id: str,
         job_id: str,
         computer: Computer,
-        subagents: Subagents,
     ):
         self.config, self.workspace = config, workspace
         self.processes, self.extensions = processes, extensions
         self.task_id, self.job_id = task_id, job_id
         self.computer = computer
-        self.subagents = subagents
 
     async def _run(
         self,
@@ -137,14 +134,9 @@ class Runtime:
                     "node",
                     "npm",
                     "docker",
-                    "codex",
                 ]
             },
             "shell_is_os_sandboxed": False,
-            "subagents": {
-                "enabled": self.config.subagents_enabled,
-                "max_concurrent": self.config.max_subagents,
-            },
             "computer_permissions": sorted(
                 self.config.permissions & {"computer_observe", "computer_control"}
             ),
@@ -580,64 +572,6 @@ class Runtime:
     async def list_processes(self) -> dict:
         """List this task's recent process IDs and actual execution states."""
         return {"processes": self.processes.list(self.task_id)}
-
-    @tool("execute")
-    async def subagent_spawn(
-        self,
-        name: Annotated[str, Field(min_length=1, max_length=100)],
-        prompt: Annotated[str, Field(min_length=1, max_length=64000)],
-        cwd: PathArg = ".",
-        write: bool = False,
-        timeout_seconds: Annotated[int, Field(ge=1, le=86400)] = 1800,
-    ) -> dict:
-        """Delegate a focused task to a real Codex worker and return its durable agent_id immediately. Spawn several agents before waiting to work in parallel. Requires Runner subagents_enabled and an existing Codex CLI login. Workers use a read-only sandbox by default; write=true permits workspace edits. Give writing workers distinct files; include relevant AGENTS.md instructions, parent constraints and context in prompt because project configuration/instructions are not automatically inherited. Collect final/error with subagent_get or subagent_wait; retry the same request_id after a disconnect instead of creating a duplicate."""
-        directory = self.workspace.path(cwd, directory=True)
-        workspace = Workspace(directory)
-        # Recheck the registered root after resolving the optional working directory.
-        with self.workspace.directory():
-            return await self.subagents.spawn(
-                self.job_id,
-                self.task_id,
-                workspace,
-                prompt,
-                name,
-                write,
-                min(timeout_seconds, self.config.max_process_seconds),
-            )
-
-    @tool()
-    async def subagent_get(
-        self,
-        agent_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")],
-        wait_seconds: Annotated[float, Field(ge=0, le=30)] = 0,
-    ) -> dict:
-        """Read this task's worker state and final answer, optionally waiting for completion. completed requires a successful Codex turn with a final answer. failed, cancelled, timed_out and interrupted require inspection; they are not successful delegation. Results remain readable after Runner restart."""
-        await self.subagents.wait([agent_id], self.task_id, wait_seconds)
-        return self.subagents.get(agent_id, self.task_id)
-
-    @tool()
-    async def subagent_list(self) -> dict:
-        """List this task's recent workers with status and bounded answer previews. final_truncated=true means use subagent_get for the full answer. Agents from other tasks are not accessible."""
-        return {"agents": self.subagents.list(self.task_id)}
-
-    @tool()
-    async def subagent_wait(
-        self,
-        agent_ids: Annotated[
-            list[Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]],
-            Field(min_length=1, max_length=16),
-        ],
-        wait_seconds: Annotated[float, Field(ge=0, le=30)] = 20,
-    ) -> dict:
-        """Wait until any selected worker finishes or the bounded wait expires, then return every selected worker's state and answer. final_truncated=true means use subagent_get for the full answer. timed_out describes this wait, not worker failure; running workers continue. Spawn independent agents before waiting and keep observing existing agent_ids."""
-        return await self.subagents.wait(agent_ids, self.task_id, wait_seconds)
-
-    @tool("write")
-    async def subagent_cancel(
-        self, agent_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]
-    ) -> dict:
-        """Stop one worker and its process group, preserving its output and final answer if available. This does not roll back any workspace edits."""
-        return await self.subagents.cancel(agent_id, self.task_id)
 
     @tool()
     async def view_image(self, path: PathArg) -> dict:

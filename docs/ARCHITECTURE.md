@@ -6,7 +6,7 @@ Server 不直接讀取專案目錄。它提供 MCP Streamable HTTP 與相同工�
 
 Server 與 Runner 目前採 HTTPS long polling；同機開發允許 loopback HTTP。結果完成時立即另送 HTTP 回報，不必等待下一次 polling。MCP 使用官方 Python SDK，並採 stateless transport；業務任務由 SQLite 保存，與 MCP transport session 明確分開。[MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 
-這個分工參考 [WebCodex 架構](https://github.com/yyjeqhc/webcodex/blob/main/docs/ARCHITECTURE.md)。檔案、命令、工具探索與外部 MCP 是 coding harness 的共同組成；主推理循環留在 ChatGPT／MCP 用戶端。選用的 [子代理](SUBAGENTS.md) 透過 Runner 的 Codex CLI 執行獨立子任務，主對話負責分派與整合。[Claude Code agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop)
+這個分工參考 [WebCodex 架構](https://github.com/yyjeqhc/webcodex/blob/main/docs/ARCHITECTURE.md)。檔案、命令、工具探索與外部 MCP 是 coding harness 的共同組成；主推理循環及[子代理協調](SUBAGENTS.md)留在 ChatGPT／MCP 用戶端。Runner 執行指定的主機工具，主對話負責分派與整合。[Claude Code agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop)
 
 ## 身分與專案
 
@@ -92,7 +92,6 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 | `src/webcodex/computer.py` | 選用桌面後端、截圖、座標檢查與輸入序列化 |
 | `src/webcodex/filesystem.py` | 路徑邊界、檔案讀寫與雜湊檢查 |
 | `src/webcodex/processes.py` | 子程序、PTY、輸出與停止流程 |
-| `src/webcodex/subagents.py` | Codex worker、並行額度、持久狀態與最後回答 |
 | `src/webcodex/windows.py` | Windows 檔案 handle、ACL、ConPTY、Job 與啟動閘門 |
 | `src/webcodex/extensions.py` | 擴充安裝、skill 探索、持續存在的 MCP provider |
 | `src/webcodex/catalog.py` | 從同一份 Python 簽名產生 schema 與工具描述 |

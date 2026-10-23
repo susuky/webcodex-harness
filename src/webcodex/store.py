@@ -508,15 +508,15 @@ class Store:
         if row["status"] == "succeeded" and result.get("agent_id"):
             row["outcome"] = result["status"]
             row["next_step"] = (
-                "This is a saved subagent observation. Collect final and inspect error/status; "
+                "This is a saved legacy worker observation. Collect final and inspect error/status; "
                 "a successful spawn job does not mean the worker finished."
             )
             if result["status"] == "running":
                 row["next_action"] = {
-                    "tool": "subagent_get",
+                    "tool": "read_process",
                     "arguments": {
                         "task_id": row["task_id"],
-                        "agent_id": result["agent_id"],
+                        "process_id": result["agent_id"],
                         "wait_seconds": 20,
                     },
                 }
@@ -690,6 +690,20 @@ class Store:
                             observed,
                         ),
                     )
+            elif status == "succeeded" and job["tool"] == "read_process" and observation:
+                # Finish historical worker observations through the remaining process tools.
+                self.db.execute(
+                    "UPDATE agent_observations SET job_id=?,status=?,exit_code=?,updated=? "
+                    "WHERE task_id=? AND agent_id=? AND status='running'",
+                    (
+                        job_id,
+                        projection.status,
+                        projection.exit_code,
+                        observed,
+                        job["task_id"],
+                        projection.process_id,
+                    ),
+                )
             self.event(job["task_id"], "job." + status, {"job_id": job_id})
 
     def cancel(self, job_id: str, owner: str) -> dict:

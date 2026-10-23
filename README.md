@@ -7,10 +7,9 @@ Let an MCP client work with repositories and desktop applications on your machin
 ## What it does
 
 - Read, search and edit files with hash checks; use Git, commands, tests and interactive terminals.
-- Resume saved tasks, monitor processes and approve sensitive operations.
+- Resume saved tasks and monitor running processes.
 - Create or register projects under explicitly allowed parent directories, even with no existing task.
 - Load project skills and plugins with persistent MCP connections.
-- Delegate tasks to multiple Codex subagents, run them in parallel, collect results and cancel workers.
 - Optionally capture and control the desktop, including Unicode text input.
 - Add browser navigation, forms, tabs and page data extraction with the optional Playwright MCP plugin.
 
@@ -68,7 +67,7 @@ Desktop tools require the optional `computer` dependencies and explicit permissi
 
 Windows can run both Server and Runner independently. See the [Windows setup guide](docs/WINDOWS_RUNNER.md) for PowerShell installation, startup and multi-monitor tests. Windows desktop tools list monitors and capture a selected monitor, including displays to the left of or above the primary display.
 
-Optional [parallel subagents](docs/SUBAGENTS.md) give ChatGPT five dedicated tools to spawn, inspect, wait for, list and cancel Codex CLI workers. The Runner needs an authenticated Codex CLI; its configuration sets the concurrency limit.
+子代理由 ChatGPT／MCP 用戶端原生協調；WebCodex 提供檔案、命令與桌面工具。[子代理分工](docs/SUBAGENTS.md)說明工具使用與舊版遷移。
 
 Browser tools use a separately installed Node.js/Chrome provider, with isolated sessions per task. Follow [Browser use](docs/BROWSER_USE.md) for setup and optional login persistence.
 

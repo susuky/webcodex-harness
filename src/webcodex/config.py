@@ -154,11 +154,21 @@ class RunnerConfig(StrictModel):
     permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
     max_concurrent_jobs: int = Field(default=4, ge=1, le=32)
     max_processes: int = Field(default=16, ge=1, le=128)
-    subagents_enabled: bool = False
-    max_subagents: int = Field(default=4, ge=1, le=16)
     max_output_bytes: int = Field(default=8 * 1024 * 1024, ge=4096, le=128 * 1024 * 1024)
     max_process_seconds: int = Field(default=3600, ge=1, le=86400)
     environment: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_worker_settings(cls, value):
+        # Old configuration must load without restoring the removed CLI worker backend.
+        if isinstance(value, dict):
+            return {
+                key: item
+                for key, item in value.items()
+                if key not in {"subagents_enabled", "max_subagents"}
+            }
+        return value
 
     @model_validator(mode="after")
     def boundaries(self):

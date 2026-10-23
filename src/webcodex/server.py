@@ -422,14 +422,10 @@ class Service:
             ):
                 job = await self.call(
                     task["owner"],
-                    "subagent_get" if result.get("agent_id") else "read_process",
+                    "read_process",
                     {
                         "task_id": task["id"],
-                        **(
-                            {"agent_id": result["agent_id"]}
-                            if result.get("agent_id")
-                            else {"process_id": result["process_id"]}
-                        ),
+                        "process_id": result["process_id"],
                         "wait_seconds": 0,
                         "request_id": "watch:" + wait["id"] + ":" + job_id,
                     },
@@ -556,7 +552,7 @@ class Service:
         handoff = continuation["handoff"]
         actions = progress["next_actions"]
         only_observations = actions and all(
-            action["tool"] in {"job_get", "read_process", "subagent_get"} for action in actions
+            action["tool"] in {"job_get", "read_process"} for action in actions
         )
         output_actions = progress["output_actions"]
         has_output = bool(output_actions)
@@ -716,14 +712,13 @@ class Service:
                 output_actions.append(action)
             if process["status"] != "running":
                 continue
-            agent = process["tool"].startswith("subagent_")
             actions.append(
                 action
                 or {
-                    "tool": "subagent_get" if agent else "read_process",
+                    "tool": "read_process",
                     "arguments": {
                         "task_id": task["id"],
-                        "agent_id" if agent else "process_id": process["process_id"],
+                        "process_id": process["process_id"],
                         "wait_seconds": 20,
                     },
                 }
@@ -742,13 +737,15 @@ class Service:
             and p["observed_at"] > task["updated"]
         ]
         for process in failed:
-            agent = process["tool"].startswith("subagent_")
+            legacy_worker = process["tool"].startswith("subagent_")
             actions.append(
                 {
-                    "tool": "subagent_get" if agent else "read_process",
-                    "arguments": {
+                    "tool": "job_get" if legacy_worker else "read_process",
+                    "arguments": {"job_id": process["job_id"]}
+                    if legacy_worker
+                    else {
                         "task_id": task["id"],
-                        "agent_id" if agent else "process_id": process["process_id"],
+                        "process_id": process["process_id"],
                     },
                 }
             )
@@ -1276,10 +1273,9 @@ def create_app(config: ServerConfig):
             "connected, keep following job_get/read_process during this turn. "
             "Ask ordinary clarification directly in the conversation; request_user_input records an "
             "out-of-band CLI question and is not the ChatGPT question UI. "
-            "Use subagent_spawn for focused delegated work when workspace.subagents.enabled is true. "
-            "Start independent workers before waiting, assign distinct files to writing workers, then "
-            "collect final/error with subagent_get or subagent_wait. subagent_cancel stops a worker; "
-            "subagent_list restores this task's worker IDs. Subagents use the Runner's Codex CLI login. "
+            "Reasoning and any subagent orchestration stay in ChatGPT or the MCP client. "
+            "WebCodex supplies host tools only; do not launch Codex CLI or another model backend "
+            "to substitute for the client's native subagents. "
             "Long calls return job_id; poll job_get for the same job. Command results return process_id; use "
             "read_process/write_stdin instead of launching a duplicate. Authorized tools execute directly "
             "without a separate approval queue or project trust setting. "

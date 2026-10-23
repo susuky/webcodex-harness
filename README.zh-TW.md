@@ -7,10 +7,9 @@
 ## 功能
 
 - 讀取、搜尋及以雜湊檢查修改檔案；使用 Git、命令、測試與互動終端。
-- 延續已儲存的任務、監看程序，並核准敏感操作。
+- 延續已儲存的任務，監看執行中的程序。
 - 在明確允許的父目錄建立或登記專案，不需要已有任務。
 - 載入專案 skills 與 plugins，保留 MCP 連線狀態。
-- 透過 subagents 分派工作給多個 Codex worker，平行處理、等待結果與取消子任務。
 - 選擇啟用桌面截圖與控制，包含 Unicode 文字輸入。
 - 透過選用的 Playwright MCP plugin 操作網頁、填表、切換分頁及擷取資料。
 
@@ -68,7 +67,7 @@ uv run webcodex runner
 
 Windows 可獨立執行 Server 與 Runner。可貼上的 PowerShell 安裝、啟動與多螢幕測試指令見 [Windows 安裝指南](docs/WINDOWS_RUNNER.md)。Windows 桌面工具可列出螢幕並擷取指定螢幕，支援位於主螢幕左方或上方的副螢幕。
 
-啟用選用的 [平行子代理（subagents）](docs/SUBAGENTS.md) 後，ChatGPT 可以使用啟動、查詢、等待、列表與取消五個專用工具分工，並收回各 worker 的結果。Runner 需有已登入的 Codex CLI；並行上限由 Runner 設定。
+子代理由 ChatGPT／MCP 用戶端原生協調；WebCodex 提供檔案、命令與桌面工具。[子代理分工](docs/SUBAGENTS.md)說明工具使用與舊版遷移。
 
 瀏覽器工具使用另外安裝的 Node.js／Chrome provider，各任務使用獨立連線與瀏覽器狀態。設定與選用的登入保存見 [瀏覽器操作指南](docs/BROWSER_USE.md)。
 
