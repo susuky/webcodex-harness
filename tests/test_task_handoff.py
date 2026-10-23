@@ -168,9 +168,14 @@ async def test_handoff_never_silently_discards_waiting_jobs(waiting_service, cou
     assert service.continuations.current(task["id"]) is None
 
 
-async def test_handoff_includes_running_processes_older_than_the_visible_history(waiting_service):
+async def test_handoff_includes_running_processes_older_than_the_visible_history(
+    waiting_service, monkeypatch
+):
     service, task = waiting_service
+    now = task["created"]
+    monkeypatch.setattr("webcodex.store.time.time", lambda: now)
     for index in range(101):
+        now += 1
         job = service.store.enqueue(task, "exec_command", {}, str(index), 100)
         service.store.claim("local", "instance", 1)
         service.store.complete(

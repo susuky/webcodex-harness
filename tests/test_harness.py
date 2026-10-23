@@ -133,11 +133,11 @@ async def harness(tmp_path):
         await harness.close()
 
 
-async def call(client, name, args=None, *, error=False):
+async def call(client, name, args=None, *, error=False, timeout_seconds=30):
     response = await client.call_tool(name, args or {})
     if response.structuredContent:
         value = response.structuredContent
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + timeout_seconds
         while value.get("status") in {"queued", "running"} and time.monotonic() < deadline:
             response = await client.call_tool(
                 "job_get", {"job_id": value["job_id"], "wait_seconds": 2}

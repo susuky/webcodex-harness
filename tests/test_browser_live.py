@@ -81,6 +81,7 @@ async def test_browser_plugin_through_real_mcp(tmp_path):
                         "request_id": request_id,
                     },
                     error=error,
+                    timeout_seconds=150,  # Provider RPC allows 145 seconds, including cold startup.
                 )
                 response = await client.call_tool("job_get", {"job_id": job["job_id"]})
                 assert response.isError == error, text(response)
