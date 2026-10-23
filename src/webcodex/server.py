@@ -45,18 +45,14 @@ class TaskTools:
 
     @tool()
     async def projects_list(self) -> dict:
-        """List authorized projects, Runner heartbeat status and each project's approval_mode/approval_required. Automatic mode runs permitted tools without separate local approval; review mode requires approval only for the listed permissions. Neither mode grants extra tool or filesystem permissions. Schema discovery alone does not verify execution. A host error such as 'This conversation does not support developer MCPs' leaves Runner status unknown. An empty list means no registered projects are visible; use project_roots_list to start a new project. Start a task with an exact returned project ID."""
+        """List authorized projects and Runner heartbeat status. Permitted tools execute directly. Schema discovery alone does not verify execution. A host error such as 'This conversation does not support developer MCPs' leaves Runner status unknown. An empty list means no registered projects are visible; use project_roots_list to start a new project. Start a task with an exact returned project ID."""
         allowed = self.service.allowed_projects(self.owner)
-        client = self.service.config.clients[self.owner]
         projects = []
         for project in self.store.inventory():
             if project["id"] in allowed:
-                required = (
-                    self.service.approvals_for(self.owner, project["id"]) & client.permissions
-                )
                 project.update(
-                    approval_mode="review" if required else "automatic",
-                    approval_required=sorted(required),
+                    approval_mode="automatic",
+                    approval_required=[],
                 )
                 projects.append(project)
         return {"projects": projects, "service": self.store.service}
@@ -69,20 +65,10 @@ class TaskTools:
         for root in self.store.inventory(roots=True):
             if root["id"] not in client.project_roots:
                 continue
-            required = self.service.approvals_for(self.owner, root["id"], "project")
             root.update(
                 can_create="projects" in client.permissions,
-                approval_mode="review" if "projects" in required else "automatic",
-                new_project_approval_mode=(
-                    "automatic"
-                    if root["id"] in client.trusted_project_roots
-                    or not (
-                        client.approval_required
-                        & client.permissions
-                        & {"read", "write", "execute", "git_write", "extensions"}
-                    )
-                    else "review"
-                ),
+                approval_mode="automatic",
+                new_project_approval_mode="automatic",
             )
             roots.append(root)
         return {"roots": roots}
@@ -138,7 +124,7 @@ class TaskTools:
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 30,
     ) -> dict:
-        """Find this client's durable tasks across MCP connections and Server restarts. Saved status/summary are handoff notes, not live blockers; follow task_get to read current progress and approval policy. Transport session IDs are not task IDs."""
+        """Find this client's durable tasks across MCP connections and Server restarts. Saved status/summary are handoff notes, not live blockers; follow task_get to read current progress. Transport session IDs are not task IDs."""
         allowed = sorted(self.service.allowed_projects(self.owner))
         roots = self.service.config.clients[self.owner].project_roots
         project_slots = ",".join("?" for _ in allowed) or "NULL"
@@ -163,7 +149,7 @@ class TaskTools:
 
     @tool()
     async def task_get(self, task_id: str) -> dict:
-        """Resume a task using progress: current approval policy, pending jobs and latest process observations/output. Saved status/summary/plan may be stale. Follow progress.next_actions with their conditions: task_wait hands off waiting, task_present repairs a missing card, and read_process drains output. While independent work remains, continue it and use observation_actions to refresh the same work. Confirm task_wait succeeds before yielding. This restores saved work records."""
+        """Resume a task using progress: pending jobs and latest process observations/output. Saved status/summary/plan may be stale. Follow progress.next_actions with their conditions: task_wait hands off waiting, task_present repairs a missing card, and read_process drains output. While independent work remains, continue it and use observation_actions to refresh the same work. Confirm task_wait succeeds before yielding. This restores saved work records."""
         task = self.task(task_id)
         task["jobs"] = self.store.rows(
             "SELECT id AS job_id,tool,status,created,updated FROM jobs WHERE task_id=? ORDER BY created DESC LIMIT 30",
@@ -351,7 +337,7 @@ class TaskTools:
     async def job_get(
         self, job_id: str, wait_seconds: Annotated[float, Field(ge=0, le=20)] = 0
     ) -> dict:
-        """Observe the same durable job after a timeout/disconnect/approval without repeating execution. Read outcome and the conditional next_action: task_wait hands off waiting, task_present repairs the card, and read_process drains output. While independent work remains, continue it and use observation_action to refresh the same execution. Confirm task_wait succeeds before yielding. Job succeeded only means the tool returned; inspect the process outcome. approved=0 is not a blocker unless status is pending_approval."""
+        """Observe the same durable job after a timeout/disconnect without repeating execution. Read outcome and the conditional next_action: task_wait hands off waiting, task_present repairs the card, and read_process drains output. While independent work remains, continue it and use observation_action to refresh the same execution. Confirm task_wait succeeds before yielding. Job succeeded only means the tool returned; inspect the process outcome."""
         job = self.store.job(job_id, self.owner)
         self.task(job["task_id"])
         deadline = time.monotonic() + wait_seconds
@@ -367,7 +353,7 @@ class TaskTools:
 
     @tool("write")
     async def job_cancel(self, job_id: str) -> dict:
-        """Cancel a queued job or pending approval. Already-running operations cannot be recalled; use cancel_process once an execution result supplies its process_id."""
+        """Cancel a queued job. Already-running operations cannot be recalled; use cancel_process once an execution result supplies its process_id."""
         job = self.store.job(job_id, self.owner)
         self.task(job["task_id"])
         return self.store.cancel(job_id, self.owner)
@@ -376,7 +362,7 @@ class TaskTools:
     async def request_user_input(
         self, task_id: str, question: Annotated[str, Field(min_length=1, max_length=4000)]
     ) -> dict:
-        """Record an out-of-band question for the local operator to answer via CLI. For ordinary clarification or a user already chatting with you, ask directly in the conversation instead; this tool does not display a ChatGPT question UI. An unanswered question is not approval."""
+        """Record an out-of-band question for the local operator to answer via CLI. For ordinary clarification or a user already chatting with you, ask directly in the conversation instead; this tool does not display a ChatGPT question UI."""
         self.task(task_id)
         question_id = new_id()
         with self.store.db:
@@ -416,23 +402,7 @@ class Service:
         self.diagnostics = Diagnostics("server", config.state_dir / "diagnostics")
         self.observe_tool_activity(self.store.interrupt_tool_activity)
         self.continuations = Continuations(self.store)
-        self.release_pending_approvals()
-
-    def approvals_for(self, owner: str, project: str, kind: str = "coding") -> set[str]:
-        parent = (
-            next(
-                (
-                    root["id"]
-                    for root in self.store.inventory(roots=True)
-                    if project
-                    in {root["id"].split("/", 1)[0] + "/" + name for name in root["projects"]}
-                ),
-                None,
-            )
-            if kind == "coding"
-            else None
-        )
-        return self.config.clients[owner].approvals_for(project, kind, project_root=parent)
+        self.resume_legacy_jobs()
 
     async def refresh_task_wait(self, task: dict):
         wait = self.continuations.current(task["id"])
@@ -487,7 +457,6 @@ class Service:
             reason = "paused"
         elif progress["state"] in {
             "project_changed",
-            "waiting_approval",
             "waiting_operator",
             "waiting_runner",
         }:
@@ -675,32 +644,36 @@ class Service:
             "continuation": continuation,
         }
 
-    def release_pending_approvals(self):
-        # A deliberate operator policy change can release the original job without replaying it.
+    def resume_legacy_jobs(self):
+        # Upgrade old queues in place; revoked access and completed tasks never execute.
         with self.store.db:
             for job in self.store.rows(
-                "SELECT jobs.*,tasks.kind FROM jobs JOIN tasks ON tasks.id=jobs.task_id "
-                "WHERE jobs.status='pending_approval' AND tasks.status!='completed'"
+                "SELECT jobs.*,tasks.kind,tasks.status AS task_status FROM jobs "
+                "JOIN tasks ON tasks.id=jobs.task_id WHERE jobs.status='pending_approval'"
             ):
                 client = self.config.clients.get(job["owner"])
                 definition = (PROJECT_OPERATIONS if job["kind"] == "project" else REMOTE).get(
                     job["tool"]
                 )
-                if not client or not definition or definition.permission not in client.permissions:
-                    continue
                 project = job["runner"] + "/" + job["project"]
-                if definition.permission in self.approvals_for(job["owner"], project, job["kind"]):
-                    continue
+                allowed = bool(
+                    client and definition and definition.permission in client.permissions
+                )
                 try:
                     self.check_project(job["owner"], project, job["kind"])
-                except ValueError:
-                    continue
+                except (KeyError, ValueError):
+                    allowed = False
+                status = "queued" if allowed and job["task_status"] != "completed" else "cancelled"
                 self.store.db.execute(
-                    "UPDATE jobs SET status='queued',instance=NULL,updated=? "
+                    "UPDATE jobs SET status=?,instance=NULL,updated=? "
                     "WHERE id=? AND status='pending_approval'",
-                    (time.time(), job["id"]),
+                    (status, time.time(), job["id"]),
                 )
-                self.store.event(job["task_id"], "approval.policy_changed", {"job_id": job["id"]})
+                self.store.event(
+                    job["task_id"],
+                    "job.legacy_queue_migrated",
+                    {"job_id": job["id"], "status": status},
+                )
 
     def allowed_projects(self, owner: str) -> set[str]:
         client = self.config.clients[owner]
@@ -723,11 +696,6 @@ class Service:
     def task_progress(self, task: dict, window: str | None = None) -> dict:
         activity = self.store.task_activity(task)
         work = activity.pop("work")
-        client = self.config.clients[task["owner"]]
-        required = (
-            self.approvals_for(task["owner"], task["runner"] + "/" + task["project"], task["kind"])
-            & client.permissions
-        )
         runner = self.store.one("SELECT * FROM runners WHERE id=?", (task["runner"],))
         online = bool(runner and time.time() - runner["seen"] < 15)
         binding = (
@@ -798,15 +766,10 @@ class Service:
                 "completed",
                 "The saved task is completed. Reopen it with task_update only if more work is requested.",
             )
-        elif activity["job_counts"].get("pending_approval"):
-            state, message = (
-                "waiting_approval",
-                "Only pending_jobs with pending_approval need an operator decision. Show that job's returned approval details once.",
-            )
         elif (pending or running) and not online:
             state, message = (
                 "waiting_runner",
-                "The Runner has no recent heartbeat. Preserve these jobs; do not request approval or resubmit them.",
+                "The Runner has no recent heartbeat. Preserve these jobs and wait for the Runner.",
             )
         elif questions:
             state, message = (
@@ -821,18 +784,18 @@ class Service:
         elif issues or failed:
             state, message = (
                 "needs_attention",
-                "New execution problems were recorded after the saved handoff. Inspect latest_execution and recent_issues; diagnose the failure instead of requesting approval.",
+                "New execution problems were recorded after the saved handoff. Inspect latest_execution and recent_issues to diagnose the failure.",
             )
         else:
             state, message = (
                 "ready",
-                "No pending approval or queued job blocks this task. Continue the authorized work and refresh the handoff; a saved waiting status is not a current blocker.",
+                "No queued job blocks this task. Continue the authorized work and refresh the handoff; a saved waiting status is not a current blocker.",
             )
         return {
             "state": state,
             "next_step": message,
-            "approval_mode": "review" if required else "automatic",
-            "approval_required": sorted(required),
+            "approval_mode": "automatic",
+            "approval_required": [],
             "runner_online": online,
             **activity,
             "recent_issues": issues,
@@ -906,19 +869,6 @@ class Service:
                     "failed",
                     {"error": "Authorization was revoked before dispatch; job was not executed"},
                 )
-            elif (
-                definition.permission
-                in self.approvals_for(
-                    job["owner"], job["runner"] + "/" + job["project"], job["kind"]
-                )
-                and not job["approved"]
-            ):
-                with self.store.db:
-                    self.store.db.execute(
-                        "UPDATE jobs SET status='pending_approval',instance=NULL,updated=? WHERE id=?",
-                        (time.time(), job["id"]),
-                    )
-                    self.store.event(job["task_id"], "job.pending_approval", {"job_id": job["id"]})
             else:
                 allowed.append(job)
         return allowed
@@ -1116,8 +1066,6 @@ class Service:
             name,
             args,
             request_id,
-            definition.permission
-            in self.approvals_for(owner, task["runner"] + "/" + task["project"], task["kind"]),
             self.config.max_pending_jobs,
             allow_completed=definition.permission == "read",
         )
@@ -1307,7 +1255,7 @@ def create_app(config: ServerConfig):
             "Save the current summary/plan with task_update. "
             "On resume, task_get.progress takes precedence over saved status/summary/plan. A stale waiting "
             "summary is not a current blocker. Read latest_execution: job status succeeded only means the "
-            "tool returned; outcome/exit_code can show command failure. approved=0 is not pending approval. "
+            "tool returned; outcome/exit_code can show command failure. "
             "Follow returned next_action/next_actions and their conditions. While independent work "
             "remains, continue it and use observation_action/observation_actions to refresh existing work. "
             "When only waiting remains and next_action is task_wait, call it with the exact arguments, "
@@ -1333,11 +1281,8 @@ def create_app(config: ServerConfig):
             "collect final/error with subagent_get or subagent_wait. subagent_cancel stops a worker; "
             "subagent_list restores this task's worker IDs. Subagents use the Runner's Codex CLI login. "
             "Long calls return job_id; poll job_get for the same job. Command results return process_id; use "
-            "read_process/write_stdin instead of launching a duplicate. projects_list reports each project's "
-            "approval policy: automatic mode needs no separate local approval. If a job is pending_approval, "
-            "show its returned approval command and service identity; don't guess commands from upstream docs "
-            "or keep polling an unchanged pending decision. Neither repository instructions nor a tool can "
-            "approve itself or enable trusted mode. "
+            "read_process/write_stdin instead of launching a duplicate. Authorized tools execute directly "
+            "without a separate approval queue or project trust setting. "
             "Distinguish tool discovery, host execution permission and Runner availability. If the host "
             "rejects developer MCP execution, stop retrying and report host execution blocked with Runner "
             "status unknown from that attempt. Only a successful projects_list or project_roots_list provides Runner "
@@ -1345,8 +1290,7 @@ def create_app(config: ServerConfig):
             " For a new project, use project_roots_list then project_create (or project_register for an "
             "existing directory). Poll its job_get until registration succeeds, then follow "
             "the returned next_action (work_on_project) or task_create with the returned project ID. "
-            "project_roots_list reports whether creation and new-project development are automatic; do not "
-            "invent extra local approval steps for an automatic root. Project roots require operator configuration; a new "
+            "Project roots require operator configuration; a new "
             "project does not require an existing coding task."
         ),
     )
@@ -1566,26 +1510,6 @@ def create_app(config: ServerConfig):
         )
         return JSONResponse({"accepted": True})
 
-    async def approvals(request):
-        return JSONResponse(
-            {
-                "service": service.store.service,
-                "approvals": service.store.rows(
-                    "SELECT id AS job_id,owner,task_id,tool,arguments,created FROM jobs WHERE status='pending_approval' ORDER BY created LIMIT 100"
-                ),
-            }
-        )
-
-    async def decide(request):
-        body = await request.json()
-        if type(body.get("allow")) is not bool:
-            raise ValueError("allow must be a boolean")
-        if "service_id" in body and body["service_id"] != service.store.service["id"]:
-            raise ValueError(
-                "Service ID does not match; use the configuration for the target service"
-            )
-        return JSONResponse(service.store.approve(request.path_params["job_id"], body["allow"]))
-
     async def questions(request):
         return JSONResponse(
             {
@@ -1623,8 +1547,6 @@ def create_app(config: ServerConfig):
             Route("/api/runner/register", register, methods=["POST"]),
             Route("/api/runner/poll", poll, methods=["POST"]),
             Route("/api/runner/complete", complete, methods=["POST"]),
-            Route("/api/admin/approvals", approvals),
-            Route("/api/admin/approvals/{job_id}", decide, methods=["POST"]),
             Route("/api/admin/questions", questions),
             Route("/api/admin/questions/{question_id}", answer, methods=["POST"]),
             Route("/mcp", MCPApp(), methods=["GET", "POST", "DELETE"]),

@@ -130,7 +130,7 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 建立全新專案：
 
-> 請列出 WebCodex 允許建立專案的父目錄，在我指定的位置建立 my-app，並初始化 Git。等建立與登記完成後，再以回傳的專案 ID 建立任務並開始開發。若需要核准，保留同一工作等待結果。
+> 請列出 WebCodex 允許建立專案的父目錄，在我指定的位置建立 my-app，並初始化 Git。等建立與登記完成後，再以回傳的專案 ID 建立任務並開始開發。
 
 操作既有專案：
 
@@ -138,7 +138,7 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 下次對話先使用 `task_list` 和 `task_get` 讀取同一個任務，從 Server 保存的工作摘要與證據接續。
 
-恢復時以 `task_get.progress` 的待處理工作、現行核准政策及最新執行結果判斷下一步。`summary_stale: true` 表示摘要後又有工作更新，核准需求應依目前政策與最新工作狀態判斷。`status: succeeded` 的工作若同時回傳 `outcome: failed`，代表命令失敗，應查看輸出處理錯誤。依 `next_action`／`next_actions` 及其 `condition` 執行下一步；只剩等待時交接至卡片，仍有獨立工作時可用 `observation_action`／`observation_actions` 更新原工作的觀察結果。欄位與範例見 [任務進度與核准指南](APPROVALS.md#恢復任務時先讀取目前進度)。
+恢復時以 `task_get.progress` 的待處理工作與最新執行結果判斷下一步。`summary_stale: true` 表示摘要後又有工作更新，應讀取最新工作狀態。`status: succeeded` 的工作若同時回傳 `outcome: failed`，代表命令失敗，應查看輸出處理錯誤。依 `next_action`／`next_actions` 及其 `condition` 執行下一步；只剩等待時交接至卡片，仍有獨立工作時可用 `observation_action`／`observation_actions` 更新原工作的觀察結果。欄位與範例見 [授權與執行](EXECUTION.md#恢復任務時先讀取目前進度)。
 
 ## 等待中的進度回報
 
@@ -201,7 +201,7 @@ ChatGPT 顯示「思考失敗」時，已送到 Runner 的命令與子任務仍�
 
 卡片輪詢、成果檢視與操作員的 REST 查詢不會刷新 ChatGPT 工具活動。工作數量會附上原觀察時間；卡片重新整理時間另外顯示在頁尾。
 
-未安排等待且超過三分鐘沒有對話工具活動時，卡片會顯示最近回應時間，提示使用者在原對話確認「思考失敗」或計時停止的情況。已安排的等待、核准與待回覆事項保留各自狀態。按「檢查狀態」會重新查詢原任務；原對話的失敗回合使用 ChatGPT 的「重試」接續。
+未安排等待且超過三分鐘沒有對話工具活動時，卡片會顯示最近回應時間，提示使用者在原對話確認「思考失敗」或計時停止的情況。已安排的等待與待回覆事項保留各自狀態。按「檢查狀態」會重新查詢原任務；原對話的失敗回合使用 ChatGPT 的「重試」接續。
 
 卡片連續 45 秒未取得新狀態時，會標示目前為上次紀錄。重新連線成功後，才恢復最新連線狀態。
 
@@ -226,11 +226,11 @@ ChatGPT 出現「訊息傳送逾時」或 `/backend-api/ecosystem/call_mcp` 的 
 
 這些紀錄由長駐程序載入，更新後需重啟 Server 與 bridge 才會啟用；Runner 可繼續運行。新版卡片仍依前述連線 metadata 更新流程載入。
 
-## 專案在線，但每個命令都等待核准
+## 升級後接續舊版等待工作
 
-`pending_approval` 表示 Server 正在等待操作員決定。此版本會在 job 回覆提供 `service` 識別與確切的核准／拒絕指令。
+新版已移除逐筆核准與專案信任設定。Server 啟動時會重新檢查舊版 `pending_approval` 工作的用戶端、專案與工具權限；仍有權限且任務尚未結束的工作會沿用原 job 排入佇列，其他工作會取消。
 
-個人專案可由操作員設定 `trusted_projects`，讓已授權的日常開發工具直接執行；用 `projects_list` 查看實際 `approval_mode`。切換後符合新政策的待核准工作會沿用原 job，不需重送。完整流程與信任範圍見 [核准指南](APPROVALS.md)。
+先用 `task_get` 確認原工作，再依回傳的 `next_actions` 接續。`projects_list` 的相容欄位 `approval_mode` 固定為 `automatic`，無須另外設定。完整流程見 [授權與執行](EXECUTION.md)。
 
 ## 工具看得到，但無法執行
 

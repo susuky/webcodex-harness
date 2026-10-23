@@ -10,9 +10,6 @@ from webcodex.server import Service
 
 async def test_mcp_resume_reports_failed_command_and_continues_one_process(tmp_path):
     harness = Harness(tmp_path)
-    owner = harness.config.clients["owner"]
-    owner.approval_required = {"execute", "extensions", "git_write"}
-    owner.trusted_projects = ["local/project"]
     await harness.start()
     try:
         async with harness.mcp() as client:
@@ -116,7 +113,7 @@ async def test_mcp_resume_reports_failed_command_and_continues_one_process(tmp_p
         await harness.close()
 
 
-async def test_resume_finds_old_approval_and_distinguishes_offline_runner(tmp_path):
+async def test_resume_finds_old_queued_job_and_distinguishes_offline_runner(tmp_path):
     owner = Client(token="c" * 40, projects=["local/project"])
     config = ServerConfig(
         state_dir=tmp_path / "state",
@@ -137,23 +134,25 @@ async def test_resume_finds_old_approval_and_distinguishes_offline_runner(tmp_pa
             "request_id": "once",
         },
     )
+    with store.db:
+        store.db.execute(
+            "UPDATE jobs SET status='pending_approval' WHERE id=?", (pending["job_id"],)
+        )
     for index in range(35):
-        job = store.enqueue(task, "read_file", {"path": "file.txt"}, str(index), False, 100)
+        job = store.enqueue(task, "read_file", {"path": "file.txt"}, str(index), 100)
         service.claim("local", "instance", 1)
         store.complete("local", job["job_id"], "instance", "succeeded", {"content": "ok"})
     resumed = await service.call("owner", "task_get", {"task_id": task["id"]})
     assert pending["job_id"] not in {job["job_id"] for job in resumed["jobs"]}
     progress = resumed["progress"]
-    assert progress["state"] == "waiting_approval"
+    assert progress["state"] == "observing"
     assert progress["pending_jobs"][0]["job_id"] == pending["job_id"]
-    assert "approve_command" in progress["pending_jobs"][0]["approval"]
-    assert progress["next_actions"] == []  # Don't tell the caller to endlessly poll a decision.
+    assert "approval" not in progress["pending_jobs"][0]
     with pytest.raises(ValueError, match="Task not found"):
         await service.call("other", "task_get", {"task_id": task["id"]})
     identity = store.service["id"]
     store.close()
 
-    owner.trusted_projects = ["local/project"]
     service = Service(config)
     try:
         assert service.store.service["id"] == identity

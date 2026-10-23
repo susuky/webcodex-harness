@@ -9,7 +9,7 @@ def test_batch_worker_states_survive_raw_logs_stale_observations_and_restart(tmp
     task = store.create_task("owner", "runner/project", "workers")
 
     def complete(tool, result):
-        job = store.enqueue(task, tool, {}, None, False, 100)
+        job = store.enqueue(task, tool, {}, None, 100)
         store.claim("runner", "instance", 1)
         store.complete("runner", job["job_id"], "instance", "succeeded", result)
         return job["job_id"]
@@ -17,7 +17,7 @@ def test_batch_worker_states_survive_raw_logs_stale_observations_and_restart(tmp
     try:
         ids = []
         for name in ("one", "two"):
-            job = store.enqueue(task, "subagent_spawn", {}, name, False, 100)
+            job = store.enqueue(task, "subagent_spawn", {}, name, 100)
             store.claim("runner", "instance", 1)
             agent_id = job["job_id"]
             ids.append(agent_id)

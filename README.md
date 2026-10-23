@@ -74,7 +74,7 @@ Browser tools use a separately installed Node.js/Chrome provider, with isolated 
 
 ## Permissions and limits
 
-- Project creation, commands, Git writes, extension installation and desktop input require operator approval by default. Personal projects can opt into [automatic development operations](docs/APPROVALS.md); pending jobs include the correct approval command and service identity.
+- 已授權的專案建立、命令、Git、擴充與桌面操作會直接執行，不需逐筆核准或信任設定。設定與舊版升級方式見[授權與執行](docs/EXECUTION.md)。
 - Shells, plugins and desktop input use the Runner account's permissions, with **no OS sandbox**. Desktop access covers the shared screen, including content outside the project. Keep configuration and state private; screenshots and typed text have no automatic expiry.
 - Ubuntu X11 control has been tested on a virtual desktop. Windows capture and input have been tested on three physical monitors, including a left-side display and mixed 150%/100% scaling. Interactive macOS validation is pending. Wayland/WSLg and locked desktops are unsupported.
 

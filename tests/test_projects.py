@@ -96,7 +96,6 @@ async def test_create_and_register_projects_from_empty_inventory(tmp_path, monke
     owner.projects = []
     owner.project_roots = ["local/work"]
     owner.permissions.add("projects")
-    owner.approval_required = {"projects"}
     await harness.start()
     try:
         async with harness.mcp() as client, harness.mcp("d" * 40) as other:
@@ -114,11 +113,6 @@ async def test_create_and_register_projects_from_empty_inventory(tmp_path, monke
                 "git_init": True,
                 "request_id": "new-1",
             }
-            job = await call(client, "project_create", args)
-            assert job["status"] == "pending_approval"
-            assert not (root / "brand-new").exists()
-            assert (await call(client, "project_create", args))["job_id"] == job["job_id"]
-            await call(client, "project_create", {**args, "name": "different"}, error=True)
             register = harness.runner.register
             lost_reply = False
 
@@ -130,10 +124,10 @@ async def test_create_and_register_projects_from_empty_inventory(tmp_path, monke
                     raise httpx.ReadError("Simulated lost inventory acknowledgement")
 
             monkeypatch.setattr(harness.runner, "register", lose_registration_reply_once)
-            async with harness.http("a" * 40) as admin:
-                assert (
-                    await admin.post("/api/admin/approvals/" + job["job_id"], json={"allow": True})
-                ).status_code == 200
+            job = await call(client, "project_create", args)
+            assert job["status"] in {"queued", "running", "succeeded"}
+            assert (await call(client, "project_create", args))["job_id"] == job["job_id"]
+            await call(client, "project_create", {**args, "name": "different"}, error=True)
             done = await call(client, "job_get", {"job_id": job["job_id"], "wait_seconds": 20})
             assert done["result"]["project"] == "local/brand-new"
             assert lost_reply
@@ -163,7 +157,6 @@ async def test_create_and_register_projects_from_empty_inventory(tmp_path, monke
                 in (await call(client, "git_status", {"task_id": task}))["result"]["status"]
             )
 
-            owner.approval_required = set()
             existing = root / "existing"
             existing.mkdir()
             (existing / "keep.txt").write_text("keep", encoding="utf-8")
@@ -247,7 +240,6 @@ async def test_project_creation_authorization_is_rechecked_before_dispatch(tmp_p
     policy = harness.config.clients["owner"]
     policy.permissions.add("projects")
     policy.project_roots = ["local/work"]
-    policy.approval_required = {"projects"}
     service = Service(harness.config)
     service.store.register(
         "local", "one", {}, project_roots={"work": {"binding": "a" * 64, "projects": []}}
@@ -257,7 +249,6 @@ async def test_project_creation_authorization_is_rechecked_before_dispatch(tmp_p
         with pytest.raises(ValueError, match="authorized"):
             await service.call("owner", "project_create", {**args, "root": "local/other"})
         job = await service.call("owner", "project_create", args)
-        service.store.approve(job["job_id"], True)
         policy.project_roots = []
         assert service.claim("local", "one", 10) == []
         assert service.store.job(job["job_id"], "owner")["status"] == "failed"

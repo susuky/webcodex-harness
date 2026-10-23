@@ -2,7 +2,7 @@
 
 ## 已匯入的教材技能
 
-2026-10-23 已將本機 20 個教材製作技能完整匯入 Windows Runner 的 `local/tobi-benchpress` 與 `local/seminar`。每個專案保存 302 個來源檔案，安裝位置為 Runner `state_dir/extensions/<project>/skill/<name>`，與教材工作樹分開。使用既有擴充安裝器複製技能包，沒有執行安裝 hooks，Server／Runner／client 設定與核准政策保持原值。
+2026-10-23 已將本機 20 個教材製作技能完整匯入 Windows Runner 的 `local/tobi-benchpress` 與 `local/seminar`。每個專案保存 302 個來源檔案，安裝位置為 Runner `state_dir/extensions/<project>/skill/<name>`，與教材工作樹分開。使用既有擴充安裝器複製技能包，沒有執行安裝 hooks。
 
 ChatGPT 在指定專案建立或續接任務後，先呼叫 `skills_list(task_id)`，再以回傳的完整名稱讀取。已從實際 Windows 外掛驗證兩份 20 項清單、40 次主文件及 6 次支援文件讀取，全部成功、內容雜湊一致，讀取核准次數為 0。
 
@@ -16,7 +16,7 @@ ChatGPT 在指定專案建立或續接任務後，先呼叫 `skills_list(task_id
 }
 ```
 
-簡報技能使用 `installed:Presentations`（大寫 P）；支援文件可指定 `path="references/template_following.md"`。其他教材技能包含文字編輯、HTML／PPTX、前端驗證、版面調整、PDF、程式審查及依情境使用的桌面操作、影像與手機存取指引。依專案工作計畫選讀；執行腳本與桌面輸入仍依原政策核准。
+簡報技能使用 `installed:Presentations`（大寫 P）；支援文件可指定 `path="references/template_following.md"`。其他教材技能包含文字編輯、HTML／PPTX、前端驗證、版面調整、PDF、程式審查及依情境使用的桌面操作、影像與手機存取指引。依專案工作計畫選讀；已授權的腳本與桌面工具直接執行。
 
 匯入與雲端驗證紀錄保存在本次安裝的 `windows-teaching-skills/installation.json`、`manifest.json` 與 `verification.json`。
 
@@ -105,7 +105,7 @@ uv run --extra computer webcodex init --config-dir $StandaloneCfg --project $Pro
 if ($LASTEXITCODE -ne 0) { throw 'Windows Server 與 Runner 初始化失敗。' }
 ```
 
-`--computer-use` 會啟用截圖與輸入權限，預設桌面輸入需核准。若希望這個新安裝的命令與桌面輸入免逐筆核准，可在**首次**執行上述 `init` 時加上 `--trusted`。
+`--computer-use` 會啟用截圖與輸入權限。新版在驗證用戶端、專案與工具權限後直接執行，無須另外設定專案信任或逐筆核准。
 
 第一個 PowerShell 視窗啟動本機 Server，保持執行：
 
@@ -260,13 +260,7 @@ Windows 的 `computer_status.monitors` 提供每個螢幕的 `id`、`primary`、
 
 輸入的 `x/y`、拖曳的 `start_x/start_y` 均以**所選螢幕左上角**為原點，使用 `source_width/source_height` 的像素座標。後端負責加上螢幕原點；呼叫端不另外加 `origin_x/origin_y`。縮圖顯示座標需先依 `source_width / width`、`source_height / height` 換算。螢幕布局或 DPI 變更後需取得新的截圖。
 
-桌面輸入回報等待核准時，使用回傳的 `approve_command`，並帶入本機 `server.json` 的完整路徑。例如下列指令列出此安裝的核准項目：
-
-```powershell
-$LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
-Set-Location -LiteralPath (Join-Path $LocalRoot 'harness')
-uv run --extra computer webcodex approvals --config (Join-Path $LocalRoot 'config\server.json')
-```
+輸入工具回傳工作 ID 後，使用 `job_get` 觀察同一筆工作；命令仍在執行時，使用回傳的 `read_process` 接續輸出。不要重送已排入佇列的操作。
 
 Windows Runner 應在本機 PowerShell 啟動；SSH 終端機、Windows 服務、鎖定桌面、UAC 安全桌面及斷線 RDP 不提供這份流程所需的互動桌面。
 
@@ -317,7 +311,7 @@ finally {
 
 本次在主螢幕 150%、左側副螢幕 100% 與右側直向副螢幕 100% 各執行一次實測。每個螢幕均核對截圖標記像素、按鈕收件、拖曳按下／釋放的全域座標、游標終點及左鍵已放開。詳細結果見[平台驗證](PLATFORMS.md)。
 
-2026-10-23 已完成實際 ChatGPT 雲端外掛驗收：Windows 本機 Server／Runner 經官方 `tunnel-client` 0.0.17 連線，`healthy=true`、`ready=true`。三個螢幕各取得操作前、點擊後與拖曳後的原生 JPEG，共 9 張；每個測試視窗均收到一次點擊及一次 200 像素拖曳。6 筆輸入皆經本機逐筆核准，沒有更改核准政策。
+2026-10-23 已完成實際 ChatGPT 雲端外掛驗收：Windows 本機 Server／Runner 經官方 `tunnel-client` 0.0.17 連線，`healthy=true`、`ready=true`。三個螢幕各取得操作前、點擊後與拖曳後的原生 JPEG，共 9 張；每個測試視窗均收到一次點擊及一次 200 像素拖曳。這輪使用舊版逐筆核准流程；新版執行方式見[授權與執行](EXECUTION.md)。
 
 早期驗收曾出現 Tunnel MCP 初始化錯誤 409。已用原生 Tunnel 對照測試定位到 `initialize` 回覆與 `notifications/initialized` 之間的空窗，並在 Windows 啟動程式啟用上述官方通知設定。修正後 12 輪初始化、4 路並行，共 60 次本機工具呼叫成功；ChatGPT 端 34 次實際呼叫全部成功，0 失敗、0 工具重試。停止 Server、Runner、Tunnel 後，以登入捷徑冷啟動，再從 ChatGPT 查詢、讀檔、讀取桌面狀態與回傳三個原生 JPEG 均成功。16 筆工作紀錄皆成功且無重複。
 
@@ -348,11 +342,11 @@ uv run --extra computer webcodex init --config-dir $Ll1Cfg --project $Project --
 if ($LASTEXITCODE -ne 0) { throw 'll1 方案初始化失敗。' }
 ```
 
-此方案使用生成的 `runner.json`；Server 讀取 ll1 的既有設定。Windows 的 `init --trusted` 不會改變 ll1 核准政策。
+此方案使用生成的 `runner.json`；Server 讀取 ll1 的既有設定。Server 與 Runner 都應更新至移除逐筆核准的新版本。
 
 以下使用 Runner ID `windows-desktop`、ll1 client ID `owner`。若 ChatGPT 的既有連線使用其他 client，先將 `$ClientId` 改成該 ID；配對程式會檢查它是否存在。
 
-配對保留 ll1 該 client 的核准政策；輸入需要核准時，使用回傳的 `approve_command` 核准該筆操作。
+配對保留 ll1 該 client 的專案範圍與工具權限；符合權限的輸入直接執行。
 
 Runner token 只經 SSH 標準輸入傳送，指令不會顯示它。遠端程式先驗證完整設定，保留其他欄位，在私有目錄備份原檔後原子替換；同名 Runner 已使用不同 token 時會停止。
 

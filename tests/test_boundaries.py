@@ -66,7 +66,7 @@ def test_durable_replay_lost_claim_and_project_binding(tmp_path):
     service_identity = store.service
     store.register("runner", "instance", {"project": "a" * 64})
     task = store.create_task("owner", "runner/project", "durability")
-    job = store.enqueue(task, "write_file", {"content": "one"}, "request-1", False, 10)
+    job = store.enqueue(task, "write_file", {"content": "one"}, "request-1", 10)
     claimed = store.claim("runner", "instance", 1)
     assert claimed[0]["id"] == job["job_id"]
     # Publishing a new project can race with a claim response still in transit.
@@ -79,10 +79,10 @@ def test_durable_replay_lost_claim_and_project_binding(tmp_path):
     store.close()
     store = Store(tmp_path)
     assert store.service == service_identity
-    replay = store.enqueue(task, "write_file", {"content": "one"}, "request-1", False, 10)
+    replay = store.enqueue(task, "write_file", {"content": "one"}, "request-1", 10)
     assert replay["job_id"] == job["job_id"]
     with pytest.raises(ValueError, match="different"):
-        store.enqueue(task, "write_file", {"content": "two"}, "request-1", False, 10)
+        store.enqueue(task, "write_file", {"content": "two"}, "request-1", 10)
     store.complete("runner", job["job_id"], "instance", "succeeded", {"sha256": "evidence"})
     store.complete("runner", job["job_id"], "instance", "failed", {"error": "late duplicate"})
     assert store.job(job["job_id"], "owner")["result"] == {"sha256": "evidence"}
@@ -90,7 +90,7 @@ def test_durable_replay_lost_claim_and_project_binding(tmp_path):
         store.job(job["job_id"], "different-owner")
     store.register("runner", "instance", {"project": "b" * 64})
     with pytest.raises(ValueError, match="root changed"):
-        store.enqueue(task, "write_file", {}, "new-request", False, 10)
+        store.enqueue(task, "write_file", {}, "new-request", 10)
     store.close()
 
 
@@ -98,7 +98,7 @@ def test_live_runner_claims_are_not_retargeted(tmp_path):
     store = Store(tmp_path)
     store.register("runner", "one", {"project": "a" * 64})
     task = store.create_task("owner", "runner/project", "owner")
-    job = store.enqueue(task, "exec_command", {}, None, False, 10)
+    job = store.enqueue(task, "exec_command", {}, None, 10)
     store.claim("runner", "one", 1)
     with pytest.raises(ValueError, match="still connected"):
         store.register("runner", "two", {"project": "a" * 64})
@@ -181,7 +181,7 @@ def test_configuration_rejects_unencrypted_remote_and_exposed_state(tmp_path):
             server_url(url)
 
 
-def test_dispatch_rechecks_revoked_permissions_and_new_approval_policy(tmp_path):
+def test_dispatch_rechecks_revoked_permissions(tmp_path):
     config = ServerConfig(
         state_dir=tmp_path,
         admin_token="a" * 40,
@@ -193,16 +193,12 @@ def test_dispatch_rechecks_revoked_permissions_and_new_approval_policy(tmp_path)
     service = Service(config)
     service.store.register("runner", "instance", {"project": "a" * 64})
     task = service.store.create_task("owner", "runner/project", "policy")
-    first = service.store.enqueue(task, "exec_command", {}, None, False, 10)
+    first = service.store.enqueue(task, "exec_command", {}, None, 10)
     config.clients["owner"].permissions.remove("execute")
     assert service.claim("runner", "instance", 1) == []
     assert service.store.job(first["job_id"], "owner")["status"] == "failed"
     config.clients["owner"].permissions.add("execute")
-    config.clients["owner"].approval_required.add("execute")
-    second = service.store.enqueue(task, "exec_command", {}, None, False, 10)
-    assert service.claim("runner", "instance", 1) == []
-    assert service.store.job(second["job_id"], "owner")["status"] == "pending_approval"
-    service.store.approve(second["job_id"], True)
+    second = service.store.enqueue(task, "exec_command", {}, None, 10)
     assert service.claim("runner", "instance", 1)[0]["id"] == second["job_id"]
     service.store.close()
 

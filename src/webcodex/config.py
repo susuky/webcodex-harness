@@ -94,45 +94,25 @@ class Client(StrictModel):
     token: str = Field(min_length=32)
     projects: list[str]
     project_roots: list[str] = Field(default_factory=list)
-    trusted_projects: list[str] = Field(default_factory=list, max_length=100)
-    trusted_project_roots: list[str] = Field(default_factory=list, max_length=100)
     permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
-    approval_required: set[str] = Field(
-        default_factory=lambda: {
-            "execute",
-            "git_write",
-            "extensions",
-            "computer_control",
-            "projects",
-        }
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_approval_settings(cls, value):
+        # Load existing installations without reviving the removed approval gate.
+        if isinstance(value, dict):
+            return {
+                key: item
+                for key, item in value.items()
+                if key not in {"approval_required", "trusted_projects", "trusted_project_roots"}
+            }
+        return value
 
     @model_validator(mode="after")
     def valid_permissions(self):
-        if not self.permissions <= PERMISSIONS or not self.approval_required <= PERMISSIONS:
+        if not self.permissions <= PERMISSIONS:
             raise ValueError("Unknown permission")
-        for project in [*self.trusted_projects, *self.trusted_project_roots]:
-            parts = project.split("/")
-            if len(parts) != 2:
-                raise ValueError("Trust settings require an exact runner/project or runner/root ID")
-            for part in parts:
-                identifier(part)
         return self
-
-    def approvals_for(
-        self, project: str, kind: str = "coding", *, project_root: str | None = None
-    ) -> set[str]:
-        trusted_root = (project if kind == "project" else project_root) in set(
-            self.trusted_project_roots
-        ) & set(self.project_roots)
-        if kind != "coding":
-            return self.approval_required - {"projects"} if trusted_root else self.approval_required
-        required = self.approval_required - {"projects"}
-        return (
-            required - DEFAULT_PERMISSIONS
-            if project in self.trusted_projects or trusted_root
-            else required
-        )
 
 
 class ServerConfig(StrictModel):
@@ -252,15 +232,11 @@ def allow_project_root(
     root_id = runner.runner_id + "/" + name
     policy = data["server"]["clients"][client_id]
     policy["project_roots"] = sorted(set(policy.get("project_roots", [])) | {root_id})
-    permissions = {"projects"} | (DEFAULT_PERMISSIONS if trusted else set())
+    permissions = {"projects"}
     policy["permissions"] = sorted(server.clients[client_id].permissions | permissions)
-    if trusted:
-        policy["trusted_project_roots"] = sorted(
-            set(policy.get("trusted_project_roots", [])) | {root_id}
-        )
     data["runner"].setdefault("project_roots", {})[name] = str(path)
     data["runner"]["permissions"] = sorted(runner.permissions | permissions)
-    ServerConfig.model_validate(data["server"])
+    data["server"] = ServerConfig.model_validate(data["server"]).model_dump(mode="json")
     RunnerConfig.model_validate(data["runner"])
     backup = private_dir(directory / "backups" / ("access-" + secrets.token_hex(8)))
     encoded = {
@@ -298,7 +274,6 @@ def allow_project_root(
         "project_root": root_id,
         "path": str(path),
         "client": client_id,
-        "trusted": trusted or root_id in policy.get("trusted_project_roots", []),
         "backup": str(backup),
         "restart_required": ["server", "runner"],
     }
@@ -308,7 +283,7 @@ def initialize(
     directory: Path,
     project: Path | None,
     port: int,
-    trusted: bool,
+    trusted: bool = False,
     computer_use: bool = False,
     project_root: Path | None = None,
 ) -> dict:
@@ -333,8 +308,6 @@ def initialize(
         policy.permissions.add("projects")
     if computer_use:
         policy.permissions |= COMPUTER_PERMISSIONS
-    if trusted:
-        policy.approval_required = set()
     server = ServerConfig(
         state_dir=directory / "server",
         admin_token=admin,

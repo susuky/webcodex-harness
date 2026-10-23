@@ -27,7 +27,7 @@ def completion_app(tmp_path):
     store = app.state.service.store
     store.register("runner", "instance", {"project": "b" * 64})
     task = store.create_task("owner", "runner/project", "completion contract")
-    job = store.enqueue(task, "read_process", {}, "once", False, 10)
+    job = store.enqueue(task, "read_process", {}, "once", 10)
     store.claim("runner", "instance", 1)
     yield app, task, job
     store.close()
@@ -234,7 +234,7 @@ def test_non_process_status_and_registered_project_results_are_supported(tmp_pat
                 {"registered": True, "project": "runner/new-project"},
             ]
         ):
-            job = store.enqueue(task, "git_status", {}, str(index), False, 10)
+            job = store.enqueue(task, "git_status", {}, str(index), 10)
             store.claim("runner", "instance", 1)
             store.complete("runner", job["job_id"], "instance", "succeeded", result)
             assert store.job(job["job_id"], "owner")["result"] == result
@@ -256,7 +256,7 @@ def test_process_control_results_do_not_require_or_create_a_status(tmp_path, too
     try:
         store.register("runner", "instance", {"project": "b" * 64})
         task = store.create_task("owner", "runner/project", "process control")
-        job = store.enqueue(task, tool, {}, "once", False, 10)
+        job = store.enqueue(task, tool, {}, "once", 10)
         store.claim("runner", "instance", 1)
         store.complete("runner", job["job_id"], "instance", "succeeded", result)
         saved = store.job(job["job_id"], "owner")

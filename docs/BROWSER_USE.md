@@ -40,7 +40,7 @@ uv run webcodex call extension_install --arguments '@args.json'
 {"task_id":"TASK_ID","plugin":"browser-tools","server":"browser"}
 ```
 
-預設安裝、工具探索與所有 `plugin_call` 都需操作員核准；收到 `pending_approval` 時依 [核准流程](OPERATIONS.md#核准等待與停止程序) 處理，再以 `job_get` 讀取同一工作。
+安裝、工具探索與 `plugin_call` 依既有工具權限直接執行，使用 `job_get` 讀取同一工作的結果。
 
 ## 操作流程
 
@@ -105,7 +105,7 @@ uv run webcodex call extension_install --arguments '@args.json'
 
 ## 範圍與驗證
 
-`allowedTools` 會在工具探索與呼叫時檢查，未開放檔案上傳或任意 Node.js 執行工具；`browser_evaluate` 可在頁面執行有副作用的 JavaScript，因此全部沿用 `execute` 核准。外掛程序本身仍使用 Runner 帳號的系統權限。
+`allowedTools` 會在工具探索與呼叫時檢查，未開放檔案上傳或任意 Node.js 執行工具；`browser_evaluate` 可在頁面執行有副作用的 JavaScript，因此使用 `execute` 工具權限。外掛程序本身仍使用 Runner 帳號的系統權限。
 
 Playwright 的 `allowed-origins` 會阻擋不符合設定的直接請求，但不限制重新導向；網路隔離需另外配置。[官方設定說明](https://github.com/microsoft/playwright-mcp#configuration) 瀏覽器與 plugin 使用 Runner 帳號權限，沒有 OS sandbox。範例未開啟本機 file URL 存取。
 

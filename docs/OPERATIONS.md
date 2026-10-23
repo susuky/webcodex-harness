@@ -54,7 +54,7 @@ uv run webcodex init --project "$HOME/src/my-repo"
 
 不同終端機分別執行 `uv run webcodex serve` 與 `uv run webcodex runner`，再以 `uv run webcodex call projects_list` 驗證連線。專案 `local/project` 的 `online` 應為 `true`。`doctor` 用於檢查本機環境。
 
-預設命令、Git 寫入與擴充安裝需操作員核准。`init --trusted` 可省略核准，命令仍以 Runner 帳號權限執行；桌面權限需另外啟用。設定中的三種憑證不可混用或公開。
+已授權的命令、Git 寫入與擴充安裝直接執行，命令使用 Runner 帳號權限；桌面權限需另外啟用。設定中的三種憑證各有對應用途。
 
 ## 建立任務與呼叫工具
 
@@ -90,19 +90,9 @@ uv run webcodex call work_on_project --arguments '@args.json'
 
 結構化 Git 操作不會自動補取 partial clone 的缺失物件；遇到此類錯誤時，先由操作員在可信終端機明確下載所需物件，再重新查詢。HTTPS 擴充安裝的明確 clone／fetch 不受此限制。
 
-## 核准、等待與停止程序
+## 等待與停止程序
 
-個人專案可設定 `trusted_projects`，讓日常開發不必反覆切回終端機；設定與範圍見 [核准與受信任專案](APPROVALS.md)。`projects_list` 會顯示實際模式，信任清單不另外授予工具權限。
-
-收到 `pending_approval` 時，優先使用回傳的 `approval.approve_command` 或 `approval.deny_command`，其中包含本版本語法及服務識別檢查。操作員先檢視參數，再決定。以下為相容的基本指令：
-
-```text
-uv run webcodex approvals
-uv run webcodex approve JOB_ID
-uv run webcodex deny JOB_ID
-```
-
-`approve` 和 `deny` 擇一。核准後或狀態為 `queued`／`running` 時，使用 `job_get`，參數為 `{"job_id":"JOB_ID","wait_seconds":10}`，持續查同一工作。
+已授權的工具直接執行，設定與升級方式見[授權與執行](EXECUTION.md)。狀態為 `queued`／`running` 時，使用 `job_get`，參數為 `{"job_id":"JOB_ID","wait_seconds":10}`，持續查同一工作。
 
 `exec_command` 的 job 成功只代表已取得程序。用 `read_process` 觀察到結束：
 
@@ -142,7 +132,7 @@ uv run webcodex deny JOB_ID
 | `projects_list` 成功回覆專案 offline | 檢查 Runner、URL、配對憑證、專案路徑；不要啟動共用 state 的第二個 Runner |
 | 工具看得到，但出現 developer MCP `FORBIDDEN` | 目前對話拒絕執行，Runner 狀態未確認；依 [連線診斷](CHATGPT.md#工具看得到但無法執行) 檢查用戶端與工作區權限 |
 | 401 | 確認 client、Runner 與操作員使用各自的 JSON |
-| 核准後仍未執行 | 查同一 `job_id`；桌面截圖若已過期需重新觀察 |
+| 工作已排入佇列但尚未執行 | 查同一 `job_id` 與 Runner 心跳；桌面截圖若已過期需重新觀察 |
 | Windows JSON 引號錯誤 | 使用 UTF-8 `@args.json` |
 | Windows 路徑被拒絕 | 使用本機實體 NTFS 資料夾；junction、reparse point、ADS 與裝置名稱不支援 |
 | ConPTY／Job 失敗 | 保存錯誤與 doctor 結果；以 `tty: false` 區分終端機問題 |

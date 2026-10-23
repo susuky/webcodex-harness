@@ -18,7 +18,7 @@
 2026-09-12 再比對 [yyjeqhc/webcodex @ c9f1a54](https://github.com/yyjeqhc/webcodex/tree/c9f1a54fc9e9e3fd21d5005a140b9e97998134db) 的專案操作，補上原先只能對已登記專案建立 task 的缺口：
 
 - `project_roots_list` 探索操作員允許的父目錄，`project_create`／`project_register` 不需要既有 task。
-- Runner 建立或登記資料夾並持久保存，再公布可用 project ID；沿用現有權限、核准及工作去重。
+- Runner 建立或登記資料夾並持久保存，再公布可用 project ID；沿用現有權限檢查及工作去重。
 - 已驗證從零個專案開始、回報中斷、重啟恢復、路徑邊界與舊資料庫 migration；Windows 新流程仍待實機測試。
 
 實際設定、參考來源與限制見 [建立與登記專案](PROJECTS.md)。目前不提供上游的模板、既有目錄採用或取消登記功能。傳輸沿用原有 Server／Runner 與選用的 Secure MCP Tunnel。
@@ -29,7 +29,7 @@
 | --- | --- | --- |
 | 1 | 指定視窗與語意控制項 | 參考上游 UIA 路徑，先探索視窗、聚焦與按鈕；Ubuntu 的 AT-SPI 路徑需另外驗證。減少座標錯位及焦點切換風險 |
 | 2 | 截圖附件與保留期限 | 參考上游截圖附件及審計分離概念，讓 SQLite 只存 metadata，圖片另存並設定清理期限；保留期限是本專案的延伸建議 |
-| 3 | 精簡工作監看頁 | 參考 [Runtime Console](https://github.com/yyjeqhc/webcodex/blob/04e8135f852a75b572c9a575db0182b07b534eea/docs/runtime-console.md)，先以既有 API 顯示 Runner、job、待核准及程序輸出，沿用目前的角色權限 |
+| 3 | 精簡工作監看頁 | 參考 [Runtime Console](https://github.com/yyjeqhc/webcodex/blob/04e8135f852a75b572c9a575db0182b07b534eea/docs/runtime-console.md)，先以既有 API 顯示 Runner、job 與程序輸出，沿用目前的角色權限 |
 | 4 | LSP 程式碼導覽 | 參考 [架構中的 LSP](https://github.com/yyjeqhc/webcodex/blob/04e8135f852a75b572c9a575db0182b07b534eea/docs/ARCHITECTURE.md)，先提供 definition／references／diagnostics；需要可量測優於目前 ripgrep 的使用情境再加入 |
 
 下一步優先完成 Windows 互動桌面與 DPI 驗收，再加入指定視窗控制。Wayland 需要另行評估 compositor／portal 授權流程。

@@ -72,7 +72,7 @@ def test_computer_configuration_is_explicit_and_trust_does_not_enable_it(tmp_pat
             assert permissions & COMPUTER_PERMISSIONS == (
                 COMPUTER_PERMISSIONS if enabled else set()
             )
-        assert ("computer_control" in server.clients["owner"].approval_required) == (not trusted)
+        assert "approval_required" not in server.clients["owner"].model_dump()
 
 
 def test_headless_and_wayland_report_unavailable(monkeypatch):
@@ -343,10 +343,11 @@ async def test_desktop_lock_survives_awaiting_job_cancellation(monkeypatch):
     assert (await asyncio.wait_for(observation, 5))["snapshot_id"] != snapshot_id
 
 
-async def test_mcp_computer_permissions_approval_dedup_and_native_image(tmp_path, monkeypatch):
+async def test_mcp_computer_permissions_direct_execution_dedup_and_native_image(
+    tmp_path, monkeypatch
+):
     harness = Harness(tmp_path)
     harness.config.clients["owner"].permissions |= COMPUTER_PERMISSIONS
-    harness.config.clients["owner"].approval_required.add("computer_control")
     # Deliberately leave Runner permissions disabled for the first request.
     await harness.start()
     try:
@@ -375,19 +376,12 @@ async def test_mcp_computer_permissions_approval_dedup_and_native_image(tmp_path
                 "request_id": "click-once",
             }
             pending = await call(client, "computer_click", click_args)
-            assert pending["status"] == "pending_approval"
-            api.click.assert_not_called()
-            async with harness.http("a" * 40) as admin:
-                response = await admin.post(
-                    "/api/admin/approvals/" + pending["job_id"], json={"allow": True}
-                )
-                assert response.status_code == 200
+            assert pending["status"] == "succeeded" and "approval" not in pending
             result = await call(client, "job_get", {"job_id": pending["job_id"], "wait_seconds": 2})
             assert result["status"] == "succeeded"
             replay = await call(client, "computer_click", click_args)
             assert replay["job_id"] == pending["job_id"]
             api.click.assert_called_once()
-            harness.config.clients["owner"].approval_required.clear()
             stale = await call(
                 client, "computer_click", {**click_args, "request_id": "stale"}, error=True
             )

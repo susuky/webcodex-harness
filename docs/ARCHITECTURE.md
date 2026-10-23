@@ -12,26 +12,23 @@ Server 與 Runner 目前採 HTTPS long polling；同機開發允許 loopback HTT
 
 - 每個用戶端有自己的 token、專案清單、選用父目錄清單與 `permissions`。
 - 每台 Runner 使用獨立 token，不能拿它呼叫 MCP 或操作員 API。
-- 操作員 token 只用於核准與回答問題；MCP 工具清單不暴露這些操作。
+- 操作員 token 用於回答外部問題；MCP 工具清單不暴露這個操作。
 - `runner_id/project_id` 指向已登錄專案。綁定包含 canonical path、檔案系統裝置與 inode 的雜湊；更換根目錄需要建立新任務。
 - 任務與工作紀錄依用戶端身分隔離。共同獲准的專案使用共享的真實檔案系統。
 
-`read`、`write`、`execute`、`git_write`、`extensions` 決定 coding 工具類別。選用的 `projects` 授予建立與登記專案，`computer_observe`／`computer_control` 分別授予桌面觀察與輸入，預設皆不啟用。`approval_required` 決定哪些 Runner 操作先進入核准佇列。即使 Server 允許，Runner 的 `permissions` 仍可進一步拒絕。
+`read`、`write`、`execute`、`git_write`、`extensions` 決定 coding 工具類別。選用的 `projects` 授予建立與登記專案，`computer_observe`／`computer_control` 分別授予桌面觀察與輸入，預設皆不啟用。通過用戶端與 Runner 的授權檢查後直接執行。
 
-`project_create`／`project_register` 不接受 coding task ID。Server 依 client 與父目錄身分重用 `kind=project` 的管理紀錄，沿用工作佇列、核准與去重；一般任務為 `kind=coding`，兩者不能混用工具。Runner 在父目錄內執行操作，將登記寫入自己的 SQLite，再更新 Server 專案清單，最後回報工作成功。根目錄授權涵蓋其中動態登記的專案；不同 client 的任務紀錄仍分開。設定與限制見 [建立專案](PROJECTS.md)。
+`project_create`／`project_register` 不接受 coding task ID。Server 依 client 與父目錄身分重用 `kind=project` 的管理紀錄，沿用工作佇列與去重；一般任務為 `kind=coding`，兩者不能混用工具。Runner 在父目錄內執行操作，將登記寫入自己的 SQLite，再更新 Server 專案清單，最後回報工作成功。根目錄授權涵蓋其中動態登記的專案；不同 client 的任務紀錄仍分開。設定與限制見 [建立專案](PROJECTS.md)。
 
-權限設定在啟動時載入。修改設定並重新啟動 Server 後，尚未交付的工作會在送給 Runner 前重查權限；撤銷的工作不執行，新增加的核准要求也會生效。已交付或執行中的作業不會因設定變更自動回溯取消。
+權限設定在啟動時載入。修改設定並重新啟動 Server 後，尚未交付的工作會在送給 Runner 前重查權限，已撤銷授權的工作會失敗。已交付或執行中的作業不會因設定變更自動回溯取消。
 
-`clients.CLIENT_ID.trusted_projects` 可按確切 project ID 免除 coding 工具的逐筆核准，不增加專案或工具存取，也不免除桌面與專案管理的核准。Server 啟動時將符合新政策的待核准工作移回原佇列，保留 job ID、`approved` 人工決策記錄與政策變更事件；已完成任務的待核准工作保留原狀。Server SQLite 保存不含敏感資訊的服務 ID，job 的核准指令帶入此 ID，由決策 endpoint 檢查目標服務。使用方式見 [核准指南](APPROVALS.md)。
+Server 啟動時會將仍有授權的舊待核准工作移回原佇列，保留 job ID 與去重紀錄；其他舊待核准工作會取消。框架不提供逐筆核准或專案信任門檻，升級方式見[授權與執行](EXECUTION.md)。
 
 ## 工作狀態
 
 ```mermaid
 stateDiagram-v2
-  [*] --> pending_approval: 需要核准
-  [*] --> queued: 政策允許直接執行
-  pending_approval --> queued: 操作員同意
-  pending_approval --> cancelled: 操作員拒絕
+  [*] --> queued: 授權檢查通過
   queued --> cancelled: 用戶端取消
   queued --> running: 指定 Runner 領取
   running --> succeeded: 收到結果
@@ -100,7 +97,7 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 | `src/webcodex/extensions.py` | 擴充安裝、skill 探索、持續存在的 MCP provider |
 | `src/webcodex/catalog.py` | 從同一份 Python 簽名產生 schema 與工具描述 |
 | `src/webcodex/bridge.py` | stdio MCP 與有驗證的 HTTP MCP 之間的轉接 |
-| `src/webcodex/cli.py` | 初始化、啟動、操作員核准及工具呼叫 |
+| `src/webcodex/cli.py` | 初始化、啟動、問題回覆及工具呼叫 |
 
 ## 尚需外部環境驗證
 

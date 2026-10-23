@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import os
-import shlex
 import shutil
 import socket
 import subprocess
@@ -37,13 +36,10 @@ class Harness:
             state_dir=directory / "server",
             admin_token="a" * 40,
             clients={
-                "owner": Client(
-                    token="c" * 40, projects=["local/project"], approval_required=set()
-                ),
+                "owner": Client(token="c" * 40, projects=["local/project"]),
                 "reviewer": Client(
                     token="d" * 40,
                     projects=["local/project"],
-                    approval_required={"execute", "extensions"},
                 ),
             },
             runners={"local": "r" * 40},
@@ -463,7 +459,7 @@ async def test_real_mcp_coding_and_extension_loop(harness):
         ] == []
 
 
-async def test_authentication_approval_and_task_isolation(harness):
+async def test_authentication_direct_execution_and_task_isolation(harness):
     async with httpx.AsyncClient(base_url=harness.url) as anonymous:
         assert (await anonymous.post("/mcp", json={})).status_code == 401
         assert (await anonymous.get("/healthz")).status_code == 200
@@ -502,41 +498,10 @@ async def test_authentication_approval_and_task_isolation(harness):
                 ],
             },
         )
-        assert job["status"] == "pending_approval"
+        assert job["status"] == "succeeded" and "approval" not in job
         assert job["service"]["product"] == "webcodex-harness"
-        command = shlex.split(job["approval"]["approve_command"])
-        assert command[:3] == ["webcodex", "approve", job["job_id"]]
-        assert command[3:] == ["--service-id", job["service"]["id"]]
-        assert "task approve" not in job["next_step"]
-        assert not (harness.repo / "approved.txt").exists()
         async with harness.http("a" * 40) as admin:
-            rows = (await admin.get("/api/admin/approvals")).json()["approvals"]
-            assert rows[0]["job_id"] == job["job_id"]
-            assert (
-                await admin.post(
-                    "/api/admin/approvals/" + job["job_id"],
-                    json={"allow": True, "service_id": "a-different-service"},
-                )
-            ).status_code == 400
-            assert not (harness.repo / "approved.txt").exists()
-        config_path = harness.config.state_dir / "operator.json"
-        config_path.write_text(
-            harness.config.model_copy(update={"public_url": harness.url}).model_dump_json(),
-            encoding="utf-8",
-        )
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "webcodex",
-            *command[1:],
-            "--config",
-            str(config_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await asyncio.wait_for(proc.communicate(), 15)
-        assert proc.returncode == 0, (out.decode(errors="replace"), err.decode(errors="replace"))
-        assert json.loads(out)["job_id"] == job["job_id"]
+            assert (await admin.get("/api/admin/approvals")).status_code == 404
         done = await call(reviewer, "job_get", {"job_id": job["job_id"], "wait_seconds": 10})
         assert done["status"] == "succeeded"
         await process_result(reviewer, task, done)

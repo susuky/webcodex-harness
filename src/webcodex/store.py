@@ -377,7 +377,6 @@ class Store:
         tool: str,
         arguments: dict,
         request_id: str | None,
-        approval: bool,
         limit: int,
         *,
         allow_completed: bool = False,
@@ -411,7 +410,7 @@ class Store:
         if count >= limit:
             raise ValueError("Too many unfinished jobs; finish or cancel existing jobs first")
         job, now = new_id(), time.time()
-        status = "pending_approval" if approval else "queued"
+        status = "queued"
         with self.db:
             self.db.execute(
                 "INSERT INTO jobs(id,task_id,owner,runner,project,binding,tool,arguments,status,"
@@ -445,24 +444,12 @@ class Store:
         row["job_id"] = row.pop("id")
         row["service"] = self.service
         row["outcome"] = row["status"]
-        if row["status"] == "pending_approval":
-            target = f"{row['job_id']} --service-id {self.service['id']}"
-            row["approval"] = {
-                "approve_command": "webcodex approve " + target,
-                "deny_command": "webcodex deny " + target,
-            }
-            row["next_step"] = (
-                "This job is waiting for operator approval, not a connection repair. "
-                "Use the returned approval command for this WebCodex Harness service; "
-                "the job ID is the approval ID. Do not use another project's CLI syntax. "
-                "After approval, poll this job_get; do not submit the command again."
-            )
-        elif row["status"] in {"queued", "running"}:
+        if row["status"] in {"queued", "running"}:
             runner = self.one("SELECT seen FROM runners WHERE id=?", (row["runner"],))
             row["runner_online"] = bool(runner and time.time() - runner["seen"] < 15)
             row["next_step"] = (
                 "The Runner has no recent heartbeat. Report that this job is waiting for the Runner; "
-                "do not resubmit it or request approval."
+                "do not resubmit it."
                 if not row["runner_online"]
                 else "Continue observing this job in the current turn; do not ask the user to say continue."
             )
@@ -496,15 +483,14 @@ class Store:
             }
             row["next_step"] = (
                 "The project is registered. Follow next_action to start coding; the project-management "
-                "task_id above is not a coding task. No additional approval is needed unless the next "
-                "tool actually returns pending_approval."
+                "task_id above is not a coding task."
             )
         if row["status"] == "succeeded" and result.get("process_id") and "status" in result:
             row["outcome"] = result["status"]
             row["next_step"] = (
                 "This is the saved process observation. Job succeeded means the tool returned, "
                 "not that the command or tests passed. Check outcome, exit_code and output. "
-                "approved=0 does not mean approval is pending."
+                "Continue observing the original process until its result is available."
             )
             if result["status"] == "running" or result.get("has_more"):
                 row["next_action"] = {
@@ -705,18 +691,6 @@ class Store:
                         ),
                     )
             self.event(job["task_id"], "job." + status, {"job_id": job_id})
-
-    def approve(self, job_id: str, allow: bool) -> dict:
-        with self.db:
-            cursor = self.db.execute(
-                "UPDATE jobs SET status=?,approved=?,updated=? WHERE id=? AND status='pending_approval'",
-                ("queued" if allow else "cancelled", int(allow), time.time(), job_id),
-            )
-            if not cursor.rowcount:
-                raise ValueError("No pending approval for this job")
-            row = self.one("SELECT * FROM jobs WHERE id=?", (job_id,))
-            self.event(row["task_id"], "approval.decided", {"job_id": job_id, "allow": allow})
-        return self.job(job_id, row["owner"])
 
     def cancel(self, job_id: str, owner: str) -> dict:
         self.job(job_id, owner)

@@ -63,7 +63,7 @@ async def test_each_user_turn_can_present_the_same_task_again(harness):
         assert [task["id"] for task in (await call(client, "task_list"))["tasks"]] == [task_id]
 
 
-async def test_new_project_inherits_trust_and_completed_work_remains_reviewable(tmp_path):
+async def test_new_project_executes_directly_and_completed_work_remains_reviewable(tmp_path):
     harness = Harness(tmp_path)
     root = tmp_path / "projects"
     root.mkdir()
@@ -71,9 +71,7 @@ async def test_new_project_inherits_trust_and_completed_work_remains_reviewable(
     harness.runner_config.permissions.add("projects")
     owner = harness.config.clients["owner"]
     owner.project_roots = ["local/work"]
-    owner.trusted_project_roots = ["local/work"]
     owner.permissions.add("projects")
-    owner.approval_required = {"projects", "execute", "git_write", "extensions"}
     await harness.start()
     try:
         async with harness.mcp() as client, harness.mcp("d" * 40) as other:
@@ -157,7 +155,7 @@ async def test_new_project_inherits_trust_and_completed_work_remains_reviewable(
         await harness.close()
 
 
-def test_root_setup_preserves_credentials_and_scopes_trust(tmp_path):
+def test_root_setup_preserves_credentials_and_project_authorization(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
     repo = root / "existing"
@@ -169,25 +167,20 @@ def test_root_setup_preserves_credentials_and_scopes_trust(tmp_path):
         for name in ("server.json", "runner.json", "client.json")
     }
     original = json.loads(before["server.json"])
-    configured = allow_project_root(config_dir, root, trusted=True)
+    configured = allow_project_root(config_dir, root)
     server = load_config(config_dir / "server.json", ServerConfig)
     runner = load_config(config_dir / "runner.json", RunnerConfig)
     policy = server.clients["owner"]
     root_id = configured["project_root"]
-    assert root_id in policy.project_roots and root_id in policy.trusted_project_roots
+    assert root_id in policy.project_roots
     assert server.admin_token == original["admin_token"]
     assert policy.token == original["clients"]["owner"]["token"]
     assert (config_dir / "client.json").read_bytes() == before["client.json"]
     assert DEFAULT_PERMISSIONS | {"projects"} <= runner.permissions
-    assert "projects" not in policy.approvals_for(root_id, "project")
-    assert "execute" not in policy.approvals_for("local/future", project_root=root_id)
-    assert "execute" in policy.approvals_for("local/outside")
-    assert "computer_control" in policy.approvals_for("local/future", project_root=root_id)
-    policy.project_roots = []
-    assert "projects" in policy.approvals_for(root_id, "project")
-    assert "execute" in policy.approvals_for("local/future", project_root=root_id)
+    assert "trusted_project_roots" not in policy.model_dump()
+    assert policy.permissions == DEFAULT_PERMISSIONS | {"projects"}
     with pytest.raises(ValueError, match="settings"):
-        allow_project_root(config_dir, tmp_path, trusted=True)
+        allow_project_root(config_dir, tmp_path)
 
 
 async def test_unavailable_project_does_not_disconnect_other_projects(tmp_path):
@@ -219,7 +212,7 @@ async def test_unavailable_project_does_not_disconnect_other_projects(tmp_path):
         await harness.close()
 
 
-def test_root_trust_releases_only_authorized_original_pending_jobs(tmp_path):
+def test_legacy_root_jobs_recheck_current_project_authorization(tmp_path):
     owner = Client(
         token="c" * 40,
         projects=["local/outside"],
@@ -242,13 +235,15 @@ def test_root_trust_releases_only_authorized_original_pending_jobs(tmp_path):
     task = service.store.create_task("owner", "local/new", "new")
     outside = service.store.create_task("owner", "local/outside", "outside")
     jobs = [
-        service.store.enqueue(t, "exec_command", {"argv": ["echo", "ready"]}, "once", True, 10)
+        service.store.enqueue(t, "exec_command", {"argv": ["echo", "ready"]}, "once", 10)
         for t in (task, outside)
     ]
-    owner.trusted_project_roots = ["local/work"]
-    service.release_pending_approvals()
+    with service.store.db:
+        service.store.db.execute("UPDATE jobs SET status='pending_approval'")
+    owner.projects = []
+    service.resume_legacy_jobs()
     assert service.store.job(jobs[0]["job_id"], "owner")["status"] == "queued"
-    assert service.store.job(jobs[1]["job_id"], "owner")["status"] == "pending_approval"
+    assert service.store.job(jobs[1]["job_id"], "owner")["status"] == "cancelled"
     owner.project_roots = []
     assert service.claim("local", "one", 10) == []
     assert service.store.job(jobs[0]["job_id"], "owner")["status"] == "failed"

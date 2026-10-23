@@ -223,7 +223,7 @@ test("quiet warnings respect registered waits, explicit blockers, completion and
     assert.equal(view().notice, null);
   }
   value.continuation.wait = null;
-  for (const state of ["waiting_runner", "waiting_approval", "waiting_operator", "needs_attention", "completed"]) {
+  for (const state of ["waiting_runner", "waiting_operator", "needs_attention", "completed"]) {
     value.progress.state = state;
     assert.equal(view().notice, null);
   }

@@ -7,53 +7,44 @@ from webcodex.config import Client, ServerConfig
 from webcodex.server import Service
 
 
-async def test_trusted_project_executes_without_approval_and_keeps_permissions(tmp_path):
+async def test_default_execution_needs_no_trust_setting_and_keeps_permissions(tmp_path):
     harness = Harness(tmp_path)
-    owner = harness.config.clients["owner"]
-    owner.approval_required = {"execute", "git_write", "extensions", "computer_control", "projects"}
-    owner.permissions.add("projects")
-    owner.trusted_projects = ["local/project"]
     await harness.start()
     try:
-        async with harness.mcp() as client, harness.mcp("d" * 40) as reviewer:
-            projects = await call(client, "projects_list")
-            assert projects["projects"][0]["approval_mode"] == "automatic"
-            assert projects["projects"][0]["approval_required"] == []
-            assert (await call(reviewer, "projects_list"))["projects"][0][
-                "approval_mode"
-            ] == "review"
-            task = (
-                await call(client, "task_create", {"project": "local/project", "title": "trusted"})
-            )["id"]
-            args = {
-                "task_id": task,
-                "argv": [sys.executable, "-c", "print('ready')"],
-                "request_id": "once",
-            }
-            job = await call(client, "exec_command", args)
-            assert job["status"] == "succeeded" and job["approved"] == 0
-            result = await process_result(client, task, job)
-            assert result["exit_code"] == 0 and "ready" in result["output"]
-            assert (await call(client, "exec_command", args))["job_id"] == job["job_id"]
-
-            other = (
-                await call(reviewer, "task_create", {"project": "local/project", "title": "review"})
-            )["id"]
-            pending = await call(reviewer, "exec_command", {**args, "task_id": other})
-            assert pending["status"] == "pending_approval"
-            assert pending["service"]["id"] == projects["service"]["id"]
-
+        async with harness.mcp() as client, harness.mcp("d" * 40) as other:
+            for connection in (client, other):
+                projects = await call(connection, "projects_list")
+                assert projects["projects"][0]["approval_mode"] == "automatic"
+                assert projects["projects"][0]["approval_required"] == []
+                task = (
+                    await call(
+                        connection, "task_create", {"project": "local/project", "title": "direct"}
+                    )
+                )["id"]
+                args = {
+                    "task_id": task,
+                    "argv": [sys.executable, "-c", "print('ready')"],
+                    "request_id": "once",
+                }
+                job = await call(connection, "exec_command", args)
+                assert job["status"] == "succeeded" and "approval" not in job
+                result = await process_result(connection, task, job)
+                assert result["exit_code"] == 0 and "ready" in result["output"]
+                assert (await call(connection, "exec_command", args))["job_id"] == job["job_id"]
             harness.runner.config.permissions.remove("execute")
             denied = await call(
-                client, "exec_command", {**args, "request_id": "runner-denied"}, error=True
+                other, "exec_command", {**args, "request_id": "runner-denied"}, error=True
             )
             assert "not permitted" in denied["result"]["error"]
-            owner.permissions.remove("execute")
+            harness.config.clients["reviewer"].permissions.remove("execute")
+            count = harness.app.state.service.store.one("SELECT count(*) AS n FROM jobs")["n"]
             denied = await call(
-                client, "exec_command", {**args, "request_id": "client-denied"}, error=True
+                other, "exec_command", {**args, "request_id": "client-denied"}, error=True
             )
             assert "not permitted" in denied["error"]
-            owner.trusted_projects.append("local/ungranted")
+            assert (
+                harness.app.state.service.store.one("SELECT count(*) AS n FROM jobs")["n"] == count
+            )
             await call(
                 client, "task_create", {"project": "local/ungranted", "title": "denied"}, error=True
             )
@@ -61,11 +52,26 @@ async def test_trusted_project_executes_without_approval_and_keeps_permissions(t
         await harness.close()
 
 
-async def test_policy_change_releases_original_pending_job_and_revocation_blocks_dispatch(tmp_path):
+def test_legacy_approval_settings_do_not_restore_a_gate_or_change_permissions():
     client = Client(
-        token="c" * 40, projects=["runner/project", "runner/other"], project_roots=["runner/work"]
+        token="c" * 40,
+        projects=["runner/project"],
+        permissions={"read"},
+        approval_required=["execute"],
+        trusted_projects=["runner/*"],
+        trusted_project_roots=["runner/work"],
     )
-    client.permissions.add("projects")
+    assert client.permissions == {"read"}
+    assert not (
+        {"approval_required", "trusted_projects", "trusted_project_roots"}
+        & client.model_dump().keys()
+    )
+    with pytest.raises(ValueError, match="Unknown permission"):
+        Client(token="c" * 40, projects=[], permissions={"unknown"})
+
+
+async def test_upgrade_requeues_original_jobs_once_and_cancels_revoked_or_closed_tasks(tmp_path):
+    client = Client(token="c" * 40, projects=["runner/project", "runner/other"])
     config = ServerConfig(
         state_dir=tmp_path / "state",
         admin_token="a" * 40,
@@ -73,49 +79,35 @@ async def test_policy_change_releases_original_pending_job_and_revocation_blocks
         runners={"runner": "r" * 40},
     )
     service = Service(config)
-    service.store.register(
-        "runner",
-        "one",
-        {"project": "a" * 64, "other": "b" * 64},
-        project_roots={"work": {"binding": "c" * 64, "projects": []}},
-    )
+    service.store.register("runner", "one", {"project": "a" * 64, "other": "b" * 64})
     tasks = [
         service.store.create_task("owner", "runner/" + project, title)
-        for project, title in (("project", "trusted"), ("other", "review"), ("project", "closed"))
+        for project, title in (("project", "active"), ("other", "revoked"), ("project", "closed"))
     ]
     jobs = [
-        service.store.enqueue(task, "exec_command", {"argv": ["echo", "ready"]}, "once", True, 10)
+        service.store.enqueue(task, "exec_command", {"argv": ["echo", "ready"]}, "once", 10)
         for task in tasks
     ]
-    root_job = await service.call(
-        "owner", "project_create", {"root": "runner/work", "name": "new", "request_id": "new"}
-    )
     service.store.update_task(tasks[2]["id"], "owner", "completed", "done", [])
+    with service.store.db:
+        service.store.db.execute("UPDATE jobs SET status='pending_approval'")
     identity = service.store.service["id"]
     service.store.close()
-    client.trusted_projects = ["runner/project", "runner/work"]
+    client.projects.remove("runner/other")
     service = Service(config)
     try:
         assert service.store.service["id"] == identity
-        released = service.store.job(jobs[0]["job_id"], "owner")
-        assert released["status"] == "queued" and released["approved"] == 0
-        for pending in [*jobs[1:], root_job]:
-            assert service.store.job(pending["job_id"], "owner")["status"] == "pending_approval"
-        assert "computer_control" in client.approvals_for("runner/project")
-        assert "projects" in client.approvals_for("runner/work", "project")
+        first = service.store.job(jobs[0]["job_id"], "owner")
+        assert first["status"] == "queued" and "approval" not in first
+        for job in jobs[1:]:
+            assert service.store.job(job["job_id"], "owner")["status"] == "cancelled"
         replay = service.store.enqueue(
-            tasks[0], "exec_command", {"argv": ["echo", "ready"]}, "once", False, 10
+            tasks[0], "exec_command", {"argv": ["echo", "ready"]}, "once", 10
         )
-        assert replay["job_id"] == released["job_id"]
-        client.trusted_projects = []
-        assert service.claim("runner", "one", 10) == []
-        assert service.store.job(released["job_id"], "owner")["status"] == "pending_approval"
-        client.trusted_projects = ["runner/project"]
-        service.release_pending_approvals()
-        assert service.claim("runner", "one", 10)[0]["id"] == released["job_id"]
-        events = service.store.rows("SELECT kind FROM events WHERE task_id=?", (tasks[0]["id"],))
-        assert any(e["kind"] == "approval.policy_changed" for e in events)
-        with pytest.raises(ValueError):
-            Client(token="x" * 40, projects=[], trusted_projects=["runner/*"])
+        assert replay["job_id"] == first["job_id"]
+        service.resume_legacy_jobs()
+        events = service.store.rows("SELECT id FROM events WHERE kind='job.legacy_queue_migrated'")
+        assert len(events) == 3
+        assert [job["id"] for job in service.claim("runner", "one", 10)] == [first["job_id"]]
     finally:
         service.store.close()

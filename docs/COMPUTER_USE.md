@@ -1,6 +1,6 @@
 # Computer use：Ubuntu、macOS 與 Windows
 
-提供八個 MCP 工具，沿用 Server／Runner 的驗證、核准、持久 job 與重試去重。三個平台皆使用 PyAutoGUI 與 Pillow；Ubuntu 使用 X11 與 xdotool，macOS 使用 Quartz Unicode 事件，Windows 使用 Unicode `SendInput`。
+提供八個 MCP 工具，沿用 Server／Runner 的驗證、持久 job 與重試去重。三個平台皆使用 PyAutoGUI 與 Pillow；Ubuntu 使用 X11 與 xdotool，macOS 使用 Quartz Unicode 事件，Windows 使用 Unicode `SendInput`。
 
 實際操作的是任務所屬 **Runner 電腦的桌面**。Server 只轉送請求與結果；ChatGPT 網頁開在哪台電腦，不會改變操作目標。例如 Server 在 Linux、Runner 在 Windows 時，工具操作 Windows 桌面。
 
@@ -44,10 +44,9 @@ uv run --extra computer webcodex runner
 | 設定 | 新增項目 |
 | --- | --- |
 | `server.json` → `clients` → 所選用戶端 → `permissions` | `computer_observe`、`computer_control` |
-| 同一用戶端 → `approval_required` | `computer_control`，若希望輸入前核准 |
 | `runner.json` → `permissions` | `computer_observe`、`computer_control` |
 
-只需截圖時，兩端僅加入 `computer_observe`。既有設定的核准政策不會自動改寫；`--trusted` 本身不啟用桌面工具，新安裝同時使用 `--computer-use --trusted` 才會啟用並省略核准。
+只需截圖時，兩端僅加入 `computer_observe`。需要輸入時再授予 `computer_control`；已授權的桌面工具直接執行。
 
 ## 工具與操作順序
 
@@ -66,7 +65,7 @@ uv run --extra computer webcodex runner
 
 狀態與截圖需要 `computer_observe`，六種輸入需要 `computer_control`。輸入工具均使用新的截圖 ID；`computer_key` 使用 PyAutoGUI 小寫鍵名。macOS 快捷鍵使用 `command`，例如 `["command","a"]`。換行與 Tab 請明確呼叫按鍵工具，不混入文字。`computer_type` 在 Ubuntu 約每字 12 ms，最長 60 秒逾時；應用程式須持續處理事件。
 
-標準流程為：**截圖 → 一次操作 → 新截圖確認**。`snapshot_id` 綁定 task、畫面尺寸及 Runner 記憶體中的最新截圖，五分鐘後失效。任何 task 取得新截圖、已送出輸入或 Runner 重啟，都會讓舊 ID 失效。核准等待超過期限時，需重新觀察並建立新操作。
+標準流程為：**截圖 → 一次操作 → 新截圖確認**。`snapshot_id` 綁定 task、畫面尺寸及 Runner 記憶體中的最新截圖，五分鐘後失效。任何 task 取得新截圖、已送出輸入或 Runner 重啟，都會讓舊 ID 失效。超過期限時，需重新觀察並建立新操作。
 
 座標採所選螢幕的 `source_width`／`source_height`；若圖片縮小，換算為 `x = 圖片上的 x × source_width / width`，`y` 同理，再取整數。Ubuntu 觀察整個 X11 screen；macOS 使用主螢幕的邏輯尺寸，Retina 截圖先轉為同一尺寸，再依 `max_dimension` 縮小。
 
@@ -92,7 +91,7 @@ uv run webcodex call computer_screenshot --arguments '@args.json'
 uv run webcodex call computer_click --arguments '@args.json'
 ```
 
-依 [操作教學](OPERATIONS.md) 核准與觀察同一 job。MCP 用戶端會收到原生圖片；REST／CLI 的 JSON 則保留 base64 圖片資料。
+依 [操作教學](OPERATIONS.md) 觀察同一 job。MCP 用戶端會收到原生圖片；REST／CLI 的 JSON 則保留 base64 圖片資料。
 
 ## 執行邊界
 

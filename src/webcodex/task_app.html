@@ -60,7 +60,6 @@
   const states = {
     ready: ["準備接續工作", "目前沒有等待中的工作。"],
     observing: ["工作進行中", ""],
-    waiting_approval: ["等待核准", "請依對話中的說明完成核准，原工作會保留。"],
     waiting_runner: ["工作電腦未連線", "連線恢復後會確認原工作。"],
     waiting_operator: ["等待回覆", "請先回答任務中的待確認事項。"],
     needs_attention: ["有結果需要處理", "請在對話中接續檢查結果。"],
@@ -346,7 +345,7 @@
         }
         const job = value.review_job;
         if (!job || !["queued","running"].includes(job.status)) {
-          el("review-state").textContent = job?.status === "pending_approval" ? "檢視需要核准。請在對話中處理這筆請求。" : "目前無法取得修改內容，請在對話中確認原因後重試。";
+          el("review-state").textContent = "目前無法取得修改內容，請在對話中確認原因後重試。";
           pendingReview = null; return;
         }
         jobId = job.job_id; pendingReview = {path,jobId};

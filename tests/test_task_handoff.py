@@ -124,7 +124,7 @@ async def test_handoff_requires_the_current_enabled_writable_view(
     waiting_service, case, reason, existing_wait
 ):
     service, task = waiting_service
-    job = service.store.enqueue(task, "workspace_info", {}, "existing", False, 100)
+    job = service.store.enqueue(task, "workspace_info", {}, "existing", 100)
     wait = (
         service.continuations.arm(task["id"], [job["job_id"]], "explicit")
         if existing_wait
@@ -160,7 +160,7 @@ async def test_handoff_requires_the_current_enabled_writable_view(
 async def test_handoff_never_silently_discards_waiting_jobs(waiting_service, count, reason):
     service, task = waiting_service
     for index in range(count):
-        service.store.enqueue(task, "workspace_info", {}, str(index), False, 200)
+        service.store.enqueue(task, "workspace_info", {}, str(index), 200)
     result = await service.call("owner", "task_get", {"task_id": task["id"]}, window="window")
     handoff = result["continuation"]["handoff"]
     assert handoff["state"] == "blocked" and handoff["reason"] == reason
@@ -171,7 +171,7 @@ async def test_handoff_never_silently_discards_waiting_jobs(waiting_service, cou
 async def test_handoff_includes_running_processes_older_than_the_visible_history(waiting_service):
     service, task = waiting_service
     for index in range(101):
-        job = service.store.enqueue(task, "exec_command", {}, str(index), False, 100)
+        job = service.store.enqueue(task, "exec_command", {}, str(index), 100)
         service.store.claim("local", "instance", 1)
         service.store.complete(
             "local",
@@ -194,7 +194,7 @@ async def test_handoff_includes_running_processes_older_than_the_visible_history
 @pytest.mark.parametrize("state", ["prepared", "accepted", "unknown"])
 async def test_handoff_never_replaces_an_uncertain_delivery(waiting_service, state):
     service, task = waiting_service
-    job = service.store.enqueue(task, "workspace_info", {}, "existing", False, 100)
+    job = service.store.enqueue(task, "workspace_info", {}, "existing", 100)
     wait = service.continuations.arm(task["id"], [job["job_id"]], "explicit")
     service.store.db.execute("UPDATE task_waits SET state=? WHERE id=?", (state, wait["id"]))
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
@@ -221,7 +221,7 @@ async def test_workspace_handoff_uses_the_same_window_as_the_task(waiting_servic
 
 async def test_expired_card_has_an_executable_repair_action_before_handoff(waiting_service):
     service, task = waiting_service
-    job = service.store.enqueue(task, "workspace_info", {}, "repair", False, 100)
+    job = service.store.enqueue(task, "workspace_info", {}, "repair", 100)
     with service.store.db:
         service.store.db.execute("UPDATE task_controllers SET lease_until=0")
     observed = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
@@ -250,7 +250,7 @@ async def test_expired_card_has_an_executable_repair_action_before_handoff(waiti
 @pytest.mark.parametrize("status", ["running", "completed"])
 async def test_unread_output_keeps_its_exact_cursor_before_any_handoff(waiting_service, status):
     service, task = waiting_service
-    job = service.store.enqueue(task, "exec_command", {}, "output", False, 100)
+    job = service.store.enqueue(task, "exec_command", {}, "output", 100)
     service.store.claim("local", "instance", 1)
     service.store.complete(
         "local",
@@ -259,7 +259,7 @@ async def test_unread_output_keeps_its_exact_cursor_before_any_handoff(waiting_s
         "succeeded",
         {"process_id": "output-process", "status": status, "has_more": True, "next_cursor": 17},
     )
-    newer = service.store.enqueue(task, "exec_command", {}, "newer-completed", False, 100)
+    newer = service.store.enqueue(task, "exec_command", {}, "newer-completed", 100)
     service.store.claim("local", "instance", 1)
     service.store.complete(
         "local",
@@ -268,7 +268,7 @@ async def test_unread_output_keeps_its_exact_cursor_before_any_handoff(waiting_s
         "succeeded",
         {"process_id": "newer-process", "status": "completed", "exit_code": 0},
     )
-    service.store.enqueue(task, "workspace_info", {}, "other-wait", False, 100)
+    service.store.enqueue(task, "workspace_info", {}, "other-wait", 100)
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
     assert result["next_action"]["tool"] == "read_process"
     assert result["next_action"]["arguments"]["cursor"] == 17
@@ -284,7 +284,7 @@ async def test_unread_output_keeps_its_exact_cursor_before_any_handoff(waiting_s
 @pytest.mark.parametrize("state", ["waiting_runner", "project_changed", "completed"])
 async def test_output_does_not_override_task_execution_guards(waiting_service, state):
     service, task = waiting_service
-    job = service.store.enqueue(task, "exec_command", {}, "guarded-output", False, 100)
+    job = service.store.enqueue(task, "exec_command", {}, "guarded-output", 100)
     service.store.claim("local", "instance", 1)
     service.store.complete(
         "local",
@@ -311,7 +311,7 @@ async def test_output_does_not_override_task_execution_guards(waiting_service, s
 
 async def test_completed_result_is_not_replaced_by_waiting_for_another_job(waiting_service):
     service, task = waiting_service
-    job = service.store.enqueue(task, "exec_command", {}, "done", False, 100)
+    job = service.store.enqueue(task, "exec_command", {}, "done", 100)
     service.store.claim("local", "instance", 1)
     service.store.complete(
         "local",
@@ -320,7 +320,7 @@ async def test_completed_result_is_not_replaced_by_waiting_for_another_job(waiti
         "succeeded",
         {"process_id": "done-process", "status": "completed", "exit_code": 0},
     )
-    service.store.enqueue(task, "workspace_info", {}, "pending", False, 100)
+    service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
     assert result["continuation"]["handoff"]["state"] == "available"
     assert "next_action" not in result and result["result"]["exit_code"] == 0
@@ -332,9 +332,9 @@ async def test_completed_result_is_not_replaced_by_waiting_for_another_job(waiti
 @pytest.mark.parametrize("failure", ["job", "process"])
 async def test_waiting_never_hides_new_execution_problems(waiting_service, wait_state, failure):
     service, task = waiting_service
-    pending = service.store.enqueue(task, "workspace_info", {}, "pending", False, 100)
+    pending = service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     service.store.claim("local", "instance", 1)
-    failed = service.store.enqueue(task, "exec_command", {}, "failed", False, 100)
+    failed = service.store.enqueue(task, "exec_command", {}, "failed", 100)
     service.store.claim("local", "instance", 1)
     service.store.complete(
         "local",
@@ -345,7 +345,7 @@ async def test_waiting_never_hides_new_execution_problems(waiting_service, wait_
         if failure == "job"
         else {"process_id": "failed-process", "status": "failed", "exit_code": 1},
     )
-    newer = service.store.enqueue(task, "exec_command", {}, "newer", False, 100)
+    newer = service.store.enqueue(task, "exec_command", {}, "newer", 100)
     service.store.claim("local", "instance", 1)
     service.store.complete(
         "local",

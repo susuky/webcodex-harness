@@ -51,7 +51,7 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
         assert previous["tool"] == "task_create" and previous["outcome"] == "returned"
         assert previous["finished_at"] >= previous["started_at"]
         task = service.store.task(task_id, "owner")
-        running = service.store.enqueue(task, "exec_command", {}, "observed-process", False, 100)
+        running = service.store.enqueue(task, "exec_command", {}, "observed-process", 100)
         instance = service.store.one("SELECT instance FROM runners WHERE id='local'")["instance"]
         service.store.claim("local", instance, 1)
         service.store.complete(
@@ -188,7 +188,7 @@ async def test_returned_tool_error_is_distinct_from_a_failed_process(activity_se
 @pytest.mark.parametrize("tool", ["task_get", "job_get", "job_cancel"])
 async def test_foreign_owner_and_revoked_project_cannot_change_activity(activity_service, tool):
     service, task = activity_service
-    job = service.store.enqueue(task, "workspace_info", {}, "pending", False, 100)
+    job = service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     await service.traced_call("owner", "task_events", {"task_id": task["id"]}, track_activity=True)
     previous = service.store.tool_activity(task["id"])
     arguments = {"task_id": task["id"]} if tool == "task_get" else {"job_id": job["job_id"]}
@@ -204,7 +204,7 @@ async def test_foreign_owner_and_revoked_project_cannot_change_activity(activity
 @pytest.mark.parametrize("tool", ["job_get", "job_cancel"])
 async def test_job_only_requests_are_associated_with_the_owned_task(activity_service, tool):
     service, task = activity_service
-    job = service.store.enqueue(task, "workspace_info", {}, "pending", False, 100)
+    job = service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     await service.traced_call("owner", tool, {"job_id": job["job_id"]}, track_activity=True)
     observed = service.store.tool_activity(task["id"])
     assert observed["tool"] == tool and observed["finished_at"] is not None
@@ -341,7 +341,7 @@ def test_liveness_exposes_runner_observation_without_a_conversation(activity_ser
     first = service.task_presentation(task)["progress"]["liveness"]
     assert first["conversation"] is None and first["runner_last_seen"] > 0
     assert first["work"] == {"running_count": 0, "pending_count": 0, "observed_at": None}
-    service.store.enqueue(task, "workspace_info", {}, "pending", False, 100)
+    service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     assert service.task_presentation(task)["progress"]["liveness"]["work"]["pending_count"] == 1
     with service.store.db:
         service.store.db.execute("DELETE FROM runners")
@@ -354,7 +354,7 @@ def test_work_counts_include_observations_outside_the_bounded_detail_lists(activ
     service, task = activity_service
     store = service.store
     for tool in ["exec_command", "subagent_spawn"]:
-        job = store.enqueue(task, tool, {}, tool, False, 200)
+        job = store.enqueue(task, tool, {}, tool, 200)
         store.claim("local", "instance", 1)
         result = {"process_id": job["job_id"], "status": "running"}
         if tool == "subagent_spawn":
@@ -366,7 +366,7 @@ def test_work_counts_include_observations_outside_the_bounded_detail_lists(activ
                 "UPDATE agent_observations SET updated=20 WHERE job_id=?", (job["job_id"],)
             )
     for index in range(100):
-        job = store.enqueue(task, "exec_command", {}, str(index), False, 200)
+        job = store.enqueue(task, "exec_command", {}, str(index), 200)
         store.claim("local", "instance", 1)
         store.complete(
             "local",
@@ -380,7 +380,7 @@ def test_work_counts_include_observations_outside_the_bounded_detail_lists(activ
             },
         )
     for index in range(101):
-        store.enqueue(task, "workspace_info", {}, f"pending-{index}", False, 200)
+        store.enqueue(task, "workspace_info", {}, f"pending-{index}", 200)
     progress = service.task_progress(task)
     assert len(progress["pending_jobs"]) == len(progress["process_observations"]) == 100
     assert all(process["status"] == "completed" for process in progress["process_observations"])

@@ -37,12 +37,12 @@ async def test_cli_initialization_doctor_and_bom_arguments(tmp_path):
     legacy_runner = load_config(directory / "runner.json", RunnerConfig)
     assert not legacy_runner.project_roots and "projects" not in legacy_runner.permissions
     enabled = await cli(
-        "allow-root", str(project), "--name", "work", "--trusted", "--config-dir", str(directory)
+        "allow-root", str(project), "--name", "work", "--config-dir", str(directory)
     )
-    assert enabled["project_root"] == "local/work" and enabled["trusted"]
-    assert load_config(directory / "server.json", ServerConfig).clients[
-        "owner"
-    ].trusted_project_roots == ["local/work"]
+    assert enabled["project_root"] == "local/work" and "trusted" not in enabled
+    assert load_config(directory / "server.json", ServerConfig).clients["owner"].project_roots == [
+        "local/work"
+    ]
     roots_directory = tmp_path / "roots settings"
     initialized = await cli(
         "init", "--project-root", str(project), "--config-dir", str(roots_directory)
@@ -53,7 +53,8 @@ async def test_cli_initialization_doctor_and_bom_arguments(tmp_path):
     assert root_runner.projects == {} and root_runner.project_roots == {"projects": project}
     assert "projects" in root_runner.permissions
     assert root_client.project_roots == ["local/projects"] and root_client.projects == []
-    assert "projects" in root_client.permissions & root_client.approval_required
+    assert "projects" in root_client.permissions
+    assert "approval_required" not in root_client.model_dump()
     doctor = await cli("doctor")
     assert doctor["platform"] == sys.platform
     assert doctor["command_shell"] == ("powershell" if os.name == "nt" else "bash")

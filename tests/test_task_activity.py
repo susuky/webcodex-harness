@@ -7,7 +7,7 @@ from webcodex.store import Store
 
 
 def observe(store, task, tool, process, status, request, created, updated):
-    job = store.enqueue(task, tool, {}, request, False, 10)
+    job = store.enqueue(task, tool, {}, request, 10)
     store.claim("runner", "instance", 1)
     result = {
         "process_id": process,
@@ -62,7 +62,7 @@ def test_old_database_backfills_once_and_preserves_raw_results(tmp_path):
     store.register("runner", "instance", {"project": "b" * 64})
     task = store.create_task("owner", "runner/project", "migration")
     job, result = observe(store, task, "exec_command", "process", "completed", "observed", 10, 11)
-    invalid = store.enqueue(task, "read_process", {}, "invalid", False, 10)
+    invalid = store.enqueue(task, "read_process", {}, "invalid", 10)
     with store.db:
         store.db.execute(
             "UPDATE jobs SET status='succeeded',result='[1]' WHERE id=?", (invalid["job_id"],)
@@ -104,7 +104,7 @@ def test_late_unknown_completion_updates_the_same_process_projection(tmp_path):
     try:
         store.register("runner", "instance", {"project": "b" * 64})
         task = store.create_task("owner", "runner/project", "late result")
-        job = store.enqueue(task, "exec_command", {}, "once", False, 10)
+        job = store.enqueue(task, "exec_command", {}, "once", 10)
         store.claim("runner", "instance", 1)
         store.complete("runner", job["job_id"], "instance", "unknown", {"error": "connection lost"})
         assert store.task_activity(task)["process_observations"] == []

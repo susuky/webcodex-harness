@@ -13,7 +13,7 @@ Runner 所在帳號需要安裝 Codex CLI 並完成 `codex login`。在 Runner �
 }
 ```
 
-重新啟動 Runner 與 Server，讓執行端及 MCP 工具清單載入新版本。`workspace_info.subagents` 回報是否啟用與並行上限。啟動 worker 使用既有 `execute` 權限及核准政策；查詢使用 `read`，取消使用 `write`。
+重新啟動 Runner 與 Server，讓執行端及 MCP 工具清單載入新版本。`workspace_info.subagents` 回報是否啟用與並行上限。啟動 worker 使用既有 `execute` 權限，通過檢查後直接執行；查詢使用 `read`，取消使用 `write`。
 
 ## 自然語言分工
 
