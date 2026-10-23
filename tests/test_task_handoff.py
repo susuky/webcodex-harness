@@ -30,11 +30,19 @@ async def test_mcp_handoff_is_explicit_and_resumes_the_same_execution_once(harne
             "exec_command",
             {
                 "task_id": task,
-                "argv": [sys.executable, "-c", "import time; time.sleep(3); print('once')"],
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import time\nfrom pathlib import Path\n"
+                    "while not Path('handoff-release').exists(): time.sleep(0.01)\nprint('once')",
+                ],
                 "yield_time_ms": 0,
                 "request_id": "execute-once",
             },
         )
+        async with asyncio.timeout(10):
+            while job["status"] in {"queued", "running"}:
+                job = await call("job_get", {"job_id": job["job_id"], "wait_seconds": 2})
         handoff = job["continuation"]["handoff"]
         assert handoff["state"] == "available"
         assert handoff["condition"] == "only_when_no_independent_work"
@@ -69,6 +77,7 @@ async def test_mcp_handoff_is_explicit_and_resumes_the_same_execution_once(harne
             "id"
         ] == wait_id
 
+        (harness.repo / "handoff-release").touch()
         deadline = time.monotonic() + 15
         while True:
             state = await call("task_app", {**view, "action": "state"})

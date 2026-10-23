@@ -16,7 +16,53 @@ from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 from test_harness import SOURCE_ROOT
 
+from webcodex.server import create_app
+
 pytest_plugins = ["test_harness"]
+
+
+async def test_server_disconnect_does_not_close_stdio_and_recovers_without_reinitializing(
+    harness, tmp_path
+):
+    config = tmp_path / "client.json"
+    config.write_text(json.dumps({"server_url": harness.url, "token": "c" * 40}), encoding="utf-8")
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "webcodex", "bridge", "--config", str(config)],
+        env={"PYTHONPATH": SOURCE_ROOT},
+    )
+    with (tmp_path / "restart.log").open("w", encoding="utf-8") as log:
+        async with (
+            stdio_client(parameters, errlog=log) as streams,
+            ClientSession(*streams, read_timeout_seconds=timedelta(seconds=5)) as client,
+        ):
+            await client.initialize()
+            created = await client.call_tool(
+                "task_create", {"project": "local/project", "title": "Server restart"}
+            )
+            task_id = created.structuredContent["id"]
+            harness.server.config.timeout_graceful_shutdown = 0.1
+            harness.server.should_exit = True
+            await asyncio.wait_for(harness.server_task, 10)
+            unavailable = await client.call_tool("projects_list")
+            assert unavailable.isError
+
+            harness.socket = socket.socket()
+            harness.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            harness.socket.bind(("127.0.0.1", harness.port))
+            harness.app = create_app(harness.config)
+            harness.server = uvicorn.Server(
+                uvicorn.Config(harness.app, log_level="error", access_log=False)
+            )
+            harness.server.capture_signals = nullcontext
+            harness.server_task = asyncio.create_task(
+                harness.server.serve(sockets=[harness.socket])
+            )
+            async with asyncio.timeout(10):
+                while not harness.server.started:
+                    await asyncio.sleep(0.01)
+            recovered = await client.call_tool("task_get", {"task_id": task_id})
+            assert not recovered.isError and recovered.structuredContent["id"] == task_id
 
 
 async def test_modern_discovery_probe_falls_back_to_legacy_and_reads_current_ui(harness, tmp_path):

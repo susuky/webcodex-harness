@@ -222,6 +222,8 @@ Server 會把新增的結構化診斷紀錄寫入 `<state_dir>/diagnostics/serve
 
 bridge 對每筆 MCP 回覆設定 60 秒等待上限。回覆串流提早結束，或持續收到進度卻缺少最終結果時，該次呼叫會回報逾時；同一 bridge 的其他呼叫仍可使用。已送出的工作保留在原 job，可用 `job_get`／`read_process` 查詢，bridge 不會自動重送命令。
 
+每筆 RPC 使用獨立的上游 MCP 連線，共用 HTTP 用戶端。Server 中斷時，失敗只回報給該筆請求，外層 stdio 連線保持運作；Server 恢復後，新請求可直接接續，不必重啟 Tunnel 或重新初始化外層連線。測試涵蓋真實 Server 停止與恢復、進度轉送及命令去重。
+
 ChatGPT 出現「訊息傳送逾時」或 `/backend-api/ecosystem/call_mcp` 的 HTTP 400 時，分別保存瀏覽器請求的時間、狀態碼與回應內容，再對照 Server／bridge 的完成紀錄。HTTP 狀態碼與 MCP 回覆中的 `isError` 屬於不同層；回應內含正常任務資料時，仍需保留瀏覽器顯示的 HTTP 錯誤供追查。
 
 這些紀錄由長駐程序載入，更新後需重啟 Server 與 bridge 才會啟用；Runner 可繼續運行。新版卡片仍依前述連線 metadata 更新流程載入。

@@ -4,7 +4,7 @@ import asyncio
 import base64
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
 import anyio
@@ -97,102 +97,113 @@ async def _run_bridge(server_url: str, token: str, diagnostics: Diagnostics):
         follow_redirects=True,
         trust_env=False,
     ) as http:
-        async with streamable_http_client(
-            server_url.rstrip("/") + "/mcp", http_client=http
-        ) as streams:
-            async with ClientSession(
-                streams[0], streams[1], read_timeout_seconds=RESPONSE_TIMEOUT
-            ) as client:
-                initialized = await client.initialize()
-                bridge.instructions = initialized.instructions
+        # Keep upstream failures inside one RPC so the stdio server stays connected.
+        @asynccontextmanager
+        async def connection():
+            try:
+                async with streamable_http_client(
+                    server_url.rstrip("/") + "/mcp", http_client=http
+                ) as streams:
+                    async with ClientSession(
+                        streams[0], streams[1], read_timeout_seconds=RESPONSE_TIMEOUT
+                    ) as client:
+                        initialized = await client.initialize()
+                        yield client, initialized
+            except ExceptionGroup as error:
+                while isinstance(error, ExceptionGroup) and len(error.exceptions) == 1:
+                    error = error.exceptions[0]
+                raise error
 
-                @bridge.list_tools()
-                async def list_tools():
-                    with request("discovery", rpc_method="tools/list"):
-                        tools = (await client.list_tools()).tools
-                        known_tools.clear()
-                        known_tools.update(tool.name for tool in tools)
-                        return tools
+        async with connection() as (_, initialized):
+            bridge.instructions = initialized.instructions
 
-                @bridge.list_resources()
-                async def list_resources():
-                    with request("discovery", rpc_method="resources/list"):
-                        return (await client.list_resources()).resources
+        @bridge.list_tools()
+        async def list_tools():
+            with request("discovery", rpc_method="tools/list"):
+                async with connection() as (client, _):
+                    tools = (await client.list_tools()).tools
+                known_tools.clear()
+                known_tools.update(tool.name for tool in tools)
+                return tools
 
-                @bridge.read_resource()
-                async def read_resource(uri):
-                    with request(
-                        "resource", rpc_method="resources/read", resource_hash=hash_id(str(uri))
-                    ):
-                        result = await client.read_resource(uri)
-                        return [
-                            ReadResourceContents(
-                                item.text if hasattr(item, "text") else base64.b64decode(item.blob),
-                                item.mimeType,
-                                item.meta,
-                            )
-                            for item in result.contents
-                        ]
+        @bridge.list_resources()
+        async def list_resources():
+            with request("discovery", rpc_method="resources/list"):
+                async with connection() as (client, _):
+                    return (await client.list_resources()).resources
 
-                @bridge.call_tool()
-                async def call_tool(name, arguments):
-                    context = bridge.request_context
-                    token = context.meta.progressToken if context.meta else None
-                    outer_meta = (
-                        context.meta.model_dump(by_alias=True, exclude_none=True)
-                        if context.meta
-                        else {}
+        @bridge.read_resource()
+        async def read_resource(uri):
+            with request("resource", rpc_method="resources/read", resource_hash=hash_id(str(uri))):
+                async with connection() as (client, _):
+                    result = await client.read_resource(uri)
+                return [
+                    ReadResourceContents(
+                        item.text if hasattr(item, "text") else base64.b64decode(item.blob),
+                        item.mimeType,
+                        item.meta,
                     )
-                    # Keep window identity request-scoped; never use a credential-wide default.
-                    forwarded = {
-                        key: outer_meta[key]
-                        for key in (
-                            "openai/session",
-                            "io.modelcontextprotocol/clientCapabilities",
-                            "io.modelcontextprotocol/protocolVersion",
-                            "io.modelcontextprotocol/clientInfo",
-                        )
-                        if key in outer_meta
-                    }
+                    for item in result.contents
+                ]
 
-                    async def progress(value, total=None, message=None):
-                        try:
-                            await context.session.send_progress_notification(
-                                token, value, total, message, related_request_id=context.request_id
-                            )
-                        except Exception as error:
-                            diagnostics.record(
-                                "progress.error",
-                                trace_id=fields["trace_id"],
-                                tool=name if name in known_tools else "unknown",
-                                exception_type=type(error).__name__,
-                            )
+        @bridge.call_tool()
+        async def call_tool(name, arguments):
+            context = bridge.request_context
+            token = context.meta.progressToken if context.meta else None
+            outer_meta = (
+                context.meta.model_dump(by_alias=True, exclude_none=True) if context.meta else {}
+            )
+            # Keep window identity request-scoped; never use a credential-wide default.
+            forwarded = {
+                key: outer_meta[key]
+                for key in (
+                    "openai/session",
+                    "io.modelcontextprotocol/clientCapabilities",
+                    "io.modelcontextprotocol/protocolVersion",
+                    "io.modelcontextprotocol/clientInfo",
+                )
+                if key in outer_meta
+            }
 
-                    with request(
-                        "tool",
+            async def progress(value, total=None, message=None):
+                try:
+                    await context.session.send_progress_notification(
+                        token, value, total, message, related_request_id=context.request_id
+                    )
+                except Exception as error:
+                    diagnostics.record(
+                        "progress.error",
+                        trace_id=fields["trace_id"],
                         tool=name if name in known_tools else "unknown",
-                        rpc_method="tools/call",
-                        task_id=arguments.get("task_id"),
-                        job_id=arguments.get("job_id"),
-                    ) as fields:
-                        forwarded["webcodex/trace_id"] = fields["trace_id"]
-                        result = await client.call_tool(
-                            name,
-                            arguments,
-                            progress_callback=progress if token is not None else None,
-                            meta=forwarded,
-                        )
-                        fields["is_error"] = result.isError
-                        fields["outcome"] = "failed" if result.isError else "returned"
-                        if isinstance(result.structuredContent, dict):
-                            for key in ("task_id", "job_id"):
-                                if key in result.structuredContent:
-                                    fields[key] = result.structuredContent[key]
-                        return result
+                        exception_type=type(error).__name__,
+                    )
 
-                async with stdio_server() as (reader, writer):
-                    forwarded, incoming = anyio.create_memory_object_stream(0)
-                    async with anyio.create_task_group() as group:
-                        group.start_soon(_legacy_requests, reader, writer, forwarded)
-                        await bridge.run(incoming, writer, bridge.create_initialization_options())
-                        group.cancel_scope.cancel()
+            with request(
+                "tool",
+                tool=name if name in known_tools else "unknown",
+                rpc_method="tools/call",
+                task_id=arguments.get("task_id"),
+                job_id=arguments.get("job_id"),
+            ) as fields:
+                forwarded["webcodex/trace_id"] = fields["trace_id"]
+                async with connection() as (client, _):
+                    result = await client.call_tool(
+                        name,
+                        arguments,
+                        progress_callback=progress if token is not None else None,
+                        meta=forwarded,
+                    )
+                fields["is_error"] = result.isError
+                fields["outcome"] = "failed" if result.isError else "returned"
+                if isinstance(result.structuredContent, dict):
+                    for key in ("task_id", "job_id"):
+                        if key in result.structuredContent:
+                            fields[key] = result.structuredContent[key]
+                return result
+
+        async with stdio_server() as (reader, writer):
+            forwarded, incoming = anyio.create_memory_object_stream(0)
+            async with anyio.create_task_group() as group:
+                group.start_soon(_legacy_requests, reader, writer, forwarded)
+                await bridge.run(incoming, writer, bridge.create_initialization_options())
+                group.cancel_scope.cancel()
