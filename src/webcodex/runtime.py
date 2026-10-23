@@ -696,7 +696,7 @@ class Runtime:
         button: Literal["left", "right", "middle"] = "left",
         clicks: Annotated[int, Field(ge=1, le=2)] = 1,
     ) -> dict:
-        """Click at source-pixel coordinates relative to the monitor in the screenshot; do not add its origin. clicks=2 double-clicks. Consumes a fresh snapshot_id from this task. Requires computer_control and its approval policy. Success means input was sent; take a new screenshot to verify the application's result."""
+        """Click at source-pixel coordinates relative to the monitor in the screenshot; do not add its origin. clicks=2 double-clicks. Consumes a fresh snapshot_id from this task. Requires computer_control. Success means input was sent; take a new screenshot to verify the application's result."""
         return await asyncio.to_thread(
             self.computer.perform,
             self.task_id,

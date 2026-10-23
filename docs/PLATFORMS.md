@@ -2,6 +2,14 @@
 
 更新日期：2026-10-23。以下依日期保存實際驗證結果。
 
+## 2026-10-23 移除核准閘門後的驗證
+
+框架已移除逐筆核准與專案信任設定。Windows 完整測試為 306 passed、36 skipped；Ubuntu 為 328 passed、14 skipped，卡片 JavaScript 測試另有 31 passed。升級測試確認舊工作保留原 job ID，已撤銷的權限與已完成任務不會重新執行，重複請求不會重複派工。
+
+Windows 已套用新版 Server，五個專案均在線，`approval_mode="automatic"`、`approval_required=[]`。ChatGPT 雲端外掛命令實際完成、退出碼 0；原教材對話亦成功執行 `computer_click`、`computer_key`、`computer_type`，繼續操作原生 PowerPoint，沒有本機核准步驟。ll1 亦已更新 Server，既有三個專案的 REST 查詢均回報自動執行；原有憑證、專案範圍與工具權限保留。
+
+本輪兩次額外游標探測因教材流程同時擷取新圖，回報 `Stale snapshot`；紀錄保留，未重送輸入。桌面快照在整個 Runner 共用，任何任務的新截圖都會取代舊快照；輸入與觀察應由同一流程依序操作。以下三螢幕與跨螢幕紀錄是先前實機驗收，本輪未重跑整組拖曳。
+
 ## 2026-10-23 Windows 跨螢幕雙向拖曳
 
 已新增 Windows 整個虛擬桌面截圖模式（`monitor_id="desktop"`），部署到本機 Server、Runner 與 Tunnel，並從 ChatGPT 外掛完成兩輪來回拖曳。每次使用整個桌面的實體像素定位，落下後再點擊視窗按鈕。
