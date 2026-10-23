@@ -84,6 +84,7 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
         )
         liveness = state.structuredContent["progress"]["liveness"]
         assert liveness["conversation"] == previous
+        assert liveness["operation"] == "建立任務"
         assert (
             liveness["observed_at"]
             >= bound.structuredContent["progress"]["liveness"]["observed_at"]
@@ -340,6 +341,7 @@ def test_liveness_exposes_runner_observation_without_a_conversation(activity_ser
     service, task = activity_service
     first = service.task_presentation(task)["progress"]["liveness"]
     assert first["conversation"] is None and first["runner_last_seen"] > 0
+    assert first["operation"] is None
     assert first["work"] == {"running_count": 0, "pending_count": 0, "observed_at": None}
     service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     assert service.task_presentation(task)["progress"]["liveness"]["work"]["pending_count"] == 1

@@ -6,7 +6,7 @@ from mcp.shared.exceptions import McpError
 
 from webcodex.config import Client, ServerConfig
 from webcodex.continuation import APP_MIME, APP_URI
-from webcodex.server import Service
+from webcodex.server import TOOL_ACTIVITY, Service
 
 pytest_plugins = ["test_harness"]
 
@@ -48,6 +48,19 @@ async def test_mcp_ui_resource_metadata_aliases_and_access(harness):
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
         metadata = tools["task_present"].meta
         assert metadata["ui"]["resourceUri"] == metadata["openai/outputTemplate"] == service.app_uri
+        assert set(tools) - {"task_app"} <= TOOL_ACTIVITY.keys()
+        for name, descriptor in tools.items():
+            if name == "task_app":
+                assert "openai/toolInvocation/invoking" not in descriptor.meta
+                assert descriptor.meta["ui"]["visibility"] == ["app"]
+                continue
+            label = TOOL_ACTIVITY[name]
+            assert descriptor.title == label
+            assert descriptor.meta["openai/toolInvocation/invoking"] == label + "…"
+            assert descriptor.meta["openai/toolInvocation/invoked"] == label + "：已收到回應"
+            if name != "task_present":
+                assert "resourceUri" not in descriptor.meta["ui"]
+                assert "openai/outputTemplate" not in descriptor.meta
         resources = (await client.list_resources()).resources
         assert [str(resource.uri) for resource in resources] == [service.app_uri]
         assert resources[0].mimeType == APP_MIME

@@ -32,6 +32,71 @@ from .projects import PROJECT_OPERATIONS
 from .runtime import Runtime
 from .store import RunnerCompletion, Store, new_id
 
+TOOL_ACTIVITY = {
+    "projects_list": "查詢專案",
+    "project_roots_list": "查詢專案位置",
+    "project_create": "建立專案",
+    "project_register": "登記專案",
+    "task_create": "建立任務",
+    "work_on_project": "開啟專案工作",
+    "task_list": "查詢任務",
+    "task_get": "讀取任務進度",
+    "task_present": "顯示任務進度",
+    "task_review": "讀取修改與結果",
+    "task_wait": "安排工作續接",
+    "task_resume": "讀取接續結果",
+    "task_update": "更新工作進度",
+    "task_events": "讀取工作紀錄",
+    "job_get": "讀取工作結果",
+    "job_cancel": "取消工作",
+    "request_user_input": "提出待確認事項",
+    "tool_search": "查詢可用工具",
+    "workspace_info": "讀取專案資訊",
+    "list_files": "列出檔案",
+    "read_file": "讀取檔案",
+    "read_instructions": "讀取專案指引",
+    "search_files": "搜尋檔案",
+    "write_file": "寫入檔案",
+    "edit_file": "修改檔案",
+    "delete_file": "刪除檔案",
+    "apply_patch": "套用檔案修改",
+    "git_status": "檢查版本狀態",
+    "git_diff": "讀取檔案差異",
+    "review_changes": "讀取修改與結果",
+    "git_log": "讀取提交紀錄",
+    "git_stage": "加入待提交修改",
+    "git_commit": "提交修改",
+    "exec_command": "執行命令",
+    "read_process": "讀取命令結果",
+    "write_stdin": "輸入命令資料",
+    "cancel_process": "停止命令",
+    "resize_terminal": "調整終端畫面",
+    "list_processes": "查詢執行中命令",
+    "view_image": "檢視圖片",
+    "computer_status": "查詢桌面狀態",
+    "computer_screenshot": "擷取桌面畫面",
+    "computer_move": "移動滑鼠",
+    "computer_click": "點擊桌面",
+    "computer_scroll": "捲動桌面",
+    "computer_drag": "拖曳桌面",
+    "computer_key": "按下按鍵",
+    "computer_type": "輸入文字",
+    "fetch_url": "讀取網頁",
+    "skills_list": "查詢技能",
+    "skill_read": "讀取技能",
+    "skill_run": "執行技能工具",
+    "extension_install": "安裝擴充功能",
+    "extension_remove": "移除擴充功能",
+    "plugins_list": "查詢外掛",
+    "plugin_tools": "查詢外掛工具",
+    "plugin_call": "執行外掛工具",
+    "plugin_resources": "查詢外掛資源",
+    "plugin_read_resource": "讀取外掛資源",
+    "plugin_prompts": "查詢外掛提示",
+    "plugin_get_prompt": "讀取外掛提示",
+    "plugin_disconnect": "結束外掛連線",
+}
+
 
 class TaskTools:
     def __init__(self, service: Service, owner: str, window: str | None = None):
@@ -788,6 +853,7 @@ class Service:
                 "ready",
                 "No queued job blocks this task. Continue the authorized work and refresh the handoff; a saved waiting status is not a current blocker.",
             )
+        conversation = self.store.tool_activity(task["id"], window)
         return {
             "state": state,
             "next_step": message,
@@ -805,7 +871,10 @@ class Service:
             "liveness": {
                 "observed_at": time.time(),
                 "runner_last_seen": runner["seen"] if runner else None,
-                "conversation": self.store.tool_activity(task["id"], window),
+                "conversation": conversation,
+                "operation": TOOL_ACTIVITY.get(conversation["tool"], "執行工具")
+                if conversation
+                else None,
                 "work": work,
             },
         }
@@ -837,6 +906,15 @@ class Service:
                 }
             else:
                 spec.meta = {"ui": {"visibility": ["model"]}}
+            if spec.name != "task_app":
+                label = TOOL_ACTIVITY.get(spec.name, "執行工具")
+                spec.title = label
+                spec.meta.update(
+                    {
+                        "openai/toolInvocation/invoking": label + "…",
+                        "openai/toolInvocation/invoked": label + "：已收到回應",
+                    }
+                )
         return specs
 
     def claim(self, runner: str, instance: str, limit: int) -> list[dict]:
@@ -1358,7 +1436,7 @@ def create_app(config: ServerConfig):
                     await context.session.send_progress_notification(
                         token,
                         elapsed,
-                        message=f"正在確認工作狀態，已等候 {int(elapsed)} 秒。",
+                        message=f"{TOOL_ACTIVITY.get(name, '執行工具')}，已等候 {int(elapsed)} 秒。",
                         related_request_id=context.request_id,
                     )
                 except Exception as error:

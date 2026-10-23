@@ -615,7 +615,7 @@ async def test_stdio_bridge_delivers_progress_before_result_and_isolates_request
                 assert len(messages) == 2
                 assert messages[0][0] < messages[1][0]
                 assert all(
-                    total is None and "正在確認工作狀態" in message
+                    total is None and "讀取工作結果，已等候" in message
                     for _, total, message in messages
                 )
             assert not any(

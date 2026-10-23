@@ -109,7 +109,7 @@
       teardown(); return;
     }
     taskId = id;
-    if (ready) { void poll(); if (!reviewLoaded) void loadReview(); }
+    if (ready) void poll();
   }
   function activityView(value, elapsed=0) {
     const progress = value.progress, live = progress.liveness;
@@ -123,14 +123,14 @@
     const seconds = age(stamp);
     const outcomes = {running:"工具等候回應",returned:"最近工具回應",error:"最近工具失敗",cancelled:"最近工具已取消",interrupted:"上次工具連線中斷"};
     const text = seconds === null ? "尚未取得工具活動紀錄"
-      : `${outcomes[conversation.outcome] || "最近工具活動"} ${clock(stamp)}（${ago(seconds)}）`;
+      : `${live.operation ? live.operation + " · " : ""}${outcomes[conversation.outcome] || "最近工具活動"} ${clock(stamp)}（${ago(seconds)}）`;
     const seen = age(live?.runner_last_seen);
     const runner = progress.runner_online ? `已連線${seen === null ? "" : `（${ago(seen)}確認）`}`
       : `尚未連線${seen === null ? "" : `，最後活動 ${clock(live.runner_last_seen)}（${ago(seen)}）`}`;
     const observed = live?.work, observedAge = age(observed?.observed_at);
     const work = !observed ? "尚未取得工作狀態"
       : observed.running_count ? `上次觀察有 ${observed.running_count} 項工作執行中${observedAge === null ? "" : `（${ago(observedAge)}）`}`
-      : observed.pending_count ? `有 ${observed.pending_count} 項未完成工作` : "目前沒有執行中的工作紀錄";
+      : observed.pending_count ? `有 ${observed.pending_count} 項未完成工作` : "沒有待處理的背景工作";
     const wait = value.continuation.wait;
     const waiting = ["watching","ready","prepared","accepted","unknown"].includes(wait?.state);
     const quiet = seconds !== null && seconds >= 180 && value.task.status !== "completed"
@@ -159,7 +159,7 @@
     } else if (stateCopy) {
       el("status").textContent = view.notice || stateCopy[0];
       el("detail").textContent = view.notice
-        ? "若 ChatGPT 顯示「思考失敗」或計時停住，請在原對話按「重試」。" : stateCopy[1];
+        ? "若原對話只顯示白點或沒有結尾，請重新載入頁面，查看已保存的回覆。" : stateCopy[1];
     }
   }
   function render(value) {
@@ -178,7 +178,7 @@
     } else if (wait?.state === "prepared") {
       status = "正在傳送接續通知"; detail = "";
     } else if (wait?.state === "accepted") {
-      status = "已送出接續通知"; detail = "若對話顯示失敗或計時停住，請在原對話按「重試」。";
+      status = "已送出接續通知"; detail = "接續狀態可在原對話查看；若回覆未顯示，請重新載入頁面。";
     } else if (wait && wait.state === "unknown") {
       status = "尚未確認是否接續"; detail = "請在對話中確認目前任務。";
     } else if (blocked) {
@@ -501,7 +501,7 @@
     try {
       if (!ready) { await initialize(); return; }
       await poll(true);
-      if (ready && taskId) await loadReview(selectedPath,pendingReview?.jobId ?? null);
+      if (ready && taskId && reviewLoaded) await loadReview(selectedPath,pendingReview?.jobId ?? null);
     } finally { el("reconnect").disabled = false; }
   });
   function teardown() {
@@ -543,7 +543,7 @@
       const result = await request("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"webcodex-task-progress",version:"1.0.0"},appCapabilities:{}});
       applyTheme(result?.hostContext);
       ready = true; el("reconnect").hidden = true;
-      notify("ui/notifications/initialized"); void poll(); if (taskId && !reviewLoaded) void loadReview();
+      notify("ui/notifications/initialized"); void poll();
     } catch (_) {
       el("connection").textContent = "卡片尚未連線"; el("status").textContent = "無法載入任務卡片";
       el("detail").textContent = "請重新連線，或在對話中重新開啟任務卡片。";

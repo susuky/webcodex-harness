@@ -23,11 +23,13 @@
     <span>Bind：<output id="bind-count">0</output></span>
     <span>世代：<output id="generation">1</output></span>
     <span>暫停：<output id="paused">false</output></span>
+    <span>成果掃描：<output id="review-count">0</output></span>
   </div>
   <button id="inspect" type="button">更新診斷數值</button>
   <button id="fail-state" type="button">下一次狀態查詢失敗</button>
   <button id="toggle-pause" type="button">切換模擬 Host 暫停</button>
   <button id="replace-controller" type="button">更換模擬控制世代</button>
+  <span id="activity-controls" hidden><button id="image-activity" type="button">模擬檢視圖片</button><button id="file-activity" type="button">模擬修改檔案</button><button id="quiet-activity" type="button">模擬工具靜默</button></span>
   <pre id="host-log" aria-label="模擬 Host 記錄"></pre>
   <iframe id="app" src="./task_app.html" title="真實 Task App（模擬連線）"></iframe>
 </main>
@@ -37,24 +39,30 @@
   const query = new URLSearchParams(location.search);
   const mode = ["before", "after"].includes(query.get("mode")) ? query.get("mode") : "none";
   const stateFailures = query.get("stateFailures") === "1" ? 1 : 0;
+  const activity = query.has("activity");
   const app = document.getElementById("app");
   const taskId = "1".repeat(32), waitId = "2".repeat(32);
-  const host = {state:"ready",generation:1,paused:false,view:null,prepare:0,messages:0,binds:0,failedStates:0,pendingStateFailures:0};
+  const host = {state:"ready",generation:1,paused:false,view:null,prepare:0,messages:0,binds:0,failedStates:0,pendingStateFailures:0,reviews:0,operation:"檢視圖片",activityAge:5};
   const logs = [];
   const el = id => document.getElementById(id);
-  el("mode").textContent = mode;
+  el("mode").textContent = activity ? "工具活動（不安排續接）" : mode;
+  el("activity-controls").hidden = !activity;
   function inspect() {
     for (const [id,key] of [["prepare-count","prepare"],["ui-message-count","messages"],["wait-state","state"],
-      ["state-failure-count","failedStates"],["bind-count","binds"],["generation","generation"],["paused","paused"]])
+      ["state-failure-count","failedStates"],["bind-count","binds"],["generation","generation"],["paused","paused"],["review-count","reviews"]])
       el(id).textContent = String(host[key]);
     el("host-log").textContent = logs.join("\n");
   }
   function log(value) { logs.push(value); if (logs.length > 30) logs.shift(); inspect(); }
   function send(data) { app.contentWindow.postMessage({jsonrpc:"2.0",...data},location.origin); }
   function result(control={}) {
+    const now = Date.now()/1000;
     return {task:{id:taskId,title:"確認原任務的續接",status:"active",plan:[{step:"檢查續接結果",status:"in_progress"}]},
-      progress:{state:"ready",runner_online:true,pending_count:0,updated:Date.now()/1000},
-      continuation:{paused:host.paused,wait:{id:waitId,state:host.state}},control};
+      progress:{state:activity ? "observing" : "ready",runner_online:true,pending_count:0,updated:now,
+        liveness:{observed_at:now,runner_last_seen:now-1,operation:host.operation,
+          conversation:{outcome:"returned",started_at:now-host.activityAge-1,finished_at:now-host.activityAge},
+          work:{running_count:0,pending_count:0,observed_at:null}}},
+      continuation:{paused:host.paused,wait:activity ? null : {id:waitId,state:host.state}},control};
   }
   function toolResult(value) { return {structuredContent:value,content:[{type:"text",text:JSON.stringify(value)}],isError:false}; }
   function taskApp(args) {
@@ -112,6 +120,7 @@
         if (value === null) { log("prepared persisted; response intentionally withheld"); return; }
         value = toolResult(value);
       } else if (method === "tools/call" && params.name === "task_review") {
+        host.reviews++;
         value = toolResult({task_id:taskId,review:{is_git_repository:true,files:[],total_files:0,files_truncated:false,
           preview:null,executions:[],observed_at:Date.now()/1000}});
       } else if (method === "ui/message") {
@@ -134,6 +143,9 @@
     if (["prepared","accepted"].includes(host.state)) host.state = "unknown";
     log("controller generation replaced");
   });
+  for (const [id,operation,seconds] of [["image-activity","檢視圖片",5],["file-activity","修改檔案",5],["quiet-activity","檢視圖片",300]]) {
+    el(id).addEventListener("click",() => { host.operation = operation; host.activityAge = seconds; log("activity changed"); });
+  }
   inspect();
 })();
 </script>

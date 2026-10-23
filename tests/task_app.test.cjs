@@ -38,7 +38,7 @@ function fixture(options = {}) {
   const context = {
     ready: true, taskId: "task", stopped: false, busy: false, generation: 1,
     paused: false, last: null, timer: null, pendingFinish: null, failedPrepare: null, pollingBlocked: false,
-    selectedPath: null, pendingReview: null, async loadReview() {},
+    selectedPath: null, pendingReview: null, reviewLoaded: false, async loadReview() {},
     attempted: new Set(), pending: new Map(), sequence: 0, document: {hidden: false},
     clearTimeout(id) { timers.delete(id); },
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
@@ -214,6 +214,54 @@ test("a live card and Runner do not turn old conversation activity into a live-m
   assert.match(result.conversation, /最近工具回應.*12 分鐘前/);
   assert.match(result.runner, /已連線/);
   assert.match(result.notice, /12 分鐘沒有新的對話工具活動/);
+});
+
+test("short image and file tools remain visible after background commands finish", () => {
+  const {value, view, context} = activityFixture();
+  for (const operation of ["檢視圖片", "修改檔案"]) {
+    value.progress.liveness.operation = operation;
+    assert.ok(view().conversation.startsWith(operation + " · 最近工具回應"));
+    assert.equal(view().work, "沒有待處理的背景工作");
+  }
+  context.refreshActivity();
+  assert.match(context.el("detail").textContent, /重新載入頁面.*已保存的回覆/);
+  assert.doesNotMatch(context.el("detail").textContent, /重試|重送/);
+});
+
+for (const inputBeforeInitialize of [true, false]) {
+  test(`card initialization with input ${inputBeforeInitialize ? "before" : "after"} does not scan the repo or start a model turn`, async () => {
+    const calls = [];
+    const elements = {};
+    const context = {
+      ready: false, taskId: null, taskPattern: /^[0-9a-f]{32}$/,
+      el(id) { return elements[id] ||= {}; },
+      async poll() { calls.push("poll"); },
+      async loadReview() { calls.push("review"); },
+      applyTheme() {},
+      notify(method) { calls.push(method); },
+      async request(method) { calls.push(method); return {}; },
+    };
+    vm.createContext(context);
+    vm.runInContext(html.slice(html.indexOf("  function select("), activityStart)
+      + html.slice(html.indexOf("  async function initialize()"), html.indexOf("  const activityTimer")), context);
+    if (inputBeforeInitialize) context.select("1".repeat(32));
+    await context.initialize();
+    context.select("1".repeat(32));
+    assert.equal(context.taskId, "1".repeat(32));
+    assert.equal(context.ready, true);
+    assert.deepEqual(calls, ["ui/initialize", "ui/notifications/initialized", "poll", "poll"]);
+  });
+}
+
+test("reconnecting only reloads a review the user already opened", async () => {
+  const {context} = fixture({failPrepare: "before"});
+  let reviews = 0;
+  context.loadReview = async () => { reviews++; };
+  await context.el("reconnect").click();
+  assert.equal(reviews, 0);
+  context.reviewLoaded = true;
+  await context.el("reconnect").click();
+  assert.equal(reviews, 1);
 });
 
 test("quiet warnings respect registered waits, explicit blockers, completion and pause", () => {
