@@ -45,7 +45,7 @@ Windows 用戶端要連到 WSL2 裡的 Harness，可以讓它啟動 `wsl.exe`：
 }
 ```
 
-WSL2 範例要求 Server、Runner 與 client 設定都在相同 Ubuntu 發行版內。這些設定供支援 stdio 的本機 MCP 用戶端使用；ChatGPT 遠端連線使用下方的 Secure MCP Tunnel 或 HTTPS 入口。Windows 原生及 WSL2 內的 stdio bridge 均已通過實機測試；Windows 用戶端透過 `wsl.exe` 啟動的組合，以及實際 ChatGPT 帳號連線，仍需在選定的用戶端配置後驗證。
+WSL2 範例要求 Server、Runner 與 client 設定都在相同 Ubuntu 發行版內。這些設定供支援 stdio 的本機 MCP 用戶端使用；ChatGPT 遠端連線使用下方的 Secure MCP Tunnel 或 HTTPS 入口。Windows 原生及 WSL2 內的 stdio bridge 均已通過實機測試；Windows 用戶端透過 `wsl.exe` 啟動的組合仍待驗證。2026-10-23 已透過實際 ChatGPT 外掛完成 Windows 原生 Tunnel 連線與三螢幕桌面操作，結果見[平台驗證](PLATFORMS.md)。
 
 ## ChatGPT：Secure MCP Tunnel
 
@@ -66,7 +66,7 @@ tunnel-client doctor --profile webcodex --explain
 tunnel-client run --profile webcodex
 ```
 
-4. 在 ChatGPT 啟用 developer mode，新增 MCP 連線，選擇 Tunnel 與對應 tunnel。保留本機 Server、Runner 和 tunnel-client 運作。
+4. 在 ChatGPT「外掛程式 → 新增 → 新增自訂 MCP 伺服器」建立連線，選擇「通道」與對應 tunnel。使用上述本機 bridge 時，連線的身分驗證選「無需身分驗證」；bridge 仍使用本機 client 憑證驗證 Server。完成建立與連接，並保留本機 Server、Runner 和 tunnel-client 運作。
 5. 確認探索到的工具清單後，開啟對話並加入這個連線；先試 `projects_list`，再建立任務。介面可用性由帳號及工作區政策決定。[ChatGPT 官方連線步驟](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 
 Server 的 Bearer 驗證由 bridge 處理，接入後仍保持啟用。
@@ -86,7 +86,7 @@ ChatGPT 中的 `WebCodex ll1` 等名稱是連線標籤。連線指向 WebCodex S
 | 讓工具實際在另一台 Windows 電腦執行 | 將該電腦的 Runner 與專案登記到共用 Server，授權用戶端使用該專案；可沿用同一外掛 |
 | 另一台電腦使用獨立的 WebCodex Server | 另外連接該 Server 的入口，可取不同名稱區分 |
 
-Server 可管理多個 Runner。需要在 Windows 執行命令或操作桌面時，選擇 Windows Runner 登記的專案。
+Server 可管理多個 Runner。需要在 Windows 執行命令或操作桌面時，選擇 Windows Runner 登記的專案；安裝與桌面設定見 [Windows 安裝指南](WINDOWS_RUNNER.md)。
 
 ### 新帳號的外掛與 tunnel 授權
 

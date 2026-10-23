@@ -45,6 +45,7 @@ jobs:
           WEBCODEX_TEST_DESKTOP: '1'
           XLOCALEDIR: /usr/share/X11/locale
         run: xvfb-run -a -s '-screen 0 1280x800x24 -nolisten tcp' uv run --extra computer pytest -q tests/test_computer_live.py
+      # Hosted Windows runners have no multi-monitor desktop; opt-in live steps are in docs/WINDOWS_RUNNER.md.
       - run: uv run ruff check src tests examples
       - run: uv run ruff format --check src tests examples
       - name: Build with a synthetic private attachment

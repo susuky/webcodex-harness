@@ -666,19 +666,23 @@ class Runtime:
 
     @tool("computer_observe")
     async def computer_status(self) -> dict:
-        """Check this Runner's desktop backend and dimensions without capturing pixels. Requires computer_observe; supports Ubuntu X11, macOS and native Windows. available reports backend detection; use computer_screenshot to verify capture."""
+        """Check this Runner's desktop backend and dimensions without capturing pixels. Windows also lists monitors with id, primary, physical-pixel x/y/width/height and dpi_x/dpi_y, plus desktop_monitor_id for a virtual-desktop screenshot. Requires computer_observe; supports Ubuntu X11, macOS and native Windows. available reports backend detection; use computer_screenshot to verify capture."""
         return await asyncio.to_thread(self.computer.status)
 
     @tool("computer_observe")
     async def computer_screenshot(
-        self, max_dimension: Annotated[int, Field(ge=320, le=2560)] = 1600
+        self,
+        max_dimension: Annotated[int, Field(ge=320, le=2560)] = 1600,
+        monitor_id: Annotated[str, Field(min_length=1, max_length=256)] | None = None,
     ) -> dict:
-        """Capture the shared desktop as a native MCP JPEG (at most 1 MiB). This can show data outside the project. Returns a snapshot_id valid for one input operation within 5 minutes; a newer screenshot on this Runner invalidates it. Coordinates use source_width/source_height; macOS uses logical display points, with Retina capture normalized to that space. Images are retained in private job journals."""
-        return await asyncio.to_thread(self.computer.screenshot, self.task_id, max_dimension)
+        """Capture a desktop monitor as a native MCP JPEG (at most 1 MiB). On Windows choose monitor_id from computer_status; omission selects the primary monitor. Use desktop_monitor_id (desktop) to capture all monitors for cross-monitor dragging; input endpoints must land on connected monitors, not desktop gaps. Returns monitor_id, origin_x/origin_y and a snapshot_id valid for one input within 5 minutes. Use nonnegative coordinates relative to this image's source_width/source_height for input; do not add the origin. Rescale thumbnail coordinates to source dimensions. Monitor layout or DPI changes and newer screenshots invalidate the snapshot. macOS uses logical display points, with Retina capture normalized to that space. Images can show project-external data and are retained in private job journals."""
+        return await asyncio.to_thread(
+            self.computer.screenshot, self.task_id, max_dimension, monitor_id
+        )
 
     @tool("computer_control")
     async def computer_move(self, snapshot_id: str, x: Offset, y: Offset) -> dict:
-        """Move the pointer using coordinates in source_width/source_height from a fresh screenshot. macOS uses logical display points. Consumes snapshot_id. The desktop is shared with the human and other applications."""
+        """Move the pointer using nonnegative coordinates relative to the selected monitor's source_width/source_height from a fresh screenshot; do not add origin_x/origin_y. macOS uses logical display points. Consumes snapshot_id. The desktop is shared with the human and other applications."""
         return await asyncio.to_thread(
             self.computer.perform, self.task_id, snapshot_id, "move", x=x, y=y
         )
@@ -692,7 +696,7 @@ class Runtime:
         button: Literal["left", "right", "middle"] = "left",
         clicks: Annotated[int, Field(ge=1, le=2)] = 1,
     ) -> dict:
-        """Click at desktop source-pixel coordinates; clicks=2 double-clicks. Consumes a fresh snapshot_id from this task. Requires computer_control and its approval policy. Success means input was sent; take a new screenshot to verify the application's result."""
+        """Click at source-pixel coordinates relative to the monitor in the screenshot; do not add its origin. clicks=2 double-clicks. Consumes a fresh snapshot_id from this task. Requires computer_control and its approval policy. Success means input was sent; take a new screenshot to verify the application's result."""
         return await asyncio.to_thread(
             self.computer.perform,
             self.task_id,
@@ -712,7 +716,7 @@ class Runtime:
         y: Offset,
         clicks: Annotated[int, Field(ge=-100, le=100)],
     ) -> dict:
-        """Move to source-pixel coordinates and scroll vertically; positive clicks scroll up, negative down. Consumes a fresh snapshot_id from this task. Scroll units depend on the application/platform."""
+        """Move to source-pixel coordinates relative to the monitor in the screenshot and scroll vertically; positive clicks scroll up, negative down. Do not add the monitor origin. Consumes a fresh snapshot_id from this task. Scroll units depend on the application/platform."""
         if clicks == 0:
             raise ValueError("Scroll clicks must be nonzero")
         return await asyncio.to_thread(
@@ -729,7 +733,7 @@ class Runtime:
         y: Offset,
         duration: Annotated[float, Field(ge=0.2, le=3, allow_inf_nan=False)] = 0.5,
     ) -> dict:
-        """Drag with the left button between two source-pixel coordinates, then release it. Consumes a fresh snapshot_id from this task. Re-observe after the drag to verify the result."""
+        """Drag with the left button between two source-pixel coordinates relative to the screenshot, then release it. For cross-monitor dragging on Windows first capture monitor_id=desktop and use that image's physical source pixels for both endpoints. Do not add the screenshot origin; endpoints must be on connected monitors. Consumes a fresh snapshot_id from this task. Re-observe after the drag to verify the result."""
         return await asyncio.to_thread(
             self.computer.perform,
             self.task_id,

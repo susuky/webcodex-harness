@@ -66,6 +66,8 @@ Desktop tools require the optional `computer` dependencies and explicit permissi
 
 **Computer use controls the desktop on the Runner's machine.** The Server relays requests and results; the task's Runner determines the target computer, independently of the computer displaying ChatGPT. To control Windows, start a native Runner in that Windows interactive desktop and select a project registered by it.
 
+Windows can run both Server and Runner independently. See the [Windows setup guide](docs/WINDOWS_RUNNER.md) for PowerShell installation, startup and multi-monitor tests. Windows desktop tools list monitors and capture a selected monitor, including displays to the left of or above the primary display.
+
 Optional [parallel subagents](docs/SUBAGENTS.md) give ChatGPT five dedicated tools to spawn, inspect, wait for, list and cancel Codex CLI workers. The Runner needs an authenticated Codex CLI; its configuration sets the concurrency limit.
 
 Browser tools use a separately installed Node.js/Chrome provider, with isolated sessions per task. Follow [Browser use](docs/BROWSER_USE.md) for setup and optional login persistence.
@@ -74,7 +76,7 @@ Browser tools use a separately installed Node.js/Chrome provider, with isolated 
 
 - Project creation, commands, Git writes, extension installation and desktop input require operator approval by default. Personal projects can opt into [automatic development operations](docs/APPROVALS.md); pending jobs include the correct approval command and service identity.
 - Shells, plugins and desktop input use the Runner account's permissions, with **no OS sandbox**. Desktop access covers the shared screen, including content outside the project. Keep configuration and state private; screenshots and typed text have no automatic expiry.
-- Ubuntu X11 control has been tested on a virtual desktop. macOS and Windows desktop backends are implemented; interactive validation on those platforms is pending. Wayland/WSLg and locked desktops are unsupported.
+- Ubuntu X11 control has been tested on a virtual desktop. Windows capture and input have been tested on three physical monitors, including a left-side display and mixed 150%/100% scaling. Interactive macOS validation is pending. Wayland/WSLg and locked desktops are unsupported.
 
 ## Guides
 

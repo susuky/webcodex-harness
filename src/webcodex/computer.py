@@ -14,6 +14,38 @@ from contextlib import ExitStack
 from .catalog import OutcomeUnknown
 from .store import new_id
 
+WINDOWS_EXTENDED_KEYS = {
+    "pageup": 0x21,
+    "pgup": 0x21,
+    "pagedown": 0x22,
+    "pgdn": 0x22,
+    "end": 0x23,
+    "home": 0x24,
+    "left": 0x25,
+    "up": 0x26,
+    "right": 0x27,
+    "down": 0x28,
+    "insert": 0x2D,
+    "delete": 0x2E,
+    "del": 0x2E,
+}
+
+
+def windows_extended_key(key: str, *, up: bool = False) -> None:
+    import win32api
+
+    virtual_key = WINDOWS_EXTENDED_KEYS[key]
+    # Without E0, NumLock treats navigation as numpad input and drops held Shift.
+    win32api.keybd_event(
+        virtual_key, win32api.MapVirtualKey(virtual_key, 0), 1 | (2 if up else 0), 0
+    )
+
+
+def windows_scroll(clicks: int) -> None:
+    import win32api
+
+    win32api.mouse_event(0x0800, 0, 0, clicks * 120, 0)
+
 
 def macos_desktop(*, control: bool = False):
     try:
@@ -79,6 +111,80 @@ def windows_desktop() -> None:
         desktop.CloseDesktop()
 
 
+def windows_dpi_awareness() -> None:
+    """Use physical pixels before desktop libraries set a process-wide DPI mode."""
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    shcore = ctypes.WinDLL("shcore", use_last_error=True)
+    user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+    user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+    awareness = ctypes.c_int()
+    shcore.GetProcessDpiAwareness.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_int)]
+    shcore.GetProcessDpiAwareness.restype = ctypes.c_long
+    if shcore.GetProcessDpiAwareness(None, ctypes.byref(awareness)) or awareness.value != 2:
+        raise ValueError(
+            "Restart the Windows Runner before importing desktop libraries; "
+            "per-monitor DPI awareness is required"
+        )
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    if not user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def windows_monitors() -> list[dict]:
+    from ctypes import wintypes
+
+    import win32api
+    import win32gui
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+    user32.GetDpiForWindow.restype = wintypes.UINT
+    monitors = []
+    for handle, _, _ in win32api.EnumDisplayMonitors():
+        info = win32api.GetMonitorInfo(handle)
+        left, top, right, bottom = info["Monitor"]
+        # A hidden per-monitor-aware window reports exact DPI, including custom scaling.
+        window = win32gui.CreateWindowEx(
+            0,
+            "STATIC",
+            "",
+            0x80000000,
+            (left + right) // 2,
+            (top + bottom) // 2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            None,
+        )
+        try:
+            dpi = user32.GetDpiForWindow(window)
+            if not dpi:
+                raise ValueError("Windows could not query monitor DPI")
+        finally:
+            win32gui.DestroyWindow(window)
+        monitors.append(
+            {
+                "id": info["Device"],
+                "primary": bool(info["Flags"] & 1),
+                "x": left,
+                "y": top,
+                "width": right - left,
+                "height": bottom - top,
+                "dpi_x": dpi,
+                "dpi_y": dpi,
+            }
+        )
+    if not monitors or not any(monitor["primary"] for monitor in monitors):
+        raise ValueError("Windows did not report an active primary monitor")
+    return sorted(monitors, key=lambda monitor: monitor["id"])
+
+
 def windows_text(text: str) -> None:
     """Send UTF-16 key pairs without touching the shared clipboard."""
     from ctypes import wintypes
@@ -129,7 +235,7 @@ class Computer:
         # One physical desktop is shared by all projects. A thread lock remains held
         # even if the awaiting job is cancelled while native input is finishing.
         self.lock = threading.Lock()
-        self.snapshot: tuple[str, str, tuple[int, int], float] | None = None
+        self.snapshot: tuple[str, str, list[dict], float, dict] | None = None
 
     @staticmethod
     def _size(api) -> tuple[int, int]:
@@ -161,6 +267,7 @@ class Computer:
                 raise ValueError("No X11 display; start the Runner inside the desktop session")
         elif sys.platform == "win32":
             windows_desktop()
+            windows_dpi_awareness()
         else:
             macos_desktop()
         try:
@@ -175,33 +282,87 @@ class Computer:
         pyautogui.FAILSAFE = True
         return pyautogui, ImageGrab
 
+    def _monitors(self, api) -> list[dict]:
+        if sys.platform == "win32":
+            return windows_monitors()
+        width, height = self._size(api)
+        return [
+            {
+                "id": "screen" if sys.platform == "linux" else "primary",
+                "primary": True,
+                "x": 0,
+                "y": 0,
+                "width": width,
+                "height": height,
+            }
+        ]
+
     def status(self) -> dict:
         with self.lock:
             try:
                 api, _ = self._load()
-                width, height = self._size(api)
+                monitors = self._monitors(api)
+                if self.snapshot and self.snapshot[2] != monitors:
+                    self.snapshot = None
+                primary = next(monitor for monitor in monitors if monitor["primary"])
                 return {
                     "available": True,
                     "backend": {"win32": "windows", "darwin": "macos", "linux": "x11"}[
                         sys.platform
                     ],
-                    "source_width": width,
-                    "source_height": height,
+                    "source_width": primary["width"],
+                    "source_height": primary["height"],
                     "text_input": sys.platform in {"win32", "darwin"}
                     or shutil.which("xdotool") is not None,
-                    "scope": "x11_screen" if sys.platform == "linux" else "primary_display",
+                    "scope": {
+                        "linux": "x11_screen",
+                        "win32": "monitor",
+                        "darwin": "primary_display",
+                    }[sys.platform],
+                    **(
+                        {"monitors": monitors, "desktop_monitor_id": "desktop"}
+                        if sys.platform == "win32"
+                        else {}
+                    ),
                     "screenshot_verified": False,
                 }
             except Exception as error:
                 return {"available": False, "reason": str(error)[:500]}
 
-    def screenshot(self, task_id: str, max_dimension: int) -> dict:
+    def screenshot(self, task_id: str, max_dimension: int, monitor_id: str | None = None) -> dict:
         with self.lock:
             api, grab = self._load()
-            size = self._size(api)
+            monitors = self._monitors(api)
+            monitor = next(
+                (
+                    monitor
+                    for monitor in monitors
+                    if monitor["id"] == monitor_id or (monitor_id is None and monitor["primary"])
+                ),
+                None,
+            )
+            if sys.platform == "win32" and monitor_id == "desktop":
+                left = min(item["x"] for item in monitors)
+                top = min(item["y"] for item in monitors)
+                monitor = {
+                    "id": "desktop",
+                    "x": left,
+                    "y": top,
+                    "width": max(item["x"] + item["width"] for item in monitors) - left,
+                    "height": max(item["y"] + item["height"] for item in monitors) - top,
+                }
+            if monitor is None:
+                raise ValueError("Unknown monitor_id; use computer_status to list current monitors")
+            size = monitor["width"], monitor["height"]
+            left, top = monitor["x"], monitor["y"]
             picture = grab.grab(
-                bbox=(0, 0, *size),
+                bbox=(left, top, left + size[0], top + size[1]),
                 **({"xdisplay": os.environ["DISPLAY"]} if sys.platform == "linux" else {}),
+                **(
+                    {"all_screens": True, "include_layered_windows": True}
+                    if sys.platform == "win32"
+                    else {}
+                ),
             ).convert("RGB")
             # macOS captures Retina pixels; mouse input and snapshot coordinates use points.
             if sys.platform == "darwin" and picture.size != size:
@@ -210,7 +371,8 @@ class Computer:
                         "Display geometry changed during capture; take a new screenshot"
                     )
                 picture = picture.resize(size)
-            if picture.size != size or self._size(api) != size:
+            if picture.size != size or self._monitors(api) != monitors:
+                self.snapshot = None
                 raise ValueError("Display geometry changed during capture; take a new screenshot")
             picture.thumbnail((max_dimension, max_dimension))
             while True:
@@ -221,11 +383,14 @@ class Computer:
                     break
                 picture.thumbnail((max(1, picture.width // 2), max(1, picture.height // 2)))
             snapshot_id = new_id()
-            self.snapshot = (task_id, snapshot_id, size, time.monotonic())
+            self.snapshot = (task_id, snapshot_id, monitors, time.monotonic(), monitor)
             return {
                 "snapshot_id": snapshot_id,
                 "source_width": size[0],
                 "source_height": size[1],
+                "monitor_id": monitor["id"],
+                "origin_x": left,
+                "origin_y": top,
                 "width": picture.width,
                 "height": picture.height,
                 "expires_in_seconds": 300,
@@ -254,19 +419,33 @@ class Computer:
     def perform(self, task_id: str, snapshot_id: str, action: str, **args) -> dict:
         with self.lock:
             api, _ = self._load()
-            size = self._size(api)
+            monitors = self._monitors(api)
             snapshot = self.snapshot
+            if snapshot and snapshot[2] != monitors:
+                self.snapshot = None
             if (
                 not snapshot
-                or snapshot[:3] != (task_id, snapshot_id, size)
+                or snapshot[:3] != (task_id, snapshot_id, monitors)
                 or time.monotonic() - snapshot[3] > 300
             ):
                 raise ValueError("Stale snapshot; take a fresh computer_screenshot for this task")
+            monitor = snapshot[4]
+            size = monitor["width"], monitor["height"]
             for x, y in [
                 (args[k], args[k.replace("x", "y")]) for k in ("x", "start_x") if k in args
             ]:
                 if not (0 <= x < size[0] and 0 <= y < size[1]):
                     raise ValueError("Coordinates must be inside the source screenshot dimensions")
+                if monitor["id"] == "desktop" and not any(
+                    item["x"] <= x + monitor["x"] < item["x"] + item["width"]
+                    and item["y"] <= y + monitor["y"] < item["y"] + item["height"]
+                    for item in monitors
+                ):
+                    raise ValueError("Coordinates must be on a connected monitor")
+            for key in ("x", "start_x"):
+                if key in args:
+                    args[key] += monitor["x"]
+                    args[key.replace("x", "y")] += monitor["y"]
             if action == "key" and any(not api.isValidKey(key) for key in args["keys"]):
                 raise ValueError(
                     "Unsupported key name; use PyAutoGUI key names such as ctrl, enter, or esc"
@@ -299,7 +478,10 @@ class Computer:
                     )
                 elif action == "scroll":
                     api.moveTo(args["x"], args["y"])
-                    api.scroll(args["clicks"])
+                    if sys.platform == "win32":
+                        windows_scroll(args["clicks"])
+                    else:
+                        api.scroll(args["clicks"])
                 elif action == "drag":
                     api.moveTo(args["start_x"], args["start_y"])
                     try:
@@ -310,8 +492,13 @@ class Computer:
                 elif action == "key":
                     with ExitStack() as releases:
                         for key in args["keys"]:
-                            releases.callback(self._release, api, api.keyUp, key)
-                            api.keyDown(key)
+                            if sys.platform == "win32" and key in WINDOWS_EXTENDED_KEYS:
+                                releases.callback(windows_extended_key, key, up=True)
+                                api.failSafeCheck()
+                                windows_extended_key(key)
+                            else:
+                                releases.callback(self._release, api, api.keyUp, key)
+                                api.keyDown(key)
                 elif action == "text":
                     if sys.platform == "win32":
                         windows_text(args["text"])

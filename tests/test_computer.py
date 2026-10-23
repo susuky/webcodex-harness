@@ -39,8 +39,23 @@ def fake_desktop(monkeypatch, computer):
         keyUp=Mock(),
     )
     grab = SimpleNamespace(grab=Mock(return_value=image.new("RGB", (1920, 1080), "white")))
+    monkeypatch.setattr("webcodex.computer.windows_scroll", api.scroll)
     monkeypatch.setattr(computer, "_load", lambda: (api, grab))
     monkeypatch.setattr(computer, "_size", lambda api: api.size())
+    monkeypatch.setattr(
+        computer,
+        "_monitors",
+        lambda api: [
+            {
+                "id": "primary",
+                "primary": True,
+                "x": 0,
+                "y": 0,
+                "width": computer._size(api)[0],
+                "height": computer._size(api)[1],
+            }
+        ],
+    )
     monkeypatch.setenv("DISPLAY", ":99")
     return api, grab
 
@@ -273,7 +288,9 @@ def test_snapshot_coordinates_freshness_and_input_cleanup(monkeypatch):
     with pytest.raises(ValueError, match="Stale"):
         computer.perform("task", snapshot_id, "key", keys=["enter"])
     api.size.return_value = (1920, 1080)
-    computer.snapshot = ("task", snapshot_id, (1920, 1080), time.monotonic() - 301)
+    snapshot_id = computer.screenshot("task", 960)["snapshot_id"]
+    snapshot = computer.snapshot
+    computer.snapshot = (*snapshot[:3], time.monotonic() - 301, snapshot[4])
     with pytest.raises(ValueError, match="Stale"):
         computer.perform("task", snapshot_id, "key", keys=["enter"])
 

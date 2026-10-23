@@ -66,6 +66,8 @@ uv run webcodex runner
 
 **Computer use 操作 Runner 所在電腦的桌面。** Server 負責轉送請求與結果；操作目標由任務所屬的 Runner 決定，與開啟 ChatGPT 網頁的電腦無關。要控制 Windows，就在該 Windows 的互動桌面啟動原生 Runner，並選用它登記的專案。
 
+Windows 可獨立執行 Server 與 Runner。可貼上的 PowerShell 安裝、啟動與多螢幕測試指令見 [Windows 安裝指南](docs/WINDOWS_RUNNER.md)。Windows 桌面工具可列出螢幕並擷取指定螢幕，支援位於主螢幕左方或上方的副螢幕。
+
 啟用選用的 [平行子代理（subagents）](docs/SUBAGENTS.md) 後，ChatGPT 可以使用啟動、查詢、等待、列表與取消五個專用工具分工，並收回各 worker 的結果。Runner 需有已登入的 Codex CLI；並行上限由 Runner 設定。
 
 瀏覽器工具使用另外安裝的 Node.js／Chrome provider，各任務使用獨立連線與瀏覽器狀態。設定與選用的登入保存見 [瀏覽器操作指南](docs/BROWSER_USE.md)。
@@ -74,7 +76,7 @@ uv run webcodex runner
 
 - 預設建立專案、命令、Git 寫入、擴充安裝與桌面輸入需操作員核准。個人專案可選用 [日常開發免逐筆核准](docs/APPROVALS.md)；待核准工作會附上適用指令與服務識別。
 - Shell、plugin 與桌面輸入使用 Runner 帳號權限，**沒有 OS sandbox**。桌面存取涵蓋共用畫面，可能包含專案外內容。設定與狀態應保持私有；截圖與輸入文字目前不會自動到期清除。
-- Ubuntu X11 控制已在虛擬桌面測試；macOS 與 Windows 已有桌面後端，互動桌面仍待各平台實機驗收。Wayland／WSLg 與鎖定桌面尚不支援。
+- Ubuntu X11 控制已在虛擬桌面測試；Windows 已在三個實體螢幕驗證截圖與輸入，包含左側副螢幕和 150%／100% 混合縮放。macOS 互動桌面仍待實機驗收。Wayland／WSLg 與鎖定桌面尚不支援。
 
 ## 文件
 
