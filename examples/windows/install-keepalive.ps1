@@ -6,6 +6,15 @@ $taskStart = Join-Path $taskConfig 'start-windows-webcodex.ps1'
 if (-not (Test-Path -LiteralPath $taskStart -PathType Leaf)) {
     throw 'The existing start-windows-webcodex.ps1 is required.'
 }
+$taskPythonw = Join-Path (Split-Path -Parent $taskConfig) 'harness\.venv\Scripts\pythonw.exe'
+$taskLauncherSource = Join-Path $PSScriptRoot 'start-hidden.py'
+foreach ($taskRequired in @($taskPythonw, $taskLauncherSource)) {
+    if (-not (Test-Path -LiteralPath $taskRequired -PathType Leaf)) {
+        throw "Missing background launcher: $taskRequired"
+    }
+}
+$taskLauncher = Join-Path $taskConfig 'start-hidden.py'
+Copy-Item -LiteralPath $taskLauncherSource -Destination $taskLauncher -Force
 $taskConnect = Join-Path $taskConfig 'connect-windows-tunnel.ps1'
 if (Test-Path -LiteralPath $taskConnect -PathType Leaf) {
     $taskBody = [IO.File]::ReadAllText($taskConnect)
@@ -23,9 +32,9 @@ if (Test-Path -LiteralPath $taskConnect -PathType Leaf) {
     }
 }
 $taskName = 'WebCodex Windows Keepalive'
-$taskShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $taskUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$taskAction = New-ScheduledTaskAction -Execute $taskShell -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $taskStart + '"') -WorkingDirectory $taskConfig
+$taskArguments = '"' + $taskLauncher + '" "' + $taskConfig + '"'
+$taskAction = New-ScheduledTaskAction -Execute $taskPythonw -Argument $taskArguments -WorkingDirectory $taskConfig
 $taskTriggers = @(
     (New-ScheduledTaskTrigger -AtLogOn -User $taskUser),
     (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1))
@@ -40,8 +49,18 @@ if ($taskXml.Task.Principals.Principal.LogonType -ne 'InteractiveToken' -or
     $taskXml.Task.Settings.ExecutionTimeLimit -ne 'PT0S' -or
     $taskXml.Task.Settings.MultipleInstancesPolicy -ne 'Parallel' -or
     $taskXml.Task.Triggers.TimeTrigger.Repetition.Interval -ne 'PT1M' -or
-    $taskXml.Task.Triggers.TimeTrigger.Repetition.Duration) {
+    $taskXml.Task.Triggers.TimeTrigger.Repetition.Duration -or
+    $taskXml.Task.Actions.Exec.Command -ne $taskPythonw -or
+    $taskXml.Task.Actions.Exec.Arguments -ne $taskArguments) {
     throw 'The registered keepalive settings did not match the requested lifecycle.'
+}
+$taskShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'WebCodex Windows.lnk'
+if (Test-Path -LiteralPath $taskShortcut -PathType Leaf) {
+    $taskLink = (New-Object -ComObject WScript.Shell).CreateShortcut($taskShortcut)
+    $taskLink.TargetPath = $taskPythonw
+    $taskLink.Arguments = $taskArguments
+    $taskLink.WorkingDirectory = $taskConfig
+    $taskLink.Save()
 }
 Start-ScheduledTask -TaskName $taskName
 Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State

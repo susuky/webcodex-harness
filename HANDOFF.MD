@@ -87,3 +87,12 @@
 - 在獨立診斷任務 `9107596950994bef94b7179423e40f12` 完成 `computer_status` 與 `computer_screenshot`。三個螢幕均列出，主螢幕原生 JPEG 為 1280 × 720，來源 3840 × 2160。原 18 個任務與 1,465 筆工作保留，新增的只有一個已完成診斷任務與兩筆桌面觀察工作。
 - 沒有重送教材、啟動 Codex CLI 或新增 Pro 回合。故障實測資料保存在本機 `windows-keepalive-live.json`；截圖為 `windows-keepalive-desktop.jpg`。
 - 缺少啟動程式的負向案例已確認會停止，並保留原排程定義。complexity review：沿用原啟動器與原生排程器，沒有新增監看服務、套件或模型呼叫；Ruff、格式與 `git diff --check` 通過。
+
+## 2026-10-24：每分鐘檢查彈出終端機
+
+- 排程原本直接啟動 `powershell.exe -WindowStyle Hidden`。該參數由 PowerShell 啟動後才處理，沒有阻止啟動瞬間的終端機視窗。先停用排程，保留正在執行的 Server、Runner 與 Tunnel。
+- 排程改用既有 venv 的 GUI 執行檔 `pythonw.exe`，共用 `start-hidden.py` 以 `CREATE_NO_WINDOW` 啟動原 PowerShell helper；標準輸入關閉，輸出與錯誤寫入本機日誌，退出碼傳回排程器。既有登入捷徑同步使用同一入口，保留互動桌面、自動恢復及金鑰設定。
+- 安裝前檢查 GUI 執行檔與入口檔案；缺少檔案會停止，實測原有排程 XML 完全不變。安裝後讀回 XML，檢查實際動作與參數。
+- Windows 原生回歸 2 項通過：從 `pythonw.exe` 啟動真實 PowerShell，再執行命令，確認主控台 handle 為 0；成功與退出碼 7 均正常傳回，中文、空白及單引號路徑可用。
+- 15:00、15:01、15:03 三次排程執行皆回到 `ready`；透過 WinEventHook 的顯示／前景事件及視窗列舉觀察，沒有出現終端機視窗或終端機搶焦點。服務 PID 全部保留，雲端 `projects_list` 回傳 5 個專案在線。
+- complexity review：重用既有 Python、啟動 helper 與排程器，新增入口只負責無視窗啟動與轉交退出碼；沒有新增依賴或常駐監看程序。PowerShell 語法、Ruff 與格式檢查通過。本次沒有重新開機。

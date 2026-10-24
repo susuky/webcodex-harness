@@ -327,16 +327,19 @@ finally {
 
 已有 `config\start-windows-webcodex.ps1` 的安裝，可交由 Windows 工作排程器啟動。它在目前使用者的互動桌面執行，每分鐘檢查既有 Server、Runner 與 Tunnel，補啟動停止的程序；健康的程序保持原 PID。檢查不呼叫模型，沿用本機 DPAPI 金鑰。既有啟動程式的互斥鎖避免同時啟動重複程序。
 
+排程與既有登入捷徑共用 venv 的 `pythonw.exe` 無視窗入口，以 `CREATE_NO_WINDOW` 呼叫原啟動程式。不要直接把 `powershell.exe -WindowStyle Hidden` 設為排程動作；PowerShell 讀取參數前，Windows 可能已開啟終端機。啟動程式的輸出與錯誤保存在 `config\logs\keepalive-launcher.log`，退出碼會傳回工作排程器。
+
 ```powershell
 $ErrorActionPreference = 'Stop'
 $LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
 $ConfigDir = Join-Path $LocalRoot 'config'
-& (Join-Path $LocalRoot 'harness\examples\windows\install-keepalive.ps1') -ConfigDir $ConfigDir
+& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $LocalRoot 'harness\examples\windows\install-keepalive.ps1') -ConfigDir $ConfigDir
 Get-ScheduledTaskInfo -TaskName 'WebCodex Windows Keepalive' |
     Select-Object LastRunTime, LastTaskResult, NextRunTime
 ```
 
-安裝程式檢查實際登記的互動登入、每分鐘週期、無執行總時限及並行檢查設定。它也會把本次安裝舊版 Tunnel helper 的 `webcodex.exe bridge` 改為 `python.exe -m webcodex bridge`，避免排程環境的 uv trampoline 路徑錯誤；先備份原 helper，保留既有金鑰及連線範圍。沒有上述既有啟動程式時，安裝會停止並指出缺少的檔案。
+安裝程式檢查實際登記的互動登入、每分鐘週期、無執行總時限、並行檢查設定及無視窗入口。它也會把本次安裝舊版 Tunnel helper 的 `webcodex.exe bridge` 改為 `python.exe -m webcodex bridge`，避免排程環境的 uv trampoline 路徑錯誤；先備份原 helper，保留既有金鑰及連線範圍。沒有上述既有啟動程式或 venv 的 `pythonw.exe` 時，安裝會停止並指出缺少的檔案。
 
 從代理終端啟動背景程序時，子程序可能仍受該終端的 Windows Job 管理；`KILL_ON_JOB_CLOSE` 會在擁有者關閉時終止群組。常駐啟動交由 Windows 排程器執行，避免跟隨代理程序的生命週期。[Windows Job 行為](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 
