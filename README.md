@@ -67,6 +67,8 @@ Desktop tools require the optional `computer` dependencies and explicit permissi
 
 Windows can run both Server and Runner independently. See the [Windows setup guide](docs/WINDOWS_RUNNER.md) for PowerShell installation, startup and multi-monitor tests. Windows desktop tools list monitors and capture a selected monitor, including displays to the left of or above the primary display.
 
+For an installation managed by the Windows keepalive task, run [`Start-WebCodex.ps1`](examples/windows/Start-WebCodex.ps1) to start the services using the saved configuration and key.
+
 子代理由 ChatGPT／MCP 用戶端原生協調；WebCodex 提供檔案、命令與桌面工具。[子代理分工](docs/SUBAGENTS.md)說明工具使用與舊版遷移。
 
 Browser tools use a separately installed Node.js/Chrome provider, with isolated sessions per task. Follow [Browser use](docs/BROWSER_USE.md) for setup and optional login persistence.

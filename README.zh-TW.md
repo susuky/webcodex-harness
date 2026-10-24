@@ -67,6 +67,8 @@ uv run webcodex runner
 
 Windows 可獨立執行 Server 與 Runner。可貼上的 PowerShell 安裝、啟動與多螢幕測試指令見 [Windows 安裝指南](docs/WINDOWS_RUNNER.md)。Windows 桌面工具可列出螢幕並擷取指定螢幕，支援位於主螢幕左方或上方的副螢幕。
 
+已安裝 Windows 常駐排程時，可執行 [`Start-WebCodex.ps1`](examples/windows/Start-WebCodex.ps1)，沿用現有設定與金鑰啟動服務。
+
 子代理由 ChatGPT／MCP 用戶端原生協調；WebCodex 提供檔案、命令與桌面工具。[子代理分工](docs/SUBAGENTS.md)說明工具使用與舊版遷移。
 
 瀏覽器工具使用另外安裝的 Node.js／Chrome provider，各任務使用獨立連線與瀏覽器狀態。設定與選用的登入保存見 [瀏覽器操作指南](docs/BROWSER_USE.md)。

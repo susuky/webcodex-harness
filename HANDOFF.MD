@@ -96,3 +96,10 @@
 - Windows 原生回歸 2 項通過：從 `pythonw.exe` 啟動真實 PowerShell，再執行命令，確認主控台 handle 為 0；成功與退出碼 7 均正常傳回，中文、空白及單引號路徑可用。
 - 15:00、15:01、15:03 三次排程執行皆回到 `ready`；透過 WinEventHook 的顯示／前景事件及視窗列舉觀察，沒有出現終端機視窗或終端機搶焦點。服務 PID 全部保留，雲端 `projects_list` 回傳 5 個專案在線。
 - complexity review：重用既有 Python、啟動 helper 與排程器，新增入口只負責無視窗啟動與轉交退出碼；沒有新增依賴或常駐監看程序。PowerShell 語法、Ruff 與格式檢查通過。本次沒有重新開機。
+
+## 2026-10-24：Windows 手動啟動入口
+
+- 新增 `examples/windows/Start-WebCodex.ps1`，只啟用既有 `WebCodex Windows Keepalive` 排程並要求立即執行。服務由排程器管理，腳本不需要機器路徑或金鑰。
+- Windows 桌面已放置同一份 `Start-WebCodex.ps1`，以及由既有登入捷徑複製的「啟動 WebCodex」捷徑。雙擊捷徑會執行既有無視窗入口；`.ps1` 可用 PowerShell 執行，沒有修改系統檔案關聯。
+- Windows PowerShell 5.1 實際執行腳本成功；捷徑透過 Windows Shell 啟動後，本機狀態重新到達 `ready`。既有 Server、Runner、Tunnel 與 bridge 程序 PID 保留，健康端點成功。
+- complexity review：重用已登記的排程與已驗證的 GUI 入口，沒有新增服務管理器、依賴、金鑰副本或模型呼叫。PowerShell 語法與 `git diff --check` 通過。

@@ -345,6 +345,18 @@ Get-ScheduledTaskInfo -TaskName 'WebCodex Windows Keepalive' |
 
 需要手動維護時，先停用這個排程，避免下一個檢查週期補啟動。手動視窗方案則先在 Runner 視窗按 `Ctrl+C`，再停止 Server。
 
+### 手動啟動已安裝的服務
+
+執行 [`examples/windows/Start-WebCodex.ps1`](../examples/windows/Start-WebCodex.ps1) 會啟用既有排程並立即啟動檢查，補啟動停止的 Server、Runner 與 Tunnel。它沿用已保存的金鑰；PowerShell 視窗關閉後，服務仍由工作排程器管理。需要先完成上方的常駐安裝。
+
+在檔案總管右鍵選擇「使用 PowerShell 執行」，或執行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-WebCodex.ps1
+```
+
+Windows 通常將雙擊 `.ps1` 設為開啟編輯器。需要雙擊啟動時，可將既有 `Startup\WebCodex Windows.lnk` 複製到桌面；該捷徑直接使用相同的無視窗啟動入口。
+
 ## 附錄：改用 ll1 既有 Server
 
 這是另一種部署方式：ll1 Server 維持既有 ChatGPT MCP 入口，Windows 只執行桌面 Runner。完成步驟 1、2 的工具與原始碼準備後，改用本附錄；獨立目錄 `config-ll1` 保存此方案的新 token 與 state。
