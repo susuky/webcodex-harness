@@ -144,8 +144,8 @@ $LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
 @{
     mcpServers = @{
         webcodex = @{
-            command = Join-Path $LocalRoot 'harness\.venv\Scripts\webcodex.exe'
-            args = @('bridge', '--config', (Join-Path $LocalRoot 'config\client.json'))
+            command = Join-Path $LocalRoot 'harness\.venv\Scripts\python.exe'
+            args = @('-m', 'webcodex', 'bridge', '--config', (Join-Path $LocalRoot 'config\client.json'))
         }
     }
 } | ConvertTo-Json -Depth 6
@@ -197,9 +197,9 @@ $TunnelExe = $Executables[0].FullName
 $ProfileDir = Join-Path $LocalRoot 'tunnel-profiles'
 $TunnelId = Read-Host '輸入 Platform 的 tunnel ID'
 if ([string]::IsNullOrWhiteSpace($TunnelId)) { throw 'Tunnel ID 不可空白。' }
-$McpExe = (Join-Path $LocalRoot 'harness\.venv\Scripts\webcodex.exe').Replace('\', '/')
+$McpExe = (Join-Path $LocalRoot 'harness\.venv\Scripts\python.exe').Replace('\', '/')
 $McpConfig = (Join-Path $LocalRoot 'config\client.json').Replace('\', '/')
-$McpCommand = '"' + $McpExe + '" bridge --config "' + $McpConfig + '"'
+$McpCommand = '"' + $McpExe + '" -m webcodex bridge --config "' + $McpConfig + '"'
 $NativeMcpCommand = $McpCommand
 if ($PSVersionTable.PSVersion -lt [version]'7.3' -or $PSNativeCommandArgumentPassing -eq 'Legacy') {
     $NativeMcpCommand = $McpCommand.Replace('"', '\"')
@@ -323,7 +323,24 @@ finally {
 
 2026-10-23 14:32 已為本次 Windows 安裝保存 DPAPI 加密金鑰，並建立目前使用者的 `Startup\WebCodex Windows.lnk`。登入 Windows 後自動啟動本機 Server、Runner 與 Tunnel，執行時使用 Windows 本機金鑰，不需要 ll1。已在 Windows PowerShell 5.1 停止三個程序後，以同一捷徑重新啟動，全程無金鑰輸入；重複啟動沒有新增程序，ChatGPT 雲端 `projects_list` 與 `computer_status` 成功。Server、Runner、client 設定及核准政策均保持原值。尚未實際重開 Windows 驗證。
 
-停止時先在 Windows Runner 視窗按 `Ctrl+C`，再停止 Windows Server。
+### 已安裝環境的常駐與自動恢復
+
+已有 `config\start-windows-webcodex.ps1` 的安裝，可交由 Windows 工作排程器啟動。它在目前使用者的互動桌面執行，每分鐘檢查既有 Server、Runner 與 Tunnel，補啟動停止的程序；健康的程序保持原 PID。檢查不呼叫模型，沿用本機 DPAPI 金鑰。既有啟動程式的互斥鎖避免同時啟動重複程序。
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
+$ConfigDir = Join-Path $LocalRoot 'config'
+& (Join-Path $LocalRoot 'harness\examples\windows\install-keepalive.ps1') -ConfigDir $ConfigDir
+Get-ScheduledTaskInfo -TaskName 'WebCodex Windows Keepalive' |
+    Select-Object LastRunTime, LastTaskResult, NextRunTime
+```
+
+安裝程式檢查實際登記的互動登入、每分鐘週期、無執行總時限及並行檢查設定。它也會把本次安裝舊版 Tunnel helper 的 `webcodex.exe bridge` 改為 `python.exe -m webcodex bridge`，避免排程環境的 uv trampoline 路徑錯誤；先備份原 helper，保留既有金鑰及連線範圍。沒有上述既有啟動程式時，安裝會停止並指出缺少的檔案。
+
+從代理終端啟動背景程序時，子程序可能仍受該終端的 Windows Job 管理；`KILL_ON_JOB_CLOSE` 會在擁有者關閉時終止群組。常駐啟動交由 Windows 排程器執行，避免跟隨代理程序的生命週期。[Windows Job 行為](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+
+需要手動維護時，先停用這個排程，避免下一個檢查週期補啟動。手動視窗方案則先在 Runner 視窗按 `Ctrl+C`，再停止 Server。
 
 ## 附錄：改用 ll1 既有 Server
 

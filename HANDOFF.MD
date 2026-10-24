@@ -64,3 +64,26 @@
 - 04:22 備份資料庫後更新 Windows Server，18 個任務、1,465 筆工作保留。透過雲端外掛成功執行 `projects_list` 與既有任務的 `task_get`，5 個專案的 Runner 心跳在線。原有對話活動與新增診斷對話活動同時保留，沒有新增工作。
 - 生產資料確認 `(task_id, window_hash)` 複合主鍵已生效，活動查詢使用該索引；沒有新增背景查詢或依賴。原對話卡片重新連線後顯示新版內容與最新計畫。
 - complexity review：沿用既有單筆活動寫入、查詢與初始化交易；資料移轉與新建共用同一份表格宣告，沒有另建快取或同步服務。Ruff 與 `git diff --check` 通過。
+
+## 2026-10-24：Session terminated 與 Windows 常駐啟動
+
+### 定位
+
+- 12:32 雲端工具直接回傳 `McpServerError: Session terminated`；本機 Server 連線被拒絕，Server／Runner 程序均不存在，Tunnel 記錄的程序也已停止。Windows 自 10 月 15 日起未重新開機。最後一筆正常 Tunnel 紀錄在 10:37。
+- 原啟動方式由 Codex 終端執行 `Start-Process`。已確認該執行環境的 Job flags 為 12288，包含 `KILL_ON_JOB_CLOSE`；一般子程序會繼承 Job。原有登入捷徑只在登入時執行，沒有執行途中補啟動的機制。這是已確認的部署缺陷；未保存當時的程序終止事件。
+- 排程器冷啟動驗收又定位到 `uv trampoline failed to canonicalize script path`：`webcodex.exe` 在該環境直接退出，造成 Tunnel 主動停止。改用同一 venv 的 `python.exe -m webcodex bridge` 後，排程啟動與雲端呼叫均成功。
+
+### 修正
+
+- 新增 `examples/windows/install-keepalive.ps1`，沿用既有本機啟動程式與 DPAPI 金鑰。由 Windows 排程器在目前使用者的互動桌面啟動；每分鐘檢查並補啟動，使用並行檢查及既有啟動互斥鎖，設定 `PT0S` 避免預設三天執行時限。沒有常駐模型或額外監看程式。
+- 安裝程式先備份符合舊版格式的 Tunnel helper，再替換 uv console launcher；修改後以含 BOM 的 UTF-8 保存，支援 Windows PowerShell 5.1。安裝後讀回實際排程 XML，驗證互動登入、低權限、每分鐘週期、無總時限與並行策略。
+- Windows MCP 文件的本機與 Tunnel 範例統一改為直接呼叫 venv Python。原有專案、授權範圍、金鑰及教材工作均保留。
+
+### 實機驗收
+
+- 12:49:27 停止 Server、Runner 與 Tunnel，未手動重啟；12:50:15 排程執行，12:50:16 建立新的 Server／Runner，Tunnel 亦恢復 `healthy=true`、`ready=true`。
+- 12:51:46 僅停止 Server；12:52:16 自動補啟動。Runner 的兩個 PID 與 Tunnel PID 69176 均保留，雲端 `projects_list` 再次成功。
+- 重複安裝、舊 helper 遷移、Windows PowerShell 語法及已登記 XML 自我檢查通過；健康程序保持原 PID。所有程序位於互動 session 1。
+- 在獨立診斷任務 `9107596950994bef94b7179423e40f12` 完成 `computer_status` 與 `computer_screenshot`。三個螢幕均列出，主螢幕原生 JPEG 為 1280 × 720，來源 3840 × 2160。原 18 個任務與 1,465 筆工作保留，新增的只有一個已完成診斷任務與兩筆桌面觀察工作。
+- 沒有重送教材、啟動 Codex CLI 或新增 Pro 回合。故障實測資料保存在本機 `windows-keepalive-live.json`；截圖為 `windows-keepalive-desktop.jpg`。
+- 缺少啟動程式的負向案例已確認會停止，並保留原排程定義。complexity review：沿用原啟動器與原生排程器，沒有新增監看服務、套件或模型呼叫；Ruff、格式與 `git diff --check` 通過。

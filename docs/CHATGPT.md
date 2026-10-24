@@ -25,8 +25,8 @@ Windows 原生用戶端的範例，請把帳號與路徑換成實際值：
 {
   "mcpServers": {
     "webcodex": {
-      "command": "C:\\src\\webcodex\\.venv\\Scripts\\webcodex.exe",
-      "args": ["bridge", "--config", "C:\\Users\\YOUR_USER\\AppData\\Local\\webcodex-harness\\client.json"]
+      "command": "C:\\src\\webcodex\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "webcodex", "bridge", "--config", "C:\\Users\\YOUR_USER\\AppData\\Local\\webcodex-harness\\client.json"]
     }
   }
 }
