@@ -26,6 +26,12 @@ WebCodex 透過 MCP Apps 提供互動式任務卡片。在 ChatGPT 等支援的�
 
 用戶端需求與續接流程見 [任務卡片與跨回合續接](docs/CHATGPT.md#任務卡片與跨回合續接)。
 
+### ChatGPT 平台已知限制：再次詢問工具授權
+
+長時間對話可能再次出現「允許一次／一律允許」的工具確認。已觀察到外掛設定為 `Allow all actions`、WebCodex 服務持續在線時仍發生此情況，列為 ChatGPT 平台端的已知限制。WebCodex 沒有數小時後撤銷工具授權的設定。
+
+遇到提示時，在原對話確認工具操作；已送到 Runner 的工作仍可繼續執行。服務正常時，無需為此重啟 Server、bridge 或 Runner。官方說明對話內記住的允許可在重新整理後再次詢問；每個外掛的允許設定仍重問的觸發原因尚未確認，也未查到固定到期時間。詳見[平台授權限制與排查](docs/CHATGPT.md#chatgpt-平台已知限制再次詢問工具授權)。
+
 ## 換帳號與換電腦
 
 `WebCodex ll1` 等名稱是 ChatGPT 連線的標籤。任務所選的專案與 Runner 決定工具實際在哪台電腦執行。
@@ -50,7 +56,7 @@ uv run webcodex init --project /absolute/path/to/your/repo
 
 Windows 請改用 `'C:\src\my-repo'` 等專案路徑。設定放在專案外的 `~/.config/webcodex-harness/` 或 `%LOCALAPPDATA%\webcodex-harness\`，保留既有設定。
 
-還沒有專案時，改用 `init --project-root /absolute/path/to/projects` 指定既有父目錄。既有安裝可用 `uv run webcodex allow-root /absolute/path/to/projects --trusted`，讓該目錄下新舊專案的日常開發免逐筆核准，保留原憑證並自動備份設定。完成後重啟 Server 與 Runner，詳見 [建立專案](docs/PROJECTS.md)。
+還沒有專案時，改用 `init --project-root /absolute/path/to/projects` 指定既有父目錄。既有安裝可用 `uv run webcodex allow-root /absolute/path/to/projects` 登記父目錄，保留原憑證並自動備份設定。完成後重啟 Server 與 Runner，詳見 [建立專案](docs/PROJECTS.md)。
 
 在不同終端機分別執行：
 
@@ -75,7 +81,7 @@ Windows 可獨立執行 Server 與 Runner。可貼上的 PowerShell 安裝、啟
 
 ## 權限與限制
 
-- 預設建立專案、命令、Git 寫入、擴充安裝與桌面輸入需操作員核准。個人專案可選用 [日常開發免逐筆核准](docs/APPROVALS.md)；待核准工作會附上適用指令與服務識別。
+- 已授權的專案建立、命令、Git、擴充與桌面操作會直接執行，不需逐筆核准或信任設定。設定與舊版升級方式見[授權與執行](docs/EXECUTION.md)。
 - Shell、plugin 與桌面輸入使用 Runner 帳號權限，**沒有 OS sandbox**。桌面存取涵蓋共用畫面，可能包含專案外內容。設定與狀態應保持私有；截圖與輸入文字目前不會自動到期清除。
 - Ubuntu X11 控制已在虛擬桌面測試；Windows 已在三個實體螢幕驗證截圖與輸入，包含左側副螢幕和 150%／100% 混合縮放。macOS 互動桌面仍待實機驗收。Wayland／WSLg 與鎖定桌面尚不支援。
 

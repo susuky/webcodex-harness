@@ -213,7 +213,31 @@ test("a live card and Runner do not turn old conversation activity into a live-m
   const result = view();
   assert.match(result.conversation, /最近工具回應.*12 分鐘前/);
   assert.match(result.runner, /已連線/);
-  assert.match(result.notice, /12 分鐘沒有新的對話工具活動/);
+  assert.match(result.notice, /12 分鐘沒有新的任務工具活動/);
+});
+
+for (const hasConversation of [true, false]) {
+  test(`recent task jobs refresh activity with ${hasConversation ? "stale" : "missing"} conversation metadata`, () => {
+    const {value, view, context} = activityFixture();
+    if (!hasConversation) value.progress.liveness.conversation = null;
+    value.progress.liveness.operation = "檢視圖片";
+    value.progress.last_job_update = value.progress.liveness.observed_at - 5;
+    assert.match(view().conversation, /最近任務工具活動.*剛剛/);
+    assert.doesNotMatch(view().conversation, /檢視圖片/);
+    assert.equal(view().notice, null);
+    context.refreshActivity();
+    assert.equal(context.el("status").textContent, "工作進行中");
+    assert.match(view(180).notice, /3 分鐘沒有新的任務工具活動/);
+  });
+}
+
+test("older task jobs preserve the newer conversation operation and outcome", () => {
+  const {value, view} = activityFixture();
+  value.progress.last_job_update = value.progress.liveness.observed_at - 300;
+  value.progress.liveness.conversation.finished_at = value.progress.liveness.observed_at - 5;
+  value.progress.liveness.operation = "修改檔案";
+  assert.match(view().conversation, /修改檔案.*最近工具回應.*剛剛/);
+  assert.equal(view().notice, null);
 });
 
 test("short image and file tools remain visible after background commands finish", () => {
@@ -316,7 +340,7 @@ test("failed polling and stale card data cannot keep showing a green connection"
   assert.equal(context.el("status").textContent, "卡片資料待更新");
   context.activityReceivedAt = context.Date.now();
   context.refreshActivity();
-  assert.match(context.el("status").textContent, /沒有新的對話工具活動/);
+  assert.match(context.el("status").textContent, /沒有新的任務工具活動/);
   assert.match(context.el("runner-activity").textContent, /已連線/);
 });
 

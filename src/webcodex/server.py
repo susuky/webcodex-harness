@@ -699,6 +699,7 @@ class Service:
                 "runner_online": progress["runner_online"],
                 "pending_count": len(progress["pending_jobs"]),
                 "updated": progress["last_job_update"] or task["updated"],
+                "last_job_update": progress["last_job_update"],
                 "next_step": progress["next_step"] + self.handoff_guidance(continuation),
                 "liveness": progress["liveness"],
             },

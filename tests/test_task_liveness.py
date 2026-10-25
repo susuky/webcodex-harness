@@ -51,6 +51,7 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
         assert previous["tool"] == "task_create" and previous["outcome"] == "returned"
         assert previous["finished_at"] >= previous["started_at"]
         task = service.store.task(task_id, "owner")
+        assert service.task_presentation(task, window)["progress"]["last_job_update"] is None
         running = service.store.enqueue(task, "exec_command", {}, "observed-process", 100)
         instance = service.store.one("SELECT instance FROM runners WHERE id='local'")["instance"]
         service.store.claim("local", instance, 1)
@@ -71,6 +72,7 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
             "task_app", {**view, "action": "bind"}, meta={"openai/session": "chat"}
         )
         view["generation"] = bound.structuredContent["control"]["generation"]
+        assert bound.structuredContent["progress"]["last_job_update"] == observed_at
         assert bound.structuredContent["progress"]["liveness"]["conversation"] == previous
         assert bound.structuredContent["progress"]["liveness"]["work"] == {
             "running_count": 1,
@@ -81,6 +83,10 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
         assert not review.isError
         state = await client.call_tool(
             "task_app", {**view, "action": "state"}, meta={"openai/session": "chat"}
+        )
+        assert (
+            state.structuredContent["progress"]["last_job_update"]
+            == service.store.task_activity(task)["last_job_update"]
         )
         liveness = state.structuredContent["progress"]["liveness"]
         assert liveness["conversation"] == previous

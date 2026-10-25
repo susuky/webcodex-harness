@@ -26,6 +26,12 @@ WebCodex provides an interactive task card through MCP Apps. Open it with `task_
 
 See [Task cards and continuation](docs/CHATGPT.md#任務卡片與跨回合續接) for client requirements and the continuation workflow.
 
+### ChatGPT 平台已知限制：再次詢問工具授權
+
+長時間對話可能再次出現「允許一次／一律允許」的工具確認。已觀察到外掛設定為 `Allow all actions`、WebCodex 服務持續在線時仍發生此情況，列為 ChatGPT 平台端的已知限制。WebCodex 沒有數小時後撤銷工具授權的設定。
+
+遇到提示時，在原對話確認工具操作；已送到 Runner 的工作仍可繼續執行。服務正常時，無需為此重啟 Server、bridge 或 Runner。官方說明對話內記住的允許可在重新整理後再次詢問；每個外掛的允許設定仍重問的觸發原因尚未確認，也未查到固定到期時間。詳見[平台授權限制與排查](docs/CHATGPT.md#chatgpt-平台已知限制再次詢問工具授權)。
+
 ## Accounts and computers
 
 Names such as `WebCodex ll1` label a ChatGPT connection. The task's project and Runner determine which computer executes its tools.

@@ -26,7 +26,7 @@
   <section aria-live="polite" aria-atomic="true"><p id="status">正在讀取任務</p><p id="detail">連線後會顯示目前進度。</p></section>
   <section id="activity" class="activity" aria-label="連線與工作狀態">
     <dl>
-      <div><dt>ChatGPT 工具</dt><dd id="conversation-activity">尚未取得工具活動紀錄</dd></div>
+      <div><dt>任務工具</dt><dd id="conversation-activity">尚未取得工具活動紀錄</dd></div>
       <div><dt>工作電腦</dt><dd><span id="runner-activity">確認中</span><span id="work-observation" class="work-observation"></span></dd></div>
       <div id="continuation-row"><dt>自動續接</dt><dd id="continuation-state">尚未安排</dd></div>
     </dl>
@@ -119,10 +119,14 @@
       : seconds < 3600 ? `${Math.floor(seconds/60)} 分鐘前` : `${Math.floor(seconds/3600)} 小時前`;
     const clock = stamp => new Date(stamp*1000).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
     const conversation = live?.conversation;
-    const stamp = conversation?.finished_at ?? conversation?.started_at;
+    const conversationStamp = conversation?.finished_at ?? conversation?.started_at;
+    const newerTask = Number.isFinite(progress.last_job_update)
+      && (!Number.isFinite(conversationStamp) || progress.last_job_update > conversationStamp);
+    const stamp = newerTask ? progress.last_job_update : conversationStamp;
     const seconds = age(stamp);
     const outcomes = {running:"工具等候回應",returned:"最近工具回應",error:"最近工具失敗",cancelled:"最近工具已取消",interrupted:"上次工具連線中斷"};
     const text = seconds === null ? "尚未取得工具活動紀錄"
+      : newerTask ? `最近任務工具活動 ${clock(stamp)}（${ago(seconds)}）`
       : `${live.operation ? live.operation + " · " : ""}${outcomes[conversation.outcome] || "最近工具活動"} ${clock(stamp)}（${ago(seconds)}）`;
     const seen = age(live?.runner_last_seen);
     const runner = progress.runner_online ? `已連線${seen === null ? "" : `（${ago(seen)}確認）`}`
@@ -136,8 +140,8 @@
     const quiet = seconds !== null && seconds >= 180 && value.task.status !== "completed"
       && value.control?.bound !== false && !value.continuation.paused && !waiting
       && ["ready","observing"].includes(progress.state);
-    const notice = quiet ? conversation.outcome === "running" ? "工具回應已等候超過 3 分鐘"
-      : `已有 ${ago(seconds).replace(/前$/,"")}沒有新的對話工具活動` : null;
+    const notice = quiet ? !newerTask && conversation?.outcome === "running" ? "工具回應已等候超過 3 分鐘"
+      : `已有 ${ago(seconds).replace(/前$/,"")}沒有新的任務工具活動` : null;
     return {conversation:text,runner,work,notice};
   }
   function refreshActivity() {
