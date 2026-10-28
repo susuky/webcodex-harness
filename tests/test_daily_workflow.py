@@ -285,6 +285,50 @@ async def test_review_tracks_staged_unstaged_renames_deletions_and_binary(harnes
         assert job["status"] == "failed"
 
 
+async def test_review_recovery_reuses_the_request_after_another_execution(harness):
+    store = harness.app.state.service.store
+    async with harness.mcp() as client:
+        task = (
+            await call(client, "task_create", {"project": "local/project", "title": "Recover"})
+        )["id"]
+        arguments = {"task_id": task, "request_id": "review-once"}
+        initial = await call(client, "task_review", arguments)
+        command = await call(
+            client,
+            "exec_command",
+            {
+                "task_id": task,
+                "argv": [sys.executable, "-c", "print('later execution')"],
+                "request_id": "later-command",
+                "yield_time_ms": 2000,
+            },
+        )
+        assert command["result"]["exit_code"] == 0
+        recovered = await call(client, "task_review", arguments)
+        assert recovered["review_job"]["job_id"] == initial["review_job"]["job_id"]
+        assert recovered["review_job"]["status"] == "succeeded"
+        assert "result" not in recovered["review_job"]
+        assert recovered["review"]["executions"] == []
+        assert (
+            store.one(
+                "SELECT count(*) AS count FROM jobs WHERE task_id=? AND tool='review_changes'",
+                (task,),
+            )["count"]
+            == 1
+        )
+        changed_path = await call(
+            client, "task_review", {**arguments, "path": "other.txt"}, error=True
+        )
+        other_tool = await call(
+            client,
+            "task_review",
+            {"task_id": task, "request_id": "later-command"},
+            error=True,
+        )
+        assert "different review" in changed_path["error"]
+        assert "different review" in other_tool["error"]
+
+
 async def test_task_list_filters_before_pagination(tmp_path, monkeypatch):
     harness = Harness(tmp_path)
     service = Service(harness.config)

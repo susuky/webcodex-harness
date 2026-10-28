@@ -537,7 +537,7 @@ class Store:
                 row.pop("next_action", None)
         return row
 
-    def task_activity(self, task: dict) -> dict:
+    def task_activity(self, task: dict, *, include_output: bool = True) -> dict:
         """Describe durable observations without treating the saved handoff as live state."""
         task_id = task["id"]
         counts = {
@@ -607,7 +607,7 @@ class Store:
             > len(pending),
             "process_observations": processes,
             "latest_execution": self.job(processes[0]["job_id"], task["owner"])
-            if processes
+            if include_output and processes
             else None,
             "work": work,
         }

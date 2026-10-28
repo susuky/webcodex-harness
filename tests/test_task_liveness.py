@@ -399,6 +399,35 @@ def test_liveness_exposes_runner_observation_without_a_conversation(activity_ser
     assert latest["observed_at"] >= first["observed_at"]
 
 
+async def test_card_progress_omits_execution_payloads_but_model_retains_them(
+    activity_service, monkeypatch
+):
+    service, task = activity_service
+    store = service.store
+    job = store.enqueue(task, "exec_command", {}, "large-output", 100)
+    store.claim("local", "instance", 1)
+    result = {
+        "process_id": job["job_id"],
+        "status": "running",
+        "output": "x" * 65536,
+        "has_more": True,
+        "next_cursor": 65536,
+    }
+    store.complete("local", job["job_id"], "instance", "succeeded", result)
+
+    def unexpected_job(*args):
+        raise AssertionError("Card progress must not load complete execution results")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "job", unexpected_job)
+        card = service.task_presentation(task)["progress"]
+    assert card["state"] == "observing" and card["runner_online"]
+    assert card["liveness"]["work"]["running_count"] == 1
+    model = await service.call("owner", "task_get", {"task_id": task["id"]})
+    assert model["progress"]["latest_execution"]["result"] == result
+    assert model["progress"]["output_actions"][0]["arguments"]["cursor"] == 65536
+
+
 def test_work_counts_include_observations_outside_the_bounded_detail_lists(activity_service):
     service, task = activity_service
     store = service.store

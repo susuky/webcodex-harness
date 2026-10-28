@@ -57,6 +57,25 @@ def test_activity_keeps_latest_observation_and_process_start_order(tmp_path):
         store.close()
 
 
+def test_activity_can_omit_execution_output_without_loading_job(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    try:
+        store.register("runner", "instance", {"project": "b" * 64})
+        task = store.create_task("owner", "runner/project", "compact progress")
+        observe(store, task, "exec_command", "process", "running", "observed", 10, 11)
+        full = store.task_activity(task)
+        assert full["latest_execution"]["result"]["output"] == "x" * 65536
+
+        def unexpected_job(*args):
+            raise AssertionError("Compact activity must not load the complete execution")
+
+        monkeypatch.setattr(store, "job", unexpected_job)
+        compact = store.task_activity(task, include_output=False)
+        assert compact == {**full, "latest_execution": None}
+    finally:
+        store.close()
+
+
 def test_old_database_backfills_once_and_preserves_raw_results(tmp_path):
     store = Store(tmp_path)
     store.register("runner", "instance", {"project": "b" * 64})

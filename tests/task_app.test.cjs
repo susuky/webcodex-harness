@@ -24,7 +24,7 @@ const visibilitySource = html.slice(messageEnd, html.indexOf('  addEventListener
 function fixture(options = {}) {
   const host = {
     waitId: "wait-one", state: "ready", generation: 1, bound: true, paused: false,
-    prepareCalls: 0, messages: 0, failedStates: 0, failedFinishes: 0, finishCalls: [], bindCalls: 0,
+    prepareCalls: 0, messages: 0, failedStates: 0, failedFinishes: 0, finishCalls: [], bindCalls: 0, stateCalls: 0,
     failPrepare: "before", ...options,
   };
   const state = control => ({
@@ -34,11 +34,13 @@ function fixture(options = {}) {
   });
   const elements = {};
   const timers = new Map();
-  let timerId = 0;
+  let timerId = 0, now = 100000;
   const context = {
     ready: true, taskId: "task", stopped: false, busy: false, generation: 1,
     paused: false, last: null, timer: null, pendingFinish: null, failedPrepare: null, pollingBlocked: false,
     selectedPath: null, pendingReview: null, reviewLoaded: false, async loadReview() {},
+    reviewTimer: null, nextPollAt: 0, retryAt: 0, retryDelay: 15000, retryLimited: false, scheduleReview() {},
+    Date: class extends Date { static now() { return now; } },
     attempted: new Set(), pending: new Map(), sequence: 0, document: {hidden: false},
     clearTimeout(id) { timers.delete(id); },
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
@@ -55,6 +57,7 @@ function fixture(options = {}) {
         return state({bound: host.bound, generation: host.generation, reason: host.reason});
       }
       if (action === "state") {
+        host.stateCalls++;
         if (host.failedStates > 0) { host.failedStates--; throw new Error("state unavailable"); }
         return state({bound: host.bound, generation: host.generation});
       }
@@ -92,7 +95,8 @@ function fixture(options = {}) {
   vm.createContext(context);
   vm.runInContext(requestSource + messageSource, context);
   vm.runInContext(source + manualSource + visibilitySource, context);
-  return {host, context, timers, poll: () => context.poll()};
+  return {host, context, timers, advance(ms) { now += ms; },
+    poll: () => { now = Math.max(now, context.nextPollAt); return context.poll(); }};
 }
 
 for (const reason of ["missing_window", "read_only", "replaced_view", "another_view"]) {
@@ -115,6 +119,84 @@ for (const reason of ["missing_window", "read_only", "replaced_view", "another_v
     assert.equal(timers.size, 1);
   });
 }
+
+test("background cards make no requests and normal visible cards wait one minute", async () => {
+  const {context, host, timers, poll, advance} = fixture({failPrepare:null,state:"consumed"});
+  context.document.hidden = true;
+  context.generation = null;
+  await poll();
+  assert.equal(host.bindCalls,0);
+  assert.equal(timers.size,0);
+  context.document.hidden = false;
+  let delay;
+  context.setTimeout = (_,ms) => { delay = ms; return 1; };
+  await poll();
+  assert.equal(host.bindCalls,1);
+  assert.equal(host.stateCalls,0,"bind already returns the current state");
+  assert.equal(delay,60000);
+  await context.poll();
+  assert.equal(host.stateCalls,0);
+  context.document.hidden = true; context.onVisibility();
+  advance(30000);
+  context.document.hidden = false; context.onVisibility();
+  assert.equal(host.bindCalls,1,"a quick tab switch must not rebind");
+  assert.equal(delay,30000);
+  advance(30000);
+  await context.poll();
+  assert.equal(host.stateCalls,1);
+  context.retryAt = context.Date.now()+90000;
+  context.schedule();
+  assert.equal(delay,90000);
+});
+
+test("an armed continuation keeps its ten-second check and manual status remains available", async () => {
+  const {context, host, poll} = fixture({state:"watching"});
+  let delay;
+  context.setTimeout = (_,ms) => { delay = ms; return 1; };
+  await poll();
+  assert.equal(delay,10000);
+  await context.poll();
+  assert.equal(host.stateCalls,1);
+  await context.el("check-status").click();
+  assert.equal(host.stateCalls,2);
+  host.paused = true;
+  await context.el("check-status").click();
+  assert.equal(delay,60000);
+});
+
+test("returning after an expired background lease binds once without a second state request", async () => {
+  const {context, host, timers, poll, advance} = fixture({state:"consumed"});
+  await poll();
+  context.document.hidden = true; context.onVisibility();
+  assert.equal(timers.size,0);
+  advance(121000);
+  context.document.hidden = false; context.onVisibility();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(host.bindCalls,1);
+  assert.equal(host.stateCalls,1);
+  assert.equal(timers.size,1);
+});
+
+test("a tab switch during an in-flight state response preserves a ready continuation", async () => {
+  const {context, host, poll} = fixture({failPrepare:null});
+  const call = context.call;
+  let release;
+  context.call = async (action,args) => {
+    if (action === "state") await new Promise(resolve => { release = resolve; });
+    if (action === "prepare") assert.equal(context.generation,host.generation);
+    return call(action,args);
+  };
+  const pending = context.poll();
+  context.document.hidden = true; context.onVisibility();
+  context.document.hidden = false; context.onVisibility();
+  const generationDuringRequest = context.generation;
+  release(); await pending;
+  assert.equal(generationDuringRequest,1);
+  assert.equal(host.messages,1);
+  context.call = call;
+  await poll();
+  assert.equal(host.messages,1);
+});
 
 test("losing an existing controller stops polling and permits a manual status check", async () => {
   const {host, context, timers, poll} = fixture({failPrepare: null});
@@ -335,7 +417,10 @@ test("failed polling and stale card data cannot keep showing a green connection"
   assert.equal(context.el("runner-activity").textContent, "尚無最新連線狀態");
   assert.equal(context.el("reconnect").hidden, false);
   context.connectionFailed = false;
-  context.activityReceivedAt -= 45000;
+  context.activityReceivedAt -= 60000;
+  context.refreshActivity();
+  assert.match(context.el("runner-activity").textContent, /已連線/);
+  context.activityReceivedAt -= 30000;
   context.refreshActivity();
   assert.equal(context.el("status").textContent, "卡片資料待更新");
   context.activityReceivedAt = context.Date.now();

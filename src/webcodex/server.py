@@ -242,11 +242,24 @@ class TaskTools:
         task_id: str,
         path: Annotated[str, Field(min_length=1, max_length=4096)] | None = None,
         job_id: str | None = None,
+        request_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None,
     ) -> dict:
-        """Show current changed files (including new files), lazy per-file diffs, and recent real command outcomes/output. Works for active or completed tasks. Omit job_id to refresh; if review_job is pending, repeat this call with its exact job_id instead of creating another review. Set path to an exact listed file for its preview. Changes cover the current project; execution results record recent command outcomes."""
+        """Show current changed files (including new files), lazy per-file diffs, and recent real command outcomes/output. Works for active or completed tasks. Reuse request_id after a lost response; use a new request_id to refresh. If review_job is pending, repeat with its exact job_id and path instead of creating another review. Set path to an exact listed file for its preview. Changes cover the current project; execution results record recent command outcomes."""
         task = self.task(task_id)
         if task["kind"] != "coding":
             raise ValueError("Review the coding task created for the registered project")
+        if not job_id and request_id:
+            previous = self.store.one(
+                "SELECT id,tool,arguments FROM jobs WHERE owner=? AND task_id=? AND request_id=?",
+                (self.owner, task_id, request_id),
+            )
+            if previous:
+                if (
+                    previous["tool"] != "review_changes"
+                    or previous["arguments"].get("path") != path
+                ):
+                    raise ValueError("request_id already belongs to a different review")
+                job_id = previous["id"]
         if job_id:
             job = self.store.job(job_id, self.owner)
             if job["task_id"] != task_id or job["tool"] != "review_changes":
@@ -270,12 +283,13 @@ class TaskTools:
                     "task_id": task_id,
                     "path": path,
                     "process_ids": [row["id"] for row in executions],
+                    "request_id": request_id,
                 },
             )
         return {
             "task_id": task_id,
             "summary": task["summary"],
-            "review_job": job,
+            "review_job": {key: value for key, value in job.items() if key != "result"},
             "review": job.get("result") if job["status"] == "succeeded" else None,
         }
 
@@ -685,7 +699,7 @@ class Service:
         return ""
 
     def task_presentation(self, task: dict, window: str | None = None) -> dict:
-        progress = self.task_progress(task, window)
+        progress = self.task_progress(task, window, include_output=False)
         continuation = self.task_continuation(task, window, progress)
         return {
             "task": {
@@ -755,8 +769,10 @@ class Service:
         if project not in allowed:
             raise ValueError("Project is not authorized for this client")
 
-    def task_progress(self, task: dict, window: str | None = None) -> dict:
-        activity = self.store.task_activity(task)
+    def task_progress(
+        self, task: dict, window: str | None = None, *, include_output: bool = True
+    ) -> dict:
+        activity = self.store.task_activity(task, include_output=include_output)
         work = activity.pop("work")
         runner = self.store.one("SELECT * FROM runners WHERE id=?", (task["runner"],))
         online = bool(runner and time.time() - runner["seen"] < 15)
@@ -771,7 +787,7 @@ class Service:
         actions = [job["next_action"] for job in pending if "next_action" in job]
         running = [p for p in activity["process_observations"] if p["status"] == "running"]
         output_actions = []
-        for process in activity["process_observations"]:
+        for process in activity["process_observations"] if include_output else []:
             observation = self.store.job(process["job_id"], task["owner"])
             action = observation.get("next_action")
             if action and (observation.get("result") or {}).get("has_more"):

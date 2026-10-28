@@ -51,11 +51,12 @@
   const attempted = new Set();
   const taskPattern = /^[0-9a-f]{32}$/;
   let sequence = 0, taskId = null, generation = null, ready = false, stopped = false;
-  let busy = false, timer = null, paused = false, last = null, pendingFinish = null, changingPause = false;
+  let busy = false, timer = null, nextPollAt = 0, paused = false, last = null, pendingFinish = null, changingPause = false;
   let failedPrepare = null, pollingBlocked = false;
   let activityReceivedAt = 0, connectionFailed = false, stateCopy = null;
   let pauseRevision = 0;
   let reviewVersion = 0, reviewLoaded = false, selectedPath = null, pendingReview = null;
+  let reviewTimer = null, retryAt = 0, retryDelay = 15000, retryLimited = false, lastHeight = null;
   const viewId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,"0")).join("");
   const states = {
     ready: ["準備接續工作", "目前沒有等待中的工作。"],
@@ -66,24 +67,54 @@
     project_changed: ["需要確認專案", "專案位置已變更，請先在對話中確認。"],
     completed: ["任務已完成", "已保存工作摘要，下方可檢查目前的修改與執行紀錄。"],
   };
-  function notify(method, params={}) { parent.postMessage({jsonrpc:"2.0",method,params},"*"); }
-  function deliveryError(category, code) {
+  function notify(method, params={}) {
+    if (method === "ui/notifications/size-changed") {
+      if (params.height === lastHeight) return;
+      lastHeight = params.height;
+    }
+    parent.postMessage({jsonrpc:"2.0",method,params},"*");
+  }
+  function deliveryError(category, code, details={}) {
     const error = new Error(category);
     error.delivery_error = category;
     if (Number.isSafeInteger(code) && code >= -(2**31) && code < 2**31) error.delivery_error_code = code;
+    if (code === 429 || Number(details?.data?.status) === 429
+        || /too many requests|rate[_ -]?limit/i.test(details?.message || "")) error.rate_limited = true;
+    const seconds = Number(details?.data?.retry_after ?? details?.data?.retryAfter ?? details?.retry_after);
+    if (Number.isFinite(seconds) && seconds > 0) error.retry_after_ms = seconds*1000;
     return error;
+  }
+  function deferRetry(error) {
+    if (!error.retry_at) {
+      retryAt = Math.max(retryAt,Date.now() + Math.max(retryDelay,error.retry_after_ms || 0));
+      retryDelay = Math.min(retryDelay*2,60000);
+      retryLimited = error.rate_limited === true;
+      error.retry_at = retryAt;
+    }
+    return Math.max(0,error.retry_at-Date.now());
   }
   function request(method, params={}) {
     if (stopped) return Promise.reject(deliveryError("interrupted"));
+    if (method === "tools/call" && Date.now() < retryAt) {
+      const error = deliveryError("cooldown"); error.retry_at = retryAt; error.rate_limited = retryLimited;
+      return Promise.reject(error);
+    }
     const id = ++sequence;
     return new Promise((resolve,reject) => {
       const timeout = setTimeout(() => { pending.delete(id); reject(deliveryError("timeout")); },10000);
       pending.set(id,{resolve,reject,timeout});
       parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
+    }).catch(error => {
+      if (method === "tools/call") deferRetry(error);
+      throw error;
     });
   }
   function payload(result) {
-    if (!result || result.isError) throw new Error("tool-error");
+    if (!result) throw new Error("tool-error");
+    if (result.isError) {
+      const message = (result.content || []).filter(item => item.type === "text").map(item => item.text).join("\n");
+      throw deliveryError("tool-error",undefined,{message,...result.structuredContent?.error});
+    }
     if (result.structuredContent && typeof result.structuredContent === "object") return result.structuredContent;
     for (const item of result.content || []) {
       if (item.type === "text") {
@@ -148,7 +179,7 @@
     if (!last) return;
     const elapsed = Math.max(0,(Date.now()-activityReceivedAt)/1000);
     const view = activityView(last,elapsed);
-    const stale = last.task.status !== "completed" && elapsed >= 45;
+    const stale = last.task.status !== "completed" && elapsed >= 90;
     const unavailable = connectionFailed || stale;
     el("conversation-activity").textContent = view.conversation;
     el("runner-activity").textContent = unavailable ? "尚無最新連線狀態"
@@ -327,47 +358,59 @@
     if (!executions.length) el("executions").append(node("p","此任務尚無命令執行紀錄。"));
     notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
   }
-  async function loadReview(path=null, jobId=null) {
-    if (!ready || !taskId || stopped) return;
+  function scheduleReview(delay) {
+    clearTimeout(reviewTimer); reviewTimer = null;
+    if (!stopped && !document.hidden && pendingReview) reviewTimer = setTimeout(() => {
+      reviewTimer = null;
+      const {path,jobId,requestId} = pendingReview;
+      void loadReview(path,jobId,requestId);
+    },Math.min(2147483647,Math.max(delay,retryAt-Date.now())));
+  }
+  async function loadReview(path=null, jobId=null, requestId=null) {
+    if (!ready || !taskId || stopped || document.hidden) return;
+    clearTimeout(reviewTimer); reviewTimer = null;
     const version = ++reviewVersion; reviewLoaded = true; selectedPath = path;
+    requestId ||= viewId + ":" + version;
     el("review-refresh").disabled = true; el("review-refresh").textContent = "讀取中…";
     el("review-state").textContent = "正在讀取修改與執行結果…";
     el("changes").setAttribute("aria-busy","true"); el("runs").setAttribute("aria-busy","true");
-    pendingReview = jobId ? {path,jobId} : null;
+    pendingReview = {path,jobId,requestId};
     try {
-      for (let attempt=0; attempt<12 && !stopped && version === reviewVersion; attempt++) {
-        const value = payload(await request("tools/call",{name:"task_review",arguments:{task_id:taskId,path,job_id:jobId}}));
-        if (version !== reviewVersion || stopped) return;
-        if (value.task_id !== taskId) throw new Error("wrong-task");
-        if (value.review) {
-          pendingReview = null;
-          const files = value.review.files || [];
-          if (selectedPath && !files.some(file => file.path === selectedPath) && !value.review.files_truncated) selectedPath = null;
-          showReview(value.review);
-          if (!selectedPath && files.length) { void loadReview(files[0].path); }
-          return;
-        }
-        const job = value.review_job;
-        if (!job || !["queued","running"].includes(job.status)) {
-          el("review-state").textContent = "目前無法取得修改內容，請在對話中確認原因後重試。";
-          pendingReview = null; return;
-        }
-        jobId = job.job_id; pendingReview = {path,jobId};
-        if (job.runner_online === false) { el("review-state").textContent = "電腦目前未連線；連線恢復後可繼續讀取。"; return; }
-        await new Promise(resolve => setTimeout(resolve,400));
+      const value = payload(await request("tools/call",{name:"task_review",arguments:{task_id:taskId,path,job_id:jobId,request_id:requestId}}));
+      if (version !== reviewVersion || stopped) return;
+      if (value.task_id !== taskId) throw new Error("wrong-task");
+      if (value.review) {
+        pendingReview = null;
+        if (Date.now() >= retryAt) retryDelay = 15000;
+        const files = value.review.files || [];
+        if (selectedPath && !files.some(file => file.path === selectedPath) && !value.review.files_truncated) selectedPath = null;
+        showReview(value.review);
+        if (!selectedPath && files.length) { void loadReview(files[0].path); }
+        return;
       }
-      el("review-state").textContent = "仍在讀取，可稍後繼續查看同一筆結果。";
-    } catch (_) {
-      if (version === reviewVersion) el("review-state").textContent = el("review-state").dataset.loaded === "true"
-        ? "更新失敗，目前顯示上次結果。請重新整理。" : "暫時無法讀取成果，請重新整理。";
+      const job = value.review_job;
+      if (!job || !["queued","running"].includes(job.status)) {
+        el("review-state").textContent = "目前無法取得修改內容，請在對話中確認原因後重試。";
+        pendingReview = null; return;
+      }
+      pendingReview = {path,jobId:job.job_id,requestId};
+      el("review-state").textContent = job.runner_online === false
+        ? "電腦未連線，稍後自動重試。" : "仍在讀取，完成後會更新。";
+      scheduleReview(15000);
+    } catch (error) {
+      if (version === reviewVersion && !stopped) {
+        el("review-state").textContent = (error.rate_limited ? "請求暫時受限" : "暫時無法讀取成果")
+          + (el("review-state").dataset.loaded === "true" ? "，保留上次結果；稍後自動重試。" : "，稍後自動重試。");
+        scheduleReview(deferRetry(error));
+      }
     } finally {
       if (version === reviewVersion) {
-        el("review-refresh").disabled = false; el("review-refresh").textContent = pendingReview ? "繼續讀取" : "重新整理";
+        el("review-refresh").disabled = false; el("review-refresh").textContent = pendingReview ? "重試" : "重新整理";
         el("changes").setAttribute("aria-busy","false"); el("runs").setAttribute("aria-busy","false");
       }
     }
   }
-  el("review-refresh").addEventListener("click",() => void loadReview(pendingReview?.path ?? selectedPath,pendingReview?.jobId ?? null));
+  el("review-refresh").addEventListener("click",() => void loadReview(pendingReview?.path ?? selectedPath,pendingReview?.jobId ?? null,pendingReview?.requestId ?? null));
   function selectTab(tab) {
     for (const name of ["changes","runs"]) {
       el(name).hidden = name !== tab;
@@ -387,7 +430,7 @@
   }
   function schedule() {
     clearTimeout(timer);
-    if (!stopped && !pollingBlocked && last?.task.status !== "completed") timer = setTimeout(poll,document.hidden ? 15000 : 3000);
+    if (!stopped && !document.hidden && !pollingBlocked && last?.task.status !== "completed") timer = setTimeout(poll,Math.max(0,nextPollAt-Date.now(),retryAt-Date.now()));
   }
   async function finish(waitId,outcome,error={}) {
     const metadata = {};
@@ -428,10 +471,12 @@
     if (!stopped) { try { await finish(wait.id,outcome,error); } catch (_) {} }
   }
   async function poll(manual=false) {
-    if (!ready || !taskId || stopped || busy || (pollingBlocked && !manual)) return;
+    if (!ready || !taskId || stopped || document.hidden || busy || (pollingBlocked && !manual)) return;
+    if (!manual && Date.now() < nextPollAt) { schedule(); return; }
     pollingBlocked = false;
     busy = true; el("check-status").disabled = true;
     try {
+      let value;
       if (generation === null) {
         const result = await call("bind");
         if (!result.control?.bound) {
@@ -450,9 +495,10 @@
           return;
         }
         if (!Number.isSafeInteger(result.control.generation) || result.control.generation < 1) throw new Error("invalid-bind");
-        generation = result.control.generation; render(result);
-      }
-      const value = await call("state"); render(value);
+        generation = result.control.generation; value = result;
+      } else value = await call("state");
+      render(value);
+      if (Date.now() >= retryAt) retryDelay = 15000;
       if (value.control?.bound === false) {
         generation = null; pollingBlocked = true;
         el("connection").textContent = "卡片已中斷連線";
@@ -477,14 +523,18 @@
         attempted.add(wait.id);
         await finish(wait.id,"unknown",deliveryError("interrupted"));
       } else if (wait?.state === "ready") await dispatch(wait);
-    } catch (_) {
+    } catch (error) {
+      deferRetry(error);
       generation = null; connectionFailed = true;
       el("connection").textContent = "卡片重新連線中"; el("dot").className = "dot attention";
       el("status").textContent = "卡片暫時無法更新";
-      el("detail").textContent = "目前顯示上次紀錄。請重新連線，確認最新工作狀態。";
+      el("detail").textContent = error.rate_limited ? "請求暫時受限，稍後自動重試。" : "目前顯示上次紀錄，稍後自動重試。";
       el("reconnect").hidden = false;
       refreshActivity();
-    } finally { busy = false; el("check-status").disabled = false; schedule(); }
+    } finally {
+      nextPollAt = Date.now() + (!paused && ["watching","ready"].includes(last?.continuation.wait?.state) ? 10000 : 60000);
+      busy = false; el("check-status").disabled = false; schedule();
+    }
   }
   el("pause").addEventListener("click",async () => {
     if (generation === null || stopped) return;
@@ -505,7 +555,7 @@
     try {
       if (!ready) { await initialize(); return; }
       await poll(true);
-      if (ready && taskId && reviewLoaded) await loadReview(selectedPath,pendingReview?.jobId ?? null);
+      if (ready && taskId && reviewLoaded) await loadReview(selectedPath,pendingReview?.jobId ?? null,pendingReview?.requestId ?? null);
     } finally { el("reconnect").disabled = false; }
   });
   function teardown() {
@@ -513,7 +563,7 @@
     if (taskId && generation !== null) {
       parent.postMessage({jsonrpc:"2.0",id:++sequence,method:"tools/call",params:{name:"task_app",arguments:{task_id:taskId,action:"unbind",view_id:viewId,generation}}},"*");
     }
-    stopped = true; clearTimeout(timer); clearInterval(activityTimer);
+    stopped = true; clearTimeout(timer); clearTimeout(reviewTimer); clearInterval(activityTimer);
     for (const value of pending.values()) { clearTimeout(value.timeout); value.reject(deliveryError("interrupted")); }
     pending.clear();
   }
@@ -522,7 +572,7 @@
     const data = event.data;
     if (pending.has(data.id)) {
       const item = pending.get(data.id); pending.delete(data.id); clearTimeout(item.timeout);
-      if (data.error) item.reject(deliveryError("rpc_error",data.error.code)); else item.resolve(data.result);
+      if (data.error) item.reject(deliveryError("rpc_error",data.error.code,data.error)); else item.resolve(data.result);
       return;
     }
     if (data.method === "ui/notifications/tool-input") select(data.params?.arguments?.task_id);
@@ -535,7 +585,14 @@
       if (data.id !== undefined) parent.postMessage({jsonrpc:"2.0",id:data.id,result:{}},"*");
     }
   });
-  addEventListener("visibilitychange",() => { clearTimeout(timer); if (!document.hidden) void poll(); else schedule(); });
+  addEventListener("visibilitychange",() => {
+    clearTimeout(timer); clearTimeout(reviewTimer); reviewTimer = null;
+    if (!document.hidden) {
+      if (!busy && !pollingBlocked && Date.now() >= nextPollAt) generation = null;
+      void poll();
+      if (pendingReview) scheduleReview(15000);
+    }
+  });
   addEventListener("pagehide",teardown,{once:true});
   addEventListener("beforeunload",teardown,{once:true});
   function applyTheme(context) {

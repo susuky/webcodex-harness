@@ -21,14 +21,17 @@
     <span>實際等待狀態：<output id="wait-state">ready</output></span>
     <span>狀態查詢失敗：<output id="state-failure-count">0</output></span>
     <span>Bind：<output id="bind-count">0</output></span>
+    <span>狀態查詢：<output id="state-query-count">0</output></span>
     <span>世代：<output id="generation">1</output></span>
     <span>暫停：<output id="paused">false</output></span>
-    <span>成果掃描：<output id="review-count">0</output></span>
+    <span>成果讀取：<output id="review-count">0</output></span>
   </div>
   <button id="inspect" type="button">更新診斷數值</button>
   <button id="fail-state" type="button">下一次狀態查詢失敗</button>
   <button id="toggle-pause" type="button">切換模擬 Host 暫停</button>
   <button id="replace-controller" type="button">更換模擬控制世代</button>
+  <button id="limit-review" type="button">下一次成果讀取限流</button>
+  <button id="drop-review" type="button">下一次成果回覆遺失</button>
   <span id="activity-controls" hidden><button id="image-activity" type="button">模擬檢視圖片</button><button id="file-activity" type="button">模擬修改檔案</button><button id="task-activity" type="button">模擬另一連線工具活動</button><button id="quiet-activity" type="button">模擬工具靜默</button></span>
   <pre id="host-log" aria-label="模擬 Host 記錄"></pre>
   <iframe id="app" src="./task_app.html" title="真實 Task App（模擬連線）"></iframe>
@@ -40,16 +43,18 @@
   const mode = ["before", "after"].includes(query.get("mode")) ? query.get("mode") : "none";
   const stateFailures = query.get("stateFailures") === "1" ? 1 : 0;
   const activity = query.has("activity");
+  const reviewMode = query.get("review");
+  let limitedReviews = reviewMode === "rate" ? 1 : 0, droppedReviews = reviewMode === "drop" ? 1 : 0;
   const app = document.getElementById("app");
   const taskId = "1".repeat(32), waitId = "2".repeat(32);
-  const host = {state:"ready",generation:1,paused:false,view:null,prepare:0,messages:0,binds:0,failedStates:0,pendingStateFailures:0,reviews:0,operation:"檢視圖片",activityAge:5,taskActivityAge:null};
+  const host = {state:"ready",generation:1,paused:false,view:null,prepare:0,messages:0,binds:0,stateCalls:0,failedStates:0,pendingStateFailures:0,reviews:0,operation:"檢視圖片",activityAge:5,taskActivityAge:null};
   const logs = [];
   const el = id => document.getElementById(id);
   el("mode").textContent = activity ? "工具活動（不安排續接）" : mode;
   el("activity-controls").hidden = !activity;
   function inspect() {
     for (const [id,key] of [["prepare-count","prepare"],["ui-message-count","messages"],["wait-state","state"],
-      ["state-failure-count","failedStates"],["bind-count","binds"],["generation","generation"],["paused","paused"],["review-count","reviews"]])
+      ["state-failure-count","failedStates"],["bind-count","binds"],["state-query-count","stateCalls"],["generation","generation"],["paused","paused"],["review-count","reviews"]])
       el(id).textContent = String(host[key]);
     el("host-log").textContent = logs.join("\n");
   }
@@ -76,6 +81,7 @@
     }
     if (args.generation !== host.generation || args.view_id !== host.view) throw new Error("controller changed");
     if (action === "state") {
+      host.stateCalls++;
       if (host.pendingStateFailures > 0) {
         host.pendingStateFailures--; host.failedStates++;
         throw new Error("simulated state transport failure");
@@ -122,8 +128,14 @@
         value = toolResult(value);
       } else if (method === "tools/call" && params.name === "task_review") {
         host.reviews++;
+        if (limitedReviews > 0) {
+          limitedReviews--; log("review rate limited");
+          send({id,error:{code:429,message:"Too many requests",data:{retry_after:15}}}); return;
+        }
+        if (droppedReviews > 0) { droppedReviews--; log("review response withheld"); return; }
         value = toolResult({task_id:taskId,review:{is_git_repository:true,files:[],total_files:0,files_truncated:false,
-          preview:null,executions:[],observed_at:Date.now()/1000}});
+          preview:null,executions:reviewMode ? [{process_id:"review-recovery",status:"completed",exit_code:0,
+            command:["echo","card recovery"],output:"原工作結果已恢復讀取。"}] : [],observed_at:Date.now()/1000}});
       } else if (method === "ui/message") {
         host.messages++; log("ui/message counted locally; no model started"); value = {};
       } else if (method === "ui/notifications/size-changed") {
@@ -138,6 +150,8 @@
   });
   el("inspect").addEventListener("click",inspect);
   el("fail-state").addEventListener("click",() => { host.pendingStateFailures++; log("next state will fail"); });
+  el("limit-review").addEventListener("click",() => { limitedReviews++; log("next review will be rate limited"); });
+  el("drop-review").addEventListener("click",() => { droppedReviews++; log("next review response will be withheld"); });
   el("toggle-pause").addEventListener("click",() => { host.paused = !host.paused; log("host pause toggled"); });
   el("replace-controller").addEventListener("click",() => {
     host.generation++;
