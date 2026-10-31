@@ -39,9 +39,9 @@ async def test_known_worker_launches_never_reach_process_creation(tmp_path, monk
     async def forbidden_spawn(*args, **kwargs):
         raise AssertionError("A denied worker reached process creation")
 
+    processes = Processes(SimpleNamespace(state_dir=tmp_path, max_processes=16, environment={}))
     monkeypatch.setattr("webcodex.processes.asyncio.create_subprocess_exec", forbidden_spawn)
     monkeypatch.setitem(sys.modules, "webcodex.windows", SimpleNamespace(spawn=forbidden_spawn))
-    processes = Processes(SimpleNamespace(state_dir=tmp_path, max_processes=16, environment={}))
     try:
         with pytest.raises(ValueError, match="External Codex/Work workers are disabled"):
             await processes.start("blocked", "task", argv, tmp_path, 1)
