@@ -19,6 +19,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from .catalog import OutcomeUnknown
 from .config import RunnerConfig, identifier, is_link, private_dir
+from .execution_policy import check_worker_command, check_worker_tool, is_worker_tool
 from .filesystem import Workspace
 from .processes import environment
 
@@ -136,6 +137,13 @@ class Provider:
         self.spec, self.root, self.project, self.config = spec, root, project, config
         self.state_dir = state_dir
         self.allowed_tools = spec.get("allowedTools")
+        self.command = None
+        if spec.get("command"):
+            self.command = [
+                self.expand(spec["command"]),
+                *[self.expand(arg) for arg in spec.get("args", [])],
+            ]
+            check_worker_command(self.command, cwd=project)
         self.queue = asyncio.Queue(maxsize=16)
         self.task = asyncio.create_task(self._serve())
 
@@ -172,8 +180,8 @@ class Provider:
                     streams = await stack.enter_async_context(
                         stdio_client(
                             StdioServerParameters(
-                                command=self.expand(spec["command"]),
-                                args=[self.expand(v) for v in spec.get("args", [])],
+                                command=self.command[0],
+                                args=self.command[1:],
                                 cwd=self.project,
                                 env=env,
                             ),
@@ -213,9 +221,15 @@ class Provider:
                         result = await asyncio.wait_for(getattr(session, method)(**arguments), 120)
                         if not pending.done():
                             payload = result.model_dump(mode="json", by_alias=True)
-                            if method == "list_tools" and self.allowed_tools is not None:
+                            if method == "list_tools":
                                 payload["tools"] = [
-                                    t for t in payload["tools"] if t["name"] in self.allowed_tools
+                                    t
+                                    for t in payload["tools"]
+                                    if not is_worker_tool(t["name"])
+                                    and (
+                                        self.allowed_tools is None
+                                        or t["name"] in self.allowed_tools
+                                    )
                                 ]
                             pending.set_result(payload)
                     except Exception as error:
@@ -245,6 +259,8 @@ class Provider:
                     )
 
     async def request(self, method: str, **arguments) -> dict:
+        if method == "call_tool":
+            check_worker_tool(arguments["name"])
         if self.task.done():
             raise ValueError(
                 "Provider is disconnected; retry discovery to start a new provider session"

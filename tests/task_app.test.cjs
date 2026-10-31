@@ -1,477 +1,211 @@
 "use strict";
-
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
-
-const html = fs.readFileSync(path.join(__dirname, "../src/webcodex/task_app.html"), "utf8");
-const start = html.indexOf("  function schedule()");
-const end = html.indexOf('  el("pause").addEventListener', start);
-assert.ok(start >= 0 && end > start);
-const source = html.slice(start, end);
-const requestStart = html.indexOf("  function deliveryError(");
-const requestEnd = html.indexOf("  function payload(", requestStart);
-const messageStart = html.indexOf('  addEventListener("message",');
-const messageEnd = html.indexOf('  addEventListener("visibilitychange",', messageStart);
-assert.ok(requestStart >= 0 && requestEnd > requestStart && messageStart >= 0 && messageEnd > messageStart);
-const requestSource = html.slice(requestStart, requestEnd);
-const messageSource = html.slice(messageStart, messageEnd);
-const manualSource = html.slice(html.indexOf('  el("check-status").addEventListener'), html.indexOf("  function teardown()"));
-const visibilitySource = html.slice(messageEnd, html.indexOf('  addEventListener("pagehide",', messageEnd));
-
-function fixture(options = {}) {
-  const host = {
-    waitId: "wait-one", state: "ready", generation: 1, bound: true, paused: false,
-    prepareCalls: 0, messages: 0, failedStates: 0, failedFinishes: 0, finishCalls: [], bindCalls: 0, stateCalls: 0,
-    failPrepare: "before", ...options,
-  };
-  const state = control => ({
-    task: {id: "task", status: "active"},
-    continuation: {paused: host.paused, wait: {id: host.waitId, state: host.state}},
-    control,
-  });
-  const elements = {};
-  const timers = new Map();
-  let timerId = 0, now = 100000;
-  const context = {
-    ready: true, taskId: "task", stopped: false, busy: false, generation: 1,
-    paused: false, last: null, timer: null, pendingFinish: null, failedPrepare: null, pollingBlocked: false,
-    selectedPath: null, pendingReview: null, reviewLoaded: false, async loadReview() {},
-    reviewTimer: null, nextPollAt: 0, retryAt: 0, retryDelay: 15000, retryLimited: false, scheduleReview() {},
-    Date: class extends Date { static now() { return now; } },
-    attempted: new Set(), pending: new Map(), sequence: 0, document: {hidden: false},
-    clearTimeout(id) { timers.delete(id); },
-    setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
-    addEventListener(name, listener) {
-      if (name === "message") context.onMessage = listener;
-      else { assert.equal(name, "visibilitychange"); context.onVisibility = listener; }
-    },
-    el(id) { return elements[id] ||= {addEventListener(name, listener) { this[name] = listener; }}; },
-    refreshActivity() {},
-    render(value) { context.last = value; context.paused = value.continuation.paused; },
-    async call(action, args = {}) {
-      if (action === "bind") {
-        host.bindCalls++;
-        return state({bound: host.bound, generation: host.generation, reason: host.reason});
+const html = fs.readFileSync(path.join(__dirname,"../src/webcodex/task_app.html"),"utf8");
+const between = (start,end) => html.slice(html.indexOf(start),html.indexOf(end,html.indexOf(start)));
+const flush = () => new Promise(resolve => setImmediate(resolve));
+function fixture(options={}) {
+  const host = {waitId:"wait-one",state:"ready",generation:1,bound:true,autoEnabled:false,
+    prepareCalls:0,manualCalls:0,messages:0,finishCalls:[],bindCalls:0,stateCalls:0,takeovers:0,
+    failedStates:0,failedFinishes:0,autoCount:0,maximum:3,interval:60,blocked:null,deliveries:[],...options};
+  const state = control => ({task:{id:"task",title:"Task",status:host.taskStatus || "active",plan:[]},
+    progress:{state:"ready",runner_online:true,liveness:{work:{running_count:host.running || 0,pending_count:0}}},
+    continuation:{auto_enabled:host.autoEnabled,wait:host.waitId ? {id:host.waitId,state:host.state} : null,
+      controller:{state:host.bound ? "owned" : "other",generation:host.generation},
+      policy:{max_auto_messages:host.maximum,min_interval_seconds:host.interval,auto_message_count:host.autoCount,auto_blocked_reason:host.blocked},deliveries:host.deliveries},control});
+  const elements={},timers=new Map(); let now=100000,timerId=0;
+  function element() { return {dataset:{},children:[],value:"",checked:false,hidden:false,disabled:false,
+    addEventListener(name,fn){this[name]=fn;},append(...values){this.children.push(...values);},replaceChildren(...values){this.children=values;},setAttribute(){}}; }
+  const context={ready:true,taskId:"task",stopped:false,busy:false,generation:1,viewId:"view",autoConsent:false,
+    sending:false,changingPolicy:false,consentRevision:0,manualSequence:0,manualRequest:null,manualWaitId:null,
+    last:null,timer:null,pendingFinish:null,failedPrepare:null,pollingBlocked:false,connectionFailed:false,
+    selectedPath:null,pendingReview:null,reviewLoaded:false,async loadReview(){},reviewTimer:null,
+    nextPollAt:0,retryAt:0,retryDelay:15000,retryLimited:false,scheduleReview(){},
+    attempted:new Set(),pending:new Map(),sequence:0,
+    document:{hidden:false,activeElement:null,createElement:element},
+    Date:class extends Date{static now(){return now;}},
+    clearTimeout(id){timers.delete(id);},setTimeout(fn,delay){const id=++timerId;timers.set(id,{fn,delay});return id;},
+    el(id){return elements[id] ||= element();},node(tag,text){return Object.assign(element(),{tag,textContent:text});},
+    addEventListener(name,fn){if(name==="message")context.onMessage=fn;else context.onVisibility=fn;},
+    refreshActivity(){},select(){},applyTheme(){},teardown(){},async initialize(){},
+    render(value){context.last=value;context.renderMessaging(value);},
+    async call(action,args={}) {
+      if(host.beforeCall) await host.beforeCall(action,args,context);
+      if(action==="bind") {host.bindCalls++; if(host.bound)host.autoEnabled=false;return state({bound:host.bound,generation:host.generation,reason:host.reason});}
+      if(action==="takeover") {host.takeovers++;host.bound=true;host.autoEnabled=false;host.generation++;host.waitId="wait-takeover-"+host.generation;host.state="ready";return state({bound:true,generation:host.generation});}
+      if(action==="state") {host.stateCalls++;if(host.failedStates-->0)throw new Error("offline");return state({bound:host.bound,generation:host.generation});}
+      if(action==="enable" || action==="pause") {host.autoEnabled=action==="enable";return state({});}
+      if(action==="configure") {host.maximum=args.max_auto_messages;host.interval=args.min_interval_seconds;return state({});}
+      if(action==="prepare" || action==="prepare_manual") {
+        host.prepareCalls++;if(action==="prepare_manual")host.manualCalls++;
+        const fail=host.failPrepare;host.failPrepare=null;
+        if(fail==="before")throw new Error("prepare not received");
+        if(action==="prepare_manual" && host.state==="consumed" && !host.deliveries.some(d=>d.request_id===args.request_id)) {
+          host.waitId="manual-wait-"+host.manualCalls;host.state="ready";
+        }
+        if(host.duplicate || host.deliveries.some(d=>d.wait_id===host.waitId || d.request_id===args.request_id))return state({wait_id:host.waitId,duplicate:true,state:host.state});
+        if(action==="prepare") {assert.equal(host.autoEnabled,true);assert.equal(host.blocked,null);host.autoCount++;}
+        host.waitId ||= "manual-wait";host.state="prepared";
+        host.deliveries.push({wait_id:host.waitId,request_id:args.request_id,mode:action==="prepare"?"auto":"manual",status:"prepared"});
+        if(fail==="after")throw new Error("prepared response lost");
+        if(host.disableAfterPrepare)context.resetConsent();
+        if(host.hideAfterPrepare)context.document.hidden=true;
+        return state({wait_id:host.waitId,state:"prepared",app_protocol:{message:host.invalidPrepare?null:"resume"}});
       }
-      if (action === "state") {
-        host.stateCalls++;
-        if (host.failedStates > 0) { host.failedStates--; throw new Error("state unavailable"); }
-        return state({bound: host.bound, generation: host.generation});
-      }
-      if (action === "prepare") {
-        host.prepareCalls++;
-        const fail = host.failPrepare; host.failPrepare = null;
-        if (fail === "before") throw new Error("request never reached Server");
-        assert.equal(host.state, "ready");
-        host.state = "prepared";
-        if (fail === "after") throw new Error("prepared response lost");
-        if (host.pauseAfterPrepare) context.paused = true;
-        return state({wait_id: args.wait_id, state: "prepared", app_protocol: {message: host.invalidPrepare ? null : "resume"}});
-      }
-      assert.equal(action, "finish");
-      host.finishCalls.push({...args});
-      if (host.failedFinishes > 0) { host.failedFinishes--; throw new Error("finish unavailable"); }
-      if (host.state === "ready") throw new Error("wait was not prepared");
-      host.state = host.state === "unknown" ? "unknown" : args.outcome;
-      return state({state: host.state});
-    },
-  };
-  context.parent = {
-    postMessage(message) {
-      assert.equal(message.method, "ui/message"); host.messages++;
-      if (host.messageTimeout) {
-        timers.get(context.pending.get(message.id).timeout)();
-        return;
-      }
-      const response = host.failMessage
-        ? {error: host.messageError || {code: -32603, message: "Host acknowledgement lost"}}
-        : {result: host.failMessageResult ? {isError: true, message: "consume_token=private-rejected-token"} : {}};
-      context.onMessage({source: context.parent, data: {jsonrpc: "2.0", id: message.id, ...response}});
-    },
-  };
+      assert.equal(action,"finish");host.finishCalls.push({...args});
+      if(host.failedFinishes-->0)throw new Error("finish unavailable");
+      if(!["prepared","accepted","unknown"].includes(host.state))throw new Error("not prepared");
+      if(args.outcome==="not_sent") {
+        assert.equal(host.state,"prepared");
+        const delivery=host.deliveries.find(d=>d.wait_id===host.waitId);
+        delivery.status="not_sent";if(delivery.mode==="auto")host.autoCount--;
+        host.waitId="wait-retry-"+host.prepareCalls;host.state="watching";
+      } else host.state=host.state==="unknown"?"unknown":args.outcome;
+      if(host.failedFinishAcks-->0)throw new Error("finish acknowledgement lost");
+      return state({state:host.state});
+    }};
+  context.parent={postMessage(message){
+    assert.equal(message.method,"ui/message");host.messages++;
+    if(host.messageTimeout){timers.get(context.pending.get(message.id).timeout).fn();return;}
+    const reply=host.failMessage ? {error:host.messageError || {code:-32603,message:"Host acknowledgement lost"}}
+      :{result:host.failMessageResult?{isError:true,message:"consume_token=private-rejected-token"}:{}};
+    context.onMessage({source:context.parent,data:{jsonrpc:"2.0",id:message.id,...reply}});
+  }};
   vm.createContext(context);
-  vm.runInContext(requestSource + messageSource, context);
-  vm.runInContext(source + manualSource + visibilitySource, context);
-  return {host, context, timers, advance(ms) { now += ms; },
-    poll: () => { now = Math.max(now, context.nextPollAt); return context.poll(); }};
+  vm.runInContext(between("  function deliveryError(","  function payload(")
+    +between("  function resetConsent(","  function activityView(")
+    +between("  function renderMessaging(","  function render(")
+    +between("  function schedule()","  function teardown()")
+    +between('  addEventListener("message",','  addEventListener("pagehide",'),context);
+  context.render(state({bound:host.bound,generation:host.generation}));
+  return {host,context,timers,snapshot:()=>state({bound:host.bound,generation:host.generation}),advance(ms){now+=ms;},
+    async enable(){context.el("auto-message").checked=true;await context.el("auto-message").change();},
+    async manual(){await context.el("resume").click();},
+    async poll(){now=Math.max(now,context.nextPollAt,context.retryAt);await context.poll();}};
 }
 
-for (const reason of ["missing_window", "read_only", "replaced_view", "another_view"]) {
-  test(`an unbound ${reason} card stops automatic polling until a manual reconnect`, async () => {
-    const {host, context, timers, poll} = fixture({bound: false, reason, failPrepare: null});
-    context.generation = null;
-    await poll();
-    assert.equal(host.bindCalls, 1);
-    assert.equal(context.pollingBlocked, true);
-    assert.equal(timers.size, 0);
-    assert.equal(context.el("reconnect").hidden, false);
-    context.onVisibility(); await poll();
-    assert.equal(host.bindCalls, 1);
-    assert.equal(host.messages, 0);
-    host.bound = true;
-    await context.el("reconnect").click();
-    assert.equal(host.bindCalls, 2);
-    assert.equal(context.pollingBlocked, false);
-    assert.equal(host.messages, 1);
-    assert.equal(timers.size, 1);
+test("default monitoring reads completed jobs without any prepare or ui/message",async()=>{
+  const f=fixture({state:"watching",running:1});await f.poll();f.host.state="ready";f.host.running=0;
+  for(let i=0;i<5;i++)await f.poll();
+  assert.equal(f.host.prepareCalls,0);assert.equal(f.host.messages,0);assert.equal(f.context.el("auto-message").checked,false);
+});
+test("manual double click sends exactly once with automatic messaging off",async()=>{
+  const f=fixture();await Promise.all([f.manual(),f.manual()]);await f.manual();await f.poll();
+  assert.equal(f.host.manualCalls,1);assert.equal(f.host.messages,1);assert.equal(f.host.autoCount,0);
+  assert.equal(f.context.el("resume").disabled,true);
+});
+test("manual continuation can prepare a snapshot without a preexisting wait",async()=>{
+  const f=fixture({waitId:null});await f.manual();assert.equal(f.host.messages,1);assert.equal(f.host.manualCalls,1);
+});
+test("only an explicit checkbox action arms automatic delivery",async()=>{
+  const f=fixture();await f.enable();await f.poll();await f.poll();
+  assert.equal(f.host.messages,1);assert.equal(f.host.autoCount,1);assert.equal(f.host.manualCalls,0);
+});
+test("foreign automatic consent is never inherited from a snapshot",async()=>{
+  const f=fixture({autoEnabled:true,bound:false});f.context.generation=null;await f.poll();
+  assert.equal(f.context.autoConsent,false);assert.equal(f.context.el("auto-message").checked,false);assert.equal(f.host.messages,0);
+});
+test("reconnect and reopening leave automatic delivery off",async()=>{
+  const f=fixture({state:"watching"});await f.enable();await f.context.el("reconnect").click();f.host.state="ready";await f.poll();
+  assert.equal(f.context.autoConsent,false);assert.equal(f.host.autoEnabled,false);assert.equal(f.host.messages,0);
+  const reopened=fixture({autoEnabled:true});await reopened.poll();assert.equal(reopened.host.messages,0);
+});
+test("a transport failure revokes local consent and recovery never re-enables it",async()=>{
+  const f=fixture({state:"watching"});await f.enable();f.host.failedStates=1;await f.poll();f.host.state="ready";await f.poll();
+  assert.equal(f.context.autoConsent,false);assert.equal(f.host.messages,0);assert.equal(f.host.bindCalls,1);
+});
+test("unchecking after prepare releases its automatic message reservation",async()=>{
+  const f=fixture({disableAfterPrepare:true});await f.enable();await f.poll();
+  assert.equal(f.host.messages,0);assert.equal(f.host.state,"watching");assert.equal(f.host.autoCount,0);
+  assert.equal(f.host.finishCalls[0].outcome,"not_sent");assert.equal(f.host.deliveries[0].status,"not_sent");
+  assert.equal(f.context.el("resume").disabled,false);
+  f.host.disableAfterPrepare=false;await f.manual();assert.equal(f.host.messages,1);assert.equal(f.host.autoCount,0);
+});
+test("a hidden card withdraws a prepared message and a lost finish acknowledgement recovers",async()=>{
+  const f=fixture({hideAfterPrepare:true,failedFinishAcks:1});await f.manual();
+  assert.equal(f.host.messages,0);assert.equal(f.context.pendingFinish.outcome,"not_sent");
+  f.host.hideAfterPrepare=false;f.context.document.hidden=false;await f.poll();
+  assert.equal(f.context.pendingFinish,null);assert.equal(f.context.el("resume").disabled,false);
+  await f.manual();assert.equal(f.host.messages,1);assert.equal(f.host.manualCalls,2);
+});
+test("manual prepare rechecks a received control revocation before sending",async()=>{
+  const f=fixture({beforeCall:async(action,args,context)=>{
+    if(action==="prepare_manual") {
+      context.last.continuation.controller={state:"other",generation:2};
+      context.renderMessaging(context.last);
+    }
+  }});
+  await f.manual();
+  assert.equal(f.host.manualCalls,1);assert.equal(f.host.messages,0);
+  assert.equal(f.host.finishCalls[0].outcome,"not_sent");
+});
+test("manual prepare rechecks a received task completion before sending",async()=>{
+  const f=fixture({beforeCall:async(action,args,context)=>{
+    if(action==="prepare_manual") {
+      context.last.task.status="completed";
+      context.renderMessaging(context.last);
+    }
+  }});
+  await f.manual();
+  assert.equal(f.host.manualCalls,1);assert.equal(f.host.messages,0);
+  assert.equal(f.host.finishCalls[0].outcome,"not_sent");
+});
+test("an invoked automatic message with a lost Host reply keeps its quota reservation",async()=>{
+  const f=fixture({messageTimeout:true});await f.enable();await f.poll();await f.poll();
+  assert.equal(f.host.messages,1);assert.equal(f.host.autoCount,1);assert.equal(f.host.state,"unknown");
+  assert.equal(f.host.finishCalls[0].outcome,"unknown");assert.equal(f.context.el("resume").disabled,true);
+});
+for(const blocked of ["limit","interval","batching","waiting","disabled"]){
+  test(`automatic ${blocked} gate retains results for manual continuation`,async()=>{
+    const f=fixture();await f.enable();f.host.blocked=blocked;await f.poll();assert.equal(f.host.messages,0);assert.equal(f.host.prepareCalls,0);
+    await f.manual();assert.equal(f.host.messages,1);assert.equal(f.host.autoCount,0);
   });
 }
-
-test("background cards make no requests and normal visible cards wait one minute", async () => {
-  const {context, host, timers, poll, advance} = fixture({failPrepare:null,state:"consumed"});
-  context.document.hidden = true;
-  context.generation = null;
-  await poll();
-  assert.equal(host.bindCalls,0);
-  assert.equal(timers.size,0);
-  context.document.hidden = false;
-  let delay;
-  context.setTimeout = (_,ms) => { delay = ms; return 1; };
-  await poll();
-  assert.equal(host.bindCalls,1);
-  assert.equal(host.stateCalls,0,"bind already returns the current state");
-  assert.equal(delay,60000);
-  await context.poll();
-  assert.equal(host.stateCalls,0);
-  context.document.hidden = true; context.onVisibility();
-  advance(30000);
-  context.document.hidden = false; context.onVisibility();
-  assert.equal(host.bindCalls,1,"a quick tab switch must not rebind");
-  assert.equal(delay,30000);
-  advance(30000);
-  await context.poll();
-  assert.equal(host.stateCalls,1);
-  context.retryAt = context.Date.now()+90000;
-  context.schedule();
-  assert.equal(delay,90000);
+test("server duplicate prepare never calls ui/message",async()=>{
+  const f=fixture({duplicate:true});await f.manual();assert.equal(f.host.messages,0);assert.equal(f.host.finishCalls.length,0);
 });
-
-test("an armed continuation keeps its ten-second check and manual status remains available", async () => {
-  const {context, host, poll} = fixture({state:"watching"});
-  let delay;
-  context.setTimeout = (_,ms) => { delay = ms; return 1; };
-  await poll();
-  assert.equal(delay,10000);
-  await context.poll();
-  assert.equal(host.stateCalls,1);
-  await context.el("check-status").click();
-  assert.equal(host.stateCalls,2);
-  host.paused = true;
-  await context.el("check-status").click();
-  assert.equal(delay,60000);
+test("unknown delivery stays fenced until an explicit takeover",async()=>{
+  const f=fixture({failMessage:true});await f.manual();await f.poll();await f.manual();
+  assert.equal(f.host.messages,1);assert.equal(f.host.state,"unknown");assert.equal(f.context.el("takeover").hidden,false);
+  f.host.failMessage=false;await f.context.el("takeover").click();assert.equal(f.host.messages,1);await f.manual();
+  assert.equal(f.host.messages,2);assert.equal(f.host.takeovers,1);assert.equal(f.context.autoConsent,false);
 });
-
-test("returning after an expired background lease binds once without a second state request", async () => {
-  const {context, host, timers, poll, advance} = fixture({state:"consumed"});
-  await poll();
-  context.document.hidden = true; context.onVisibility();
-  assert.equal(timers.size,0);
-  advance(121000);
-  context.document.hidden = false; context.onVisibility();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(host.bindCalls,1);
-  assert.equal(host.stateCalls,1);
-  assert.equal(timers.size,1);
+test("control takeover is explicit and never sends by itself",async()=>{
+  const f=fixture({bound:false});f.context.generation=null;await f.poll();await f.context.el("takeover").click();
+  assert.equal(f.host.takeovers,1);assert.equal(f.context.generation,2);assert.equal(f.host.messages,0);assert.equal(f.context.el("resume").disabled,false);
 });
-
-test("a tab switch during an in-flight state response preserves a ready continuation", async () => {
-  const {context, host, poll} = fixture({failPrepare:null});
-  const call = context.call;
-  let release;
-  context.call = async (action,args) => {
-    if (action === "state") await new Promise(resolve => { release = resolve; });
-    if (action === "prepare") assert.equal(context.generation,host.generation);
-    return call(action,args);
-  };
-  const pending = context.poll();
-  context.document.hidden = true; context.onVisibility();
-  context.document.hidden = false; context.onVisibility();
-  const generationDuringRequest = context.generation;
-  release(); await pending;
-  assert.equal(generationDuringRequest,1);
-  assert.equal(host.messages,1);
-  context.call = call;
-  await poll();
-  assert.equal(host.messages,1);
+test("an observer keeps polling so an expired lease can be recovered",async()=>{
+  const f=fixture({bound:false,reason:"another_view"});f.context.generation=null;await f.poll();
+  assert.equal(f.host.bindCalls,1);assert.ok(f.timers.size);assert.equal(f.context.el("takeover").hidden,false);
+  f.host.bound=true;await f.poll();assert.equal(f.host.bindCalls,2);assert.equal(f.host.messages,0);assert.equal(f.context.generation,1);
 });
-
-test("losing an existing controller stops polling and permits a manual status check", async () => {
-  const {host, context, timers, poll} = fixture({failPrepare: null});
-  await poll();
-  host.bound = false;
-  await poll();
-  assert.equal(context.generation, null);
-  assert.equal(timers.size, 0);
-  context.document.hidden = true; context.onVisibility();
-  context.document.hidden = false; context.onVisibility();
-  assert.equal(host.bindCalls, 0);
-  host.bound = true;
-  await context.el("check-status").click();
-  assert.equal(host.bindCalls, 1);
-  assert.equal(timers.size, 1);
-  assert.equal(host.messages, 1);
+test("hidden cards never send; returning after reconnect clears consent",async()=>{
+  const f=fixture({state:"watching"});await f.enable();f.context.document.hidden=true;f.context.onVisibility();f.host.state="ready";
+  await f.poll();assert.equal(f.host.messages,0);f.advance(121000);f.context.document.hidden=false;f.context.onVisibility();await flush();
+  assert.equal(f.context.autoConsent,false);assert.equal(f.host.messages,0);
 });
-
-test("a prepare that never reached Server recovers after confirmed same-controller ready state", async () => {
-  const {host, context, poll} = fixture();
-  await poll();
-  assert.equal(host.state, "ready"); assert.equal(host.messages, 0);
-  assert.ok(context.attempted.has(host.waitId));
-  await poll(); await poll();
-  assert.equal(host.prepareCalls, 2); assert.equal(host.messages, 1);
-  assert.equal(host.state, "accepted");
+test("visible pages never establish a host idle state",()=>{
+  assert.doesNotMatch(html,/host(?:Turn)?(?:State)?\s*[:=]\s*["']idle|等模型回覆完|由其他視窗接續/);
 });
-
-test("a failed state query can recover on a later poll with the same generation", async () => {
-  const {host, context, poll} = fixture();
-  await poll(); host.failedStates = 1;
-  await poll(); assert.equal(context.generation, null);
-  await poll();
-  assert.equal(host.prepareCalls, 2); assert.equal(host.messages, 1);
+test("message policy fields validate and save without enabling automatic delivery",async()=>{
+  const f=fixture();f.context.el("max-auto-messages").value="4";f.context.el("min-interval").value="120";
+  await f.context.el("save-policy").click();assert.equal(f.host.maximum,4);assert.equal(f.host.interval,120);assert.equal(f.context.autoConsent,false);
+  f.context.el("max-auto-messages").value="21";await f.context.el("save-policy").click();assert.equal(f.host.maximum,4);assert.match(f.context.el("policy-error").textContent,/0–20/);
 });
-
-test("reconnect appears after polling fails and clears without resending an uncertain message", async () => {
-  const {host, context, poll} = fixture({failPrepare: null, failMessage: true});
-  await poll();
-  assert.equal(host.state, "unknown");
-  assert.equal(context.el("reconnect").hidden, true);
-  host.failedStates = 1;
-  await poll();
-  assert.equal(context.el("reconnect").hidden, false);
-  assert.equal(context.el("connection").textContent, "卡片重新連線中");
-  await poll();
-  assert.equal(context.el("reconnect").hidden, true);
-  assert.equal(host.state, "unknown");
-  assert.equal(host.prepareCalls, 1);
-  assert.equal(host.messages, 1);
+test("pending finish is retried without retransmitting the user message",async()=>{
+  const f=fixture({failedFinishes:1,failMessage:true});await f.manual();assert.equal(f.context.pendingFinish.outcome,"unknown");
+  await f.poll();await f.poll();assert.equal(f.context.pendingFinish,null);assert.equal(f.host.messages,1);assert.equal(f.host.finishCalls.length,2);
 });
-
-test("a lost prepared response never causes another prepare or Host message", async () => {
-  const {host, poll} = fixture({failPrepare: "after"});
-  await poll(); await poll();
-  assert.equal(host.state, "unknown");
-  assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 0);
-});
-
-for (const waitState of ["prepared", "accepted", "unknown"]) {
-  test(`an observed ${waitState} fence is never made sendable`, async () => {
-    const {host, poll} = fixture({failPrepare: "after", failedFinishes: 1});
-    await poll(); host.state = waitState;
-    await poll(); await poll();
-    assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 0);
+for(const [options,category] of [[{messageTimeout:true},"timeout"],[{failMessageResult:true},"host_rejected"],[{invalidPrepare:true},"invalid_prepare"]]){
+  test(`${category} is saved once and never auto-retried`,async()=>{
+    const f=fixture(options);await f.manual();await f.poll();await f.poll();
+    assert.equal(f.host.state,"unknown");assert.equal(f.host.messages,category==="invalid_prepare"?0:1);
+    assert.equal(f.host.finishCalls[0].delivery_error,category);assert.doesNotMatch(JSON.stringify(f.host.finishCalls),/consume_token|private-rejected-token/);
   });
 }
-
-const activityStart = html.indexOf("  function activityView(");
-const activityEnd = html.indexOf("  function render(", activityStart);
-assert.ok(activityStart >= 0 && activityEnd > activityStart);
-const activitySource = html.slice(activityStart, activityEnd);
-function activityFixture() {
-  const now = 1800000000;
-  const value = {
-    task: {status: "active"},
-    progress: {
-      state: "observing", runner_online: true, pending_jobs: [], process_observations: [],
-      liveness: {observed_at: now, runner_last_seen: now - 1,
-        work: {running_count: 0, pending_count: 0, observed_at: null},
-        conversation: {started_at: now - 722, finished_at: now - 720, outcome: "returned"}},
-    },
-    continuation: {paused: false, wait: null},
-  };
-  const elements = {};
-  const context = {last: value, activityReceivedAt: 1000000, connectionFailed: false,
-    stateCopy: ["工作進行中", ""], Date: class extends Date { static now() { return 1000000; } },
-    el(id) { return elements[id] ||= {dataset: {}}; }};
-  vm.createContext(context);
-  vm.runInContext(activitySource, context);
-  return {value, context, view: (elapsed=0) => context.activityView(value, elapsed)};
-}
-
-test("a live card and Runner do not turn old conversation activity into a live-model claim", () => {
-  const {view} = activityFixture();
-  const result = view();
-  assert.match(result.conversation, /最近工具回應.*12 分鐘前/);
-  assert.match(result.runner, /已連線/);
-  assert.match(result.notice, /12 分鐘沒有新的任務工具活動/);
-});
-
-for (const hasConversation of [true, false]) {
-  test(`recent task jobs refresh activity with ${hasConversation ? "stale" : "missing"} conversation metadata`, () => {
-    const {value, view, context} = activityFixture();
-    if (!hasConversation) value.progress.liveness.conversation = null;
-    value.progress.liveness.operation = "檢視圖片";
-    value.progress.last_job_update = value.progress.liveness.observed_at - 5;
-    assert.match(view().conversation, /最近任務工具活動.*剛剛/);
-    assert.doesNotMatch(view().conversation, /檢視圖片/);
-    assert.equal(view().notice, null);
-    context.refreshActivity();
-    assert.equal(context.el("status").textContent, "工作進行中");
-    assert.match(view(180).notice, /3 分鐘沒有新的任務工具活動/);
-  });
-}
-
-test("older task jobs preserve the newer conversation operation and outcome", () => {
-  const {value, view} = activityFixture();
-  value.progress.last_job_update = value.progress.liveness.observed_at - 300;
-  value.progress.liveness.conversation.finished_at = value.progress.liveness.observed_at - 5;
-  value.progress.liveness.operation = "修改檔案";
-  assert.match(view().conversation, /修改檔案.*最近工具回應.*剛剛/);
-  assert.equal(view().notice, null);
-});
-
-test("short image and file tools remain visible after background commands finish", () => {
-  const {value, view, context} = activityFixture();
-  for (const operation of ["檢視圖片", "修改檔案"]) {
-    value.progress.liveness.operation = operation;
-    assert.ok(view().conversation.startsWith(operation + " · 最近工具回應"));
-    assert.equal(view().work, "沒有待處理的背景工作");
-  }
-  context.refreshActivity();
-  assert.match(context.el("detail").textContent, /重新載入頁面.*已保存的回覆/);
-  assert.doesNotMatch(context.el("detail").textContent, /重試|重送/);
-});
-
-for (const inputBeforeInitialize of [true, false]) {
-  test(`card initialization with input ${inputBeforeInitialize ? "before" : "after"} does not scan the repo or start a model turn`, async () => {
-    const calls = [];
-    const elements = {};
-    const context = {
-      ready: false, taskId: null, taskPattern: /^[0-9a-f]{32}$/,
-      el(id) { return elements[id] ||= {}; },
-      async poll() { calls.push("poll"); },
-      async loadReview() { calls.push("review"); },
-      applyTheme() {},
-      notify(method) { calls.push(method); },
-      async request(method) { calls.push(method); return {}; },
-    };
-    vm.createContext(context);
-    vm.runInContext(html.slice(html.indexOf("  function select("), activityStart)
-      + html.slice(html.indexOf("  async function initialize()"), html.indexOf("  const activityTimer")), context);
-    if (inputBeforeInitialize) context.select("1".repeat(32));
-    await context.initialize();
-    context.select("1".repeat(32));
-    assert.equal(context.taskId, "1".repeat(32));
-    assert.equal(context.ready, true);
-    assert.deepEqual(calls, ["ui/initialize", "ui/notifications/initialized", "poll", "poll"]);
-  });
-}
-
-test("reconnecting only reloads a review the user already opened", async () => {
-  const {context} = fixture({failPrepare: "before"});
-  let reviews = 0;
-  context.loadReview = async () => { reviews++; };
-  await context.el("reconnect").click();
-  assert.equal(reviews, 0);
-  context.reviewLoaded = true;
-  await context.el("reconnect").click();
-  assert.equal(reviews, 1);
-});
-
-test("quiet warnings respect registered waits, explicit blockers, completion and pause", () => {
-  const {value, view} = activityFixture();
-  for (const state of ["watching", "ready", "prepared", "accepted", "unknown"]) {
-    value.continuation.wait = {state};
-    assert.equal(view().notice, null);
-  }
-  value.continuation.wait = null;
-  for (const state of ["waiting_runner", "waiting_operator", "needs_attention", "completed"]) {
-    value.progress.state = state;
-    assert.equal(view().notice, null);
-  }
-  value.progress.state = "observing"; value.continuation.paused = true;
-  assert.equal(view().notice, null);
-  value.continuation.paused = false; value.task.status = "completed";
-  assert.equal(view().notice, null);
-});
-
-test("activity ages use the server observation plus elapsed time and preserve missing data", () => {
-  const {value, view} = activityFixture();
-  value.progress.liveness.conversation.finished_at = value.progress.liveness.observed_at - 179;
-  assert.equal(view().notice, null);
-  assert.match(view(1).notice, /3 分鐘/);
-  value.progress.liveness.conversation = null;
-  assert.equal(view().conversation, "尚未取得工具活動紀錄");
-  assert.equal(view(10000).notice, null);
-  delete value.progress.liveness;
-  assert.equal(view().conversation, "尚未取得工具活動紀錄");
-});
-
-test("an in-flight request or old process observation is identified by its own timestamp", () => {
-  const {value, view} = activityFixture();
-  value.progress.liveness.conversation.outcome = "running";
-  value.progress.liveness.conversation.finished_at = null;
-  value.progress.liveness.work = {running_count: 1, pending_count: 0, observed_at: value.progress.liveness.observed_at - 600};
-  assert.match(view().conversation, /工具等候回應/);
-  assert.match(view().notice, /工具回應已等候/);
-  assert.equal(view().work, "上次觀察有 1 項工作執行中（10 分鐘前）");
-});
-
-test("failed polling and stale card data cannot keep showing a green connection", () => {
-  const {context} = activityFixture();
-  context.connectionFailed = true;
-  context.refreshActivity();
-  assert.equal(context.el("connection").textContent, "卡片重新連線中");
-  assert.equal(context.el("runner-activity").textContent, "尚無最新連線狀態");
-  assert.equal(context.el("reconnect").hidden, false);
-  context.connectionFailed = false;
-  context.activityReceivedAt -= 60000;
-  context.refreshActivity();
-  assert.match(context.el("runner-activity").textContent, /已連線/);
-  context.activityReceivedAt -= 30000;
-  context.refreshActivity();
-  assert.equal(context.el("status").textContent, "卡片資料待更新");
-  context.activityReceivedAt = context.Date.now();
-  context.refreshActivity();
-  assert.match(context.el("status").textContent, /沒有新的任務工具活動/);
-  assert.match(context.el("runner-activity").textContent, /已連線/);
-});
-
-test("ready from an unbound controller does not clear the attempted fence", async () => {
-  const {host, context, poll} = fixture();
-  await poll(); host.bound = false;
-  await poll();
-  assert.ok(context.attempted.has(host.waitId));
-  assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 0);
-});
-
-test("ready after a controller generation change does not replay the failed attempt", async () => {
-  const {host, context, poll} = fixture();
-  await poll(); host.failedStates = 1;
-  await poll(); host.generation++;
-  await poll();
-  assert.equal(context.generation, 2);
-  assert.ok(context.attempted.has(host.waitId));
-  assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 0);
-});
-
-test("a new wait cannot clear the old wait's attempted fence", async () => {
-  const {host, context, poll} = fixture();
-  await poll(); host.waitId = "wait-two";
-  await poll();
-  assert.ok(context.attempted.has("wait-one"));
-  assert.equal(host.prepareCalls, 2); assert.equal(host.messages, 1);
-});
-
-test("a lost Host message acknowledgement never resends the message", async () => {
-  const {host, poll} = fixture({failPrepare: null, failMessage: true});
-  await poll(); await poll();
-  assert.equal(host.state, "unknown");
-  assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 1);
-});
-
-test("a rejected Host message result never becomes accepted or resends the message", async () => {
-  const {host, poll} = fixture({failPrepare: null, failMessageResult: true});
-  await poll();
-  assert.equal(host.state, "unknown");
-  host.failMessageResult = false;
-  await poll(); await poll();
-  assert.equal(host.state, "unknown");
-  assert.equal(host.prepareCalls, 1); assert.equal(host.messages, 1);
-});
-
 test("Host RPC errors retain only a fixed category and a valid JSON-RPC code", async () => {
   const {context} = fixture({
     failMessage: true,
@@ -502,59 +236,37 @@ test("invalid or out-of-range Host RPC codes are omitted", async () => {
   }
 });
 
-test("an uncertain RPC delivery retries finish with the same safe metadata and sends once", async () => {
-  const {host, context, poll} = fixture({
-    failPrepare: null, failMessage: true, failedFinishes: 1,
-    messageError: {code: -32042, message: "consume_token=private-rpc-token", data: {consume_token: "private-rpc-token"}},
-  });
-  await poll();
-  assert.equal(host.state, "prepared");
-  assert.equal(context.pendingFinish.delivery_error, "rpc_error");
-  assert.equal(context.pendingFinish.delivery_error_code, -32042);
-  assert.doesNotMatch(JSON.stringify(context.pendingFinish), /consume_token|private-rpc-token|message|data/);
-  await poll(); await poll();
-  assert.equal(host.state, "unknown");
-  assert.equal(host.messages, 1); assert.equal(host.prepareCalls, 1);
-  assert.equal(context.pendingFinish, null);
-  assert.deepEqual(host.finishCalls, [
-    {wait_id: "wait-one", outcome: "unknown", delivery_error: "rpc_error", delivery_error_code: -32042},
-    {wait_id: "wait-one", outcome: "unknown", delivery_error: "rpc_error", delivery_error_code: -32042},
-  ]);
+
+test("runner state, work observations, tool activity and control ownership are separate",()=>{
+  for(const label of ["Runner 連線","工作狀態","上次工具活動","卡片控制權","本任務自動發訊次數"])assert.ok(html.includes(label));
+  const f=fixture();vm.runInContext(between("  function activityView(","  function renderHandoff("),f.context);
+  const now=1000;f.context.activityReceivedAt=f.context.Date.now();f.context.stateCopy=["沒有執行中的背景工作",""];
+  f.context.last.progress.liveness={observed_at:now,runner_last_seen:now,host_turn_state:"unknown",data_freshness:"live",
+    operation:"讀取檔案",conversation:{outcome:"returned",finished_at:900},work:{running_count:0,pending_count:0}};
+  f.context.refreshActivity();assert.match(f.context.el("runner-activity").textContent,/已連線/);assert.match(f.context.el("work-observation").textContent,/沒有執行中/);
+  f.context.connectionFailed=true;f.context.refreshActivity();assert.match(f.context.el("conversation-activity").textContent,/舊紀錄/);assert.match(f.context.el("work-observation").textContent,/舊紀錄/);
+  f.context.connectionFailed=false;f.context.last.continuation.controller={state:"other",generation:2,updated_at:900,lease_until:999};f.context.refreshActivity();
+  assert.equal(f.context.el("controller-state").textContent,"控制權已到期");assert.match(f.context.el("controller-updated").textContent,/最後更新/);
 });
 
-for (const [options, category] of [
-  [{messageTimeout: true}, "timeout"],
-  [{failMessageResult: true}, "host_rejected"],
-  [{pauseAfterPrepare: true}, "interrupted"],
-  [{invalidPrepare: true}, "invalid_prepare"],
-]) {
-  test(`${category} is recorded without retaining Host content or resending`, async () => {
-    const {host, poll} = fixture({failPrepare: null, ...options});
-    await poll(); await poll();
-    assert.equal(host.state, "unknown");
-    assert.equal(host.prepareCalls, 1);
-    assert.equal(host.messages, ["timeout", "host_rejected"].includes(category) ? 1 : 0);
-    assert.deepEqual(host.finishCalls, [{wait_id: "wait-one", outcome: "unknown", delivery_error: category}]);
-    assert.doesNotMatch(JSON.stringify(host.finishCalls), /consume_token|private-rejected-token|message|data/);
-  });
-}
+test("a consumed tool-result resets the manual click id before the next poll",async()=>{
+  const f=fixture();await f.manual();const firstRequest=f.host.deliveries[0].request_id;
+  f.host.state="consumed";f.context.render(f.snapshot());
+  assert.equal(f.context.manualRequest,null);assert.equal(f.context.el("resume").disabled,false);
+  await f.manual();assert.equal(f.host.messages,2);assert.equal(f.host.manualCalls,2);
+  assert.notEqual(f.host.deliveries[1].request_id,firstRequest);
+});
+test("handoff errors display tool, state and process without object coercion",()=>{
+  const f=fixture();vm.runInContext(between("  function renderHandoff(","  function renderMessaging("),f.context);
+  f.context.renderHandoff({issues:[{tool:"exec_command",status:"failed",exit_code:2,process_id:"original-process"},"Check fixture"]});
+  const list=f.context.el("handoff-content").children.at(-1);
+  assert.equal(list.children[0].textContent,"exec_command · 失敗 · 結束碼 2 · original-process");
+  assert.equal(list.children[1].textContent,"Check fixture");
+});
 
-for (const change of ["wait", "generation"]) {
-  test(`a stale pending finish cannot carry diagnostics into a new ${change}`, async () => {
-    const {host, context, poll} = fixture({failPrepare: null, messageTimeout: true, failedFinishes: 1});
-    await poll();
-    assert.equal(context.pendingFinish.delivery_error, "timeout");
-    host.messageTimeout = false;
-    if (change === "wait") {
-      host.waitId = "wait-two"; host.state = "ready";
-    } else {
-      context.generation = null; host.generation++;
-    }
-    await poll(); await poll();
-    assert.equal(context.pendingFinish, null);
-    assert.deepEqual(host.finishCalls[1], change === "wait"
-      ? {wait_id: "wait-two", outcome: "accepted"}
-      : {wait_id: "wait-one", outcome: "unknown", delivery_error: "interrupted"});
-    assert.equal(host.messages, change === "wait" ? 2 : 1);
-  });
-}
+test("a new wait resets the click id even if its consumed predecessor was not observed",async()=>{
+  const f=fixture();await f.manual();const firstRequest=f.host.deliveries[0].request_id;
+  f.host.waitId="new-wait";f.host.state="ready";f.context.render(f.snapshot());
+  assert.equal(f.context.manualRequest,null);await f.manual();assert.equal(f.host.messages,2);
+  assert.notEqual(f.host.deliveries[1].request_id,firstRequest);
+});

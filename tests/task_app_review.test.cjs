@@ -25,7 +25,7 @@ function fixture(replies) {
       addEventListener(event,fn) { this[event] = fn; }}; },
     showReview(review) { shown.push(review); context.el("review-state").dataset.loaded = "true"; },
     addEventListener(event,fn) { if (event === "message") context.onMessage = fn; else context.onVisibility = fn; },
-    poll() {}, select() {}, render() {}, applyTheme() {},
+    poll() {}, select() {}, render() {}, applyTheme() {}, resetConsent() {}, sending: false,
   };
   context.parent = {postMessage(message) {
     assert.equal(message.method,"tools/call");

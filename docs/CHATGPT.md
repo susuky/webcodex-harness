@@ -1,5 +1,9 @@
 # 連接 ChatGPT 與其他 MCP 用戶端
 
+## 網頁操作優先順序
+
+有合適的專用 connector／API 時先使用；需要網頁介面時，優先使用目前對話可用的原生瀏覽器工具。ChatGPT 網頁版未提供合適原生工具時，使用已安裝的 WebCodex `browser-tools` Playwright 外掛，在背景完成網頁操作。只有必要的桌面程式或系統視窗步驟才使用 `computer_*`，完成後回到瀏覽器工具。Playwright 使用獨立登入狀態；設定與操作流程見[瀏覽器操作](BROWSER_USE.md)。
+
 ## 先確認本機可用
 
 啟動 Server 與 Runner，執行 `webcodex call projects_list` 確認專案出現，並完成一個 `read_file` 或測試命令。如果尚無專案，先用 `project_roots_list` 確認允許的父目錄，再依 [建立專案](PROJECTS.md) 建立。Ubuntu、Windows 原生與 WSL2 的完整命令見 [操作教學](OPERATIONS.md)。
@@ -138,7 +142,7 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 下次對話先使用 `task_list` 和 `task_get` 讀取同一個任務，從 Server 保存的工作摘要與證據接續。
 
-恢復時以 `task_get.progress` 的待處理工作與最新執行結果判斷下一步。`summary_stale: true` 表示摘要後又有工作更新，應讀取最新工作狀態。`status: succeeded` 的工作若同時回傳 `outcome: failed`，代表命令失敗，應查看輸出處理錯誤。依 `next_action`／`next_actions` 及其 `condition` 執行下一步；只剩等待時交接至卡片，仍有獨立工作時可用 `observation_action`／`observation_actions` 更新原工作的觀察結果。欄位與範例見 [授權與執行](EXECUTION.md#恢復任務時先讀取目前進度)。
+恢復時以 `task_get.progress` 的待處理工作與最新執行結果判斷下一步。`summary_stale: true` 表示摘要後又有工作更新，應讀取最新工作狀態。`status: succeeded` 的工作若同時回傳 `outcome: failed`，代表命令失敗，應查看輸出處理錯誤。依 `next_action`／`next_actions` 使用 `job_get`／`read_process`，在原回合取得命令結果後繼續；命令執行期間可先做其他獨立工作。欄位與範例見 [授權與執行](EXECUTION.md#恢復任務時先讀取目前進度)。
 
 ## 等待中的進度回報
 
@@ -150,35 +154,44 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 ## 任務卡片與跨回合續接
 
-`work_on_project(project, title, request_id)` 可一次建立任務並讀取初始工作目錄。接續既有工作時傳入 `task_id`，不另開任務；已完成任務也不會被隱式重新開啟。回傳的 `next_action` 會指定 `task_present(task_id)`，供目前回合顯示任務卡片；工作目錄仍在讀取時，再依 `workspace.next_action` 等待。
+一般長命令留在原回合等待。Server 指引、工具描述與 `next_action` 都使用 `job_get`／`read_process` 觀察原 job／process；收到結果後繼續工作。`task_wait` 用於明確選擇的工作監看，呼叫它不會開啟自動發訊，也不要求模型結束回合。
 
-任務卡片的「檢查成果」可切換「修改內容」與「執行結果」。點選檔案會讀取差異，包含新增但尚未追蹤的檔案；沒有 Git 的專案則顯示目前檔案內容。命令結果來自該任務實際程序紀錄，顯示成功、失敗、結束碼與輸出。清單、差異與輸出都有長度限制，較長內容可在對話中指定檔案或繼續讀取程序紀錄。
+`work_on_project(project, title, request_id)` 建立任務並讀取工作目錄；接續時傳入原 `task_id`。每個使用者發起、開始或恢復長工作的回合，依回傳動作呼叫一次 `task_present(task_id)` 顯示任務卡片。同回合及 `task_resume` 自動接續沿用已有卡片。
 
-卡片以計畫中的完成步驟顯示進度，兩個頁籤分別標示檔案數及最近命令數。首次讀取會自動開啟第一個檔案；重新整理會保留檔案選擇與命令展開狀態。頁尾「進度更新」表示任務狀態的讀取時間，「成果更新」表示檔案與命令結果的讀取時間。讀取限流、逾時或連線失敗時，卡片會結束「讀取中」、保留上次結果，並於 15、30、最多 60 秒後重試；Host 提供更長的 `retry_after` 時遵守該時間。重試沿用同一個 `request_id` 或已知 `job_id`，不另建成果掃描。背景期間停止請求，回到前景後繼續；「重試」也會遵守目前的等待時間。「重新連線」可重試卡片初始化或狀態連線。
+### 監看與發訊
 
-卡片連線與自動續接分開顯示。只有成功建立 `task_wait` 後，卡片才顯示「已安排自動續接」；尚未交接時顯示「尚未安排自動續接」，不顯示暫停按鈕。接續訊息若被用戶端拒絕，會保留未確認狀態，不標示已送出，也不自動重送。
+| 操作 | 行為 |
+| --- | --- |
+| 顯示卡片、監看工作 | 更新 Runner 與工作狀態，保留結果 |
+| 接續工作 | 手動送出一次接續訊息；重複點擊沿用同一筆通知 |
+| 完成後自動傳訊 | 使用者明確開啟後，才允許工作完成時送訊息 |
+| 在此接手 | 取得目前任務控制權，撤銷舊卡片的發訊權 |
 
-也可直接用 `task_review(task_id)` 檢查，指定 `path` 讀取個別檔案。初次回覆遺失時，以原 `request_id` 找回同一筆 review；尚未完成時，以相同 `job_id` 與 `path` 等待。完成後仍可讀取檔案與檢視結果；要繼續修改，必須先明確用 `task_update` 重新開啟任務。畫面顯示整個專案目前尚未提交的變更，可能包含其他工作；驗證結果需對照命令執行時的修改內容。
+自動發訊預設關閉。重新連線、重新開啟卡片、換對話接手及 Server 重新啟動，都回到關閉狀態。每任務預設最多 3 次、至少間隔 60 秒；設定範圍為 0–20 次與 10–86,400 秒。短時間完成的多個工作合併成一次通知。達到上限後保留結果，使用「接續工作」繼續。
 
-`task_present(task_id)` 顯示一張持續更新的任務卡片。卡片是 `ui://webcodex/task-progress/v1/<內容雜湊>.html` 的 MCP App，使用現有用戶端連線讀取進度；不含 Server token，也不直接存取專案。Server 啟動時從 HTML 內容產生資源版本，工具 metadata 與資源清單使用同一個位址。舊版 `v1` 位址與同格式的版本位址仍可讀取相容的目前卡片。stdio bridge 同時轉送資源內容與工具呼叫中的視窗識別。[MCP Apps 規範](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
+卡片顯示「本任務自動發訊次數」，並保存發送時間、原因、內容及成功／未知結果。未知結果不自動重送。這個數字依 WebCodex 的發訊紀錄計算；ChatGPT Pro 配額的計算方式尚未核實。
 
-建議流程如下：
+模型收到接續訊息後，先以原參數呼叫 `task_resume`。第一次成功消費通知才接續工作；`already_consumed=true` 結束重複流程。通知結果不確定時，先讀 `task_get` 及原 job 的實際狀態。
 
-1. 每個由使用者發起、開始或恢復較長工作的回合，都呼叫一次 `task_present` 顯示目前任務卡片；先前回合已顯示過同一任務，仍依此流程呈現。同回合的後續工具呼叫，以及由 `task_resume` 自動續接的回合，沿用已有卡片。
-2. 確認只剩既有工作需要等待時，依主要 `next_action`／`next_actions` 交接。可交接的等待回覆會把 `task_wait`、精確 job ID 與穩定 `request_id` 放在這一層，並標示 `condition=only_when_no_independent_work`；`continuation.handoff` 保留完整交接狀態。成功登記後再說明目前工作並結束回合。仍有獨立工作時先繼續執行，需要查詢原工作時使用 `observation_action`／`observation_actions`。尚未讀完的輸出會優先保留原 cursor 的讀取動作；已完成的結果也保留供模型檢查。
-   卡片未綁定或連線租約到期時，等待回覆會提供 `task_present` 作為修復動作；確認卡片綁定後再讀取原 job 並登記等待。暫停、權限不足、缺少對話識別、其他視窗控制中、等待項目超過上限或通知結果未確認時，維持相應限制。尚未成功 `task_wait` 時不宣稱會自動續接。
-3. 卡片在前景通常每 60 秒確認進度；已有未暫停的 `watching`／`ready` 續接等待時，每 10 秒確認。背景停止輪詢，短暫切換分頁沿用原查詢期限，重新綁定的回覆直接顯示，不立即再查一次狀態。成果讀取尚未完成時每 15 秒檢查原工作；讀取失敗後退避重試。狀態查詢只載入程序觀察與計數，不載入完整命令輸出；仍在執行的程序只透過 `read_process` 觀察，不會重跑命令。成功、失敗或結果不確定都會成為需要模型檢查的結果。模型新登記的等待若未即時通知卡片，最多先等一輪 60 秒查詢才被發現。
-4. 等待結束且卡片在前景時，先保存通知狀態，再呼叫一次用戶端的 `ui/message`。模型收到後必須先以原參數呼叫 `task_resume`；僅第一次成功消費通知時接續工作，重複消費不得另啟流程。
+### 跨對話接棒
 
-模型以 `task_resume` 成功消費通知後接續工作。回覆遺失、卡片更換或送出結果不明時，卡片顯示「尚未確認是否接續」並停止自動重送。使用者明確要求繼續後，模型先查 `task_get` 與原工作；若仍需新的等待，可在 `task_wait` 指定確切的 `replace_wait_id`。這會使舊通知失效，不會重跑原命令。已完成任務會取消待送通知。
+新對話使用 `task_list` 找到原任務，再呼叫 `task_takeover(task_id)` 或在卡片按「在此接手」。接棒資料包含目標、修改檔案、驗證結果、未讀輸出、待處理問題與下一步；模型沿用原 job 與 process ID。`task_update` 可保存 `handoff` 的 `changed_files`、`validation`、`issues`、`next_steps` 四個字串陣列。
 
-同一任務只有一個有效卡片控制者，租期為 120 秒。同一視窗重新開啟卡片會取代舊卡片；其他視窗在租期內只顯示進度。若控制連線已到期，同一對話中仍存活的舊卡片可以重新綁定，並取得新的控制世代；有效控制者與跨對話的舊卡片不受此恢復規則取代。背景卡片不更新、不續租，也不自動送出訊息；回到前景後重新綁定。關閉後的等待保存在 SQLite，重新開啟才恢復觀察。暫停按鈕只暫停自動續接，已啟動的工作仍會執行。
+同一任務只保留一位有效控制者，租期 120 秒。其他視窗顯示「其他視窗持有控制權」與更新時間；舊視窗關閉或租約失效後可在新視窗接手。接手會使舊通知失效，自動發訊回到關閉。跨帳號仍由既有 WebCodex client 身分與專案授權決定可見範圍，接棒操作限同一 owner。
 
-目前視窗識別使用用戶端提供的 `openai/session`，缺少此資訊時不啟用自動續接。用戶端還必須支援 MCP App、卡片工具呼叫及 `ui/message`，並允許訊息產生後續模型回合。更新 Server 後，在 ChatGPT 連線設定按 Refresh／Reload，確認工具 metadata 已更新，再重新開啟卡片。bridge 的工具與資源呼叫會重新連接 Server；本次已在保留原 bridge／tunnel 的情況下驗證新版資源與工具。新對話可用原 `task_id` 接續；先前訊息中已呈現的卡片不會因此原地換版。[OpenAI 更新流程](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata)
+### 狀態與成果
 
-OpenAI 將 UI 資源位址作為快取鍵，因此只重啟服務或在舊卡片按「重新整理」，仍可能看到舊 HTML。新版卡片資源會隨內容改變位址；卡片內的「重新整理」則更新檔案與命令結果。[UI 資源版本](https://developers.openai.com/plugins/build/chatgpt-ui)
+Runner 連線、工作狀態、上次工具活動及卡片控制權各自顯示。Host 模型回合狀態為未知；頁面是否可見只控制卡片輪詢。Runner 斷線或觀察過期時，畫面標示舊紀錄並保留最後觀察時間。
 
-後續對話需要卡片時，對同一個 `task_id` 再呼叫 `task_present`。若 ChatGPT 回覆區顯示連線中斷，先用 `task_get` 及 `read_process` 確認原工作，再依紀錄接續。WebCodex 沒有一小時的 session 有效期；Runner 的 `max_process_seconds` 預設為 3600 秒，限制的是單一命令的執行時間。
+「檢查成果」提供修改清單、個別檔案差異及最近命令的結束碼與輸出。`task_review(task_id)` 也能直接讀取，包含未追蹤檔案。回覆遺失時沿用原 `request_id`；未完成時以原 `job_id` 查詢。檢視已完成任務仍可讀取成果；繼續修改時用 `task_update` 明確重新開啟任務。
+
+關閉 ChatGPT 後可直接開啟 Server 的 `/manage`，查看相同的任務、程序、最後輸出與錯誤。管理頁會透過 `read_process` 更新正在執行的程序，保留原命令。使用方式見[管理、診斷與維護](INSTALLATION.md#管理頁)。
+
+### 更新卡片
+
+卡片資源位址含 HTML 內容雜湊，Server 更新後會產生新位址。ChatGPT 連線設定按 Refresh／Reload，重新開啟卡片即可載入新版。bridge 在啟動時載入初始化指引；修改指引時重啟 bridge／tunnel 並重新整理用戶端 metadata。[OpenAI 更新流程](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata)
+
+Server、bridge 可獨立更新。Runner 更新前執行 `webcodex update-check`；仍有命令時保留 Runner。新對話可透過原任務 ID 取得輸出。Runner 的 `max_process_seconds` 預設 3600 秒，限制單一命令的執行時間。
 
 ## ChatGPT 平台已知限制：再次詢問工具授權
 
@@ -196,7 +209,7 @@ ChatGPT 另有全域及每個外掛的確認偏好。已保存每個外掛的允
 
 ChatGPT 顯示「思考失敗」時，已送到 Runner 的命令與子任務仍可繼續執行。先以原 `task_id` 查詢 `task_get`、`job_get` 或 `read_process`，依實際結果接續工作。
 
-自動續接適用於已成功呼叫 `task_wait` 的等待。有效卡片在前景、等待工作已有結果時，會送出一次 `ui/message`，由模型以 `task_resume` 接回原任務。若模型在建立等待前中斷，或已接回後再次失敗，WebCodex 尚無可用通知能判定該回合失敗。官方公開的 UI 介面提供 follow-up 訊息，未提供重試既有失敗回合的操作。[OpenAI UI 介面](https://developers.openai.com/plugins/build/chatgpt-ui)
+使用者明確開啟「完成後自動傳訊」後，卡片依任務的次數與間隔限制送出 `ui/message`，由模型以 `task_resume` 接回原任務。一般監看與 `task_wait` 保持自動發訊關閉。若模型在建立等待前中斷，或已接回後再次失敗，WebCodex 尚無可用通知能判定該回合失敗。官方公開的 UI 介面提供 follow-up 訊息，未提供重試既有失敗回合的操作。[OpenAI UI 介面](https://developers.openai.com/plugins/build/chatgpt-ui)
 
 通知狀態為 `accepted` 或 `unknown` 時，保留原通知與防重送紀錄。單憑一段時間沒有工具請求，無法判定模型是否已中斷；系統不會據此重送命令或重建等待。
 
@@ -209,11 +222,11 @@ ChatGPT 顯示「思考失敗」時，已送到 Runner 的命令與子任務仍�
 | 卡片已連線 | 最近一次卡片工具請求成功回覆 |
 | 任務工具 | 同一任務最近工作更新與目前對話工具活動之中，較新的時間 |
 | 工作電腦 | Runner 最近連線時間，以及已保存的工作數量與觀察時間 |
-| 自動續接 | 已登記等待、結果就緒或通知處理狀態 |
+| 發訊設定 | 明確開啟狀態、本任務次數與通知處理結果 |
 
 卡片輪詢不會刷新工具活動；同一任務的成果檢視或另一連線執行工具，會更新任務工具時間。目前對話的操作較新時，仍顯示該操作名稱與結果。工作數量會附上原觀察時間；卡片重新整理時間另外顯示在頁尾。
 
-未安排等待且超過三分鐘沒有任務工具活動時，卡片會顯示最近回應時間，提示使用者重新載入原對話，查看已保存的回覆。已安排的等待與待回覆事項保留各自狀態。按「檢查狀態」會重新查詢原任務；若 ChatGPT 明確顯示回合失敗，再使用該回合的「重試」接續。
+上次工具活動使用實際請求時間。Host 回合狀態保留為未知；工作程序由 Runner 的最新觀察判定。按「接續工作」可從已保存的結果繼續。
 
 未完成任務的卡片連續 90 秒未取得新狀態時，會標示目前為上次紀錄；查詢明確失敗則立即顯示連線問題。重新連線成功後，才恢復最新連線狀態。
 

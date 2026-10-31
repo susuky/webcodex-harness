@@ -5,8 +5,7 @@ import asyncio
 import json
 import logging
 import os
-import platform
-import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -90,7 +89,23 @@ def main():
             sub.add_argument("id")
         if name == "answer":
             sub.add_argument("text")
-    commands.add_parser("doctor", help="檢查這台機器的執行環境")
+    doctor_cmd = commands.add_parser("doctor", help="檢查安裝、連線與依賴")
+    doctor_cmd.add_argument("--config-dir", default=DEFAULT_DIR, type=Path)
+    doctor_cmd.add_argument("--share", action="store_true", help="遮蔽私人路徑，產生可分享診斷")
+    doctor_cmd.add_argument("--output", type=Path, help="另存 JSON 診斷")
+    check = commands.add_parser(
+        "update-check", help="確認 Runner 是否仍有工作，退出碼 2 表示暫緩重啟"
+    )
+    check.add_argument("--config-dir", default=DEFAULT_DIR, type=Path)
+    backup_cmd = commands.add_parser("backup", help="備份設定與 SQLite 狀態")
+    backup_cmd.add_argument("--config-dir", default=DEFAULT_DIR, type=Path)
+    backup_cmd.add_argument("--destination", type=Path)
+    clean = commands.add_parser("retention", help="預覽或清理已結束工作的輸出與附件")
+    clean.add_argument("--config-dir", default=DEFAULT_DIR, type=Path)
+    clean.add_argument("--days", type=int)
+    clean.add_argument("--max-mib", type=int)
+    clean.add_argument("--save-policy", action="store_true")
+    clean.add_argument("--apply", action="store_true", help="套用預覽的清理規則")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -133,34 +148,36 @@ def main():
             config = profile(args.config)
             asyncio.run(run_bridge(config["server_url"], config["token"]))
         elif args.command == "doctor":
-            from .computer import Computer
+            from .maintenance import doctor
+
+            report = doctor(args.config_dir, share=args.share)
+            if args.output:
+                args.output.expanduser().write_text(
+                    json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                )
+            output(report)
+        elif args.command == "update-check":
+            from .maintenance import update_check
+
+            report = update_check(args.config_dir)
+            output(report)
+            if not report["runner_restart_ready"]:
+                raise SystemExit(2)
+        elif args.command == "backup":
+            from .maintenance import backup
+
+            output(backup(args.config_dir, args.destination))
+        elif args.command == "retention":
+            from .maintenance import retention
 
             output(
-                {
-                    "platform": sys.platform,
-                    "python": sys.version.split()[0],
-                    "python_executable": sys.executable,
-                    "supported_runner": sys.platform in {"linux", "win32"},
-                    "wsl": sys.platform == "linux" and "microsoft" in platform.release().lower(),
-                    "command_shell": "powershell" if os.name == "nt" else "bash",
-                    "terminal": "conpty" if os.name == "nt" else "pty",
-                    "config_dir": str(DEFAULT_DIR),
-                    "computer": Computer().status(),
-                    "tools": {
-                        name: shutil.which(name)
-                        for name in [
-                            "git",
-                            "rg",
-                            "python3",
-                            "python",
-                            "pytest",
-                            "cargo",
-                            "node",
-                            "npm",
-                            "docker",
-                        ]
-                    },
-                }
+                retention(
+                    args.config_dir,
+                    days=args.days,
+                    max_mib=args.max_mib,
+                    apply=args.apply,
+                    save_policy=args.save_policy,
+                )
             )
         else:
             config = profile(args.config)
@@ -191,6 +208,6 @@ def main():
                     raise SystemExit(1)
     except KeyboardInterrupt:
         pass
-    except (ValueError, OSError, httpx.HTTPError) as error:
+    except (ValueError, OSError, sqlite3.Error, httpx.HTTPError) as error:
         print(f"錯誤：{error}", file=sys.stderr)
         raise SystemExit(1) from None

@@ -55,9 +55,10 @@ async def test_stdio_task_app_waits_for_same_execution_and_consumes_once(harness
             },
         )
         args = {"task_id": task, "job_ids": [job["job_id"]], "request_id": "wait-once"}
-        assert "No active task App" in await call(
-            "task_wait", args, window="other-window", error=True
-        )
+        # Monitoring persists without changing any message-delivery consent.
+        assert not (await call("task_wait", args, window="other-window"))["continuation"][
+            "auto_enabled"
+        ]
         waiting = await call("task_wait", args)
         wait_id = waiting["continuation"]["wait"]["id"]
         assert (await call("task_wait", args))["continuation"]["wait"]["id"] == wait_id
@@ -68,13 +69,12 @@ async def test_stdio_task_app_waits_for_same_execution_and_consumes_once(harness
                 break
             assert time.monotonic() < deadline
             await asyncio.sleep(0.1)
-        prepared = await call("task_app", {**view, "action": "prepare", "wait_id": wait_id})
+        prepared = await call("task_app", {**view, "action": "prepare_manual", "wait_id": wait_id})
         message = prepared["control"]["app_protocol"]["message"]
         resume = json.loads(re.search(r"\{[^{}]+\}", message)[0])
         assert resume["task_id"] == task and resume["wait_id"] == wait_id
-        assert "not available" in await call(
-            "task_app", {**view, "action": "prepare", "wait_id": wait_id}, error=True
-        )
+        repeated = await call("task_app", {**view, "action": "prepare_manual", "wait_id": wait_id})
+        assert repeated["control"]["duplicate"] and "app_protocol" not in repeated["control"]
         # The model may consume before the Host acknowledgement returns.
         assert (await call("task_resume", resume))["already_consumed"] is False
         assert (await call("task_resume", resume))["already_consumed"] is True
@@ -108,7 +108,7 @@ async def test_task_view_replacement_restart_and_uncertain_delivery(harness):
     wait = store.arm(task, [], "durable-wait")
     store.refresh(wait["id"], wait["jobs"], [], True)
     prepared = store.action(
-        task, "2" * 32, second["generation"], "window-one", "prepare", wait["id"]
+        task, "2" * 32, second["generation"], "window-one", "prepare_manual", wait["id"]
     )
     assert "app_protocol" in prepared
     restored = Continuations(service.store)
@@ -211,7 +211,7 @@ async def test_retired_view_recovery_preserves_uncertain_notice_and_consumes_onc
     wait = continuation.arm(task, [], "original-wait")
     continuation.refresh(wait["id"], wait["jobs"], [], True)
     prepared = continuation.action(
-        task, "2" * 32, second["generation"], "window", "prepare", wait["id"]
+        task, "2" * 32, second["generation"], "window", "prepare_manual", wait["id"]
     )
     resume = json.loads(re.search(r"\{[^{}]+\}", prepared["app_protocol"]["message"])[0])
     if state != "prepared":
@@ -227,10 +227,10 @@ async def test_retired_view_recovery_preserves_uncertain_notice_and_consumes_onc
     current = continuation.current(task)
     assert current["state"] == "unknown"
     assert current["id"] == wait["id"] and current["consume_hash"] == before["consume_hash"]
-    with pytest.raises(ValueError, match="not available"):
-        continuation.action(
-            task, "1" * 32, recovered["generation"], "window", "prepare", wait["id"]
-        )
+    repeated = continuation.action(
+        task, "1" * 32, recovered["generation"], "window", "prepare_manual", wait["id"]
+    )
+    assert repeated["duplicate"] and "app_protocol" not in repeated
     with pytest.raises(ValueError, match="unconsumed"):
         continuation.arm(task, [], "automatic-replacement")
     assert (
@@ -291,18 +291,16 @@ async def test_manual_recovery_pause_revocation_and_completion(harness):
     with pytest.raises(ValueError, match="not available"):
         store.action(task, view, generation, "window", "prepare", wait["id"])
     store.action(task, view, generation, "window", "enable")
-    prepared = store.action(task, view, generation, "window", "prepare", wait["id"])
+    prepared = store.action(task, view, generation, "window", "prepare_manual", wait["id"])
     resume = json.loads(re.search(r"\{[^{}]+\}", prepared["app_protocol"]["message"])[0])
     with pytest.raises(ValueError, match="invalid"):
         store.consume(task, wait["id"], "incorrect-token" * 4)
     store.action(task, view, generation, "window", "pause")
-    with pytest.raises(ValueError, match="paused"):
-        store.consume(task, wait["id"], resume["consume_token"])
+    # Turning off future automatic delivery leaves this manual notice consumable.
+    assert not store.consume(task, wait["id"], resume["consume_token"])["already_consumed"]
     store.action(task, view, generation, "window", "enable")
     store.action(task, view, generation, "window", "finish", wait["id"], "unknown")
-    with pytest.raises(ValueError, match="unconsumed"):
-        store.arm(task, [], "replacement")
-    replacement = store.arm(task, [], "replacement", wait["id"])
+    replacement = store.arm(task, [], "replacement")
     assert replacement["id"] != wait["id"]
     assert store.arm(task, [], "replacement", wait["id"])["id"] == replacement["id"]
     with pytest.raises(ValueError, match="invalid"):
@@ -314,7 +312,7 @@ async def test_manual_recovery_pause_revocation_and_completion(harness):
             "task_app",
             {
                 "task_id": task,
-                "action": "prepare",
+                "action": "prepare_manual",
                 "view_id": view,
                 "generation": generation,
                 "wait_id": replacement["id"],

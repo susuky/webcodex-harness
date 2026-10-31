@@ -4,6 +4,14 @@
 
 實際操作的是任務所屬 **Runner 電腦的桌面**。Server 只轉送請求與結果；ChatGPT 網頁開在哪台電腦，不會改變操作目標。例如 Server 在 Linux、Runner 在 Windows 時，工具操作 Windows 桌面。
 
+## 何時使用桌面工具
+
+有合適的 connector／API 時優先使用。需要操作網頁介面時，先使用用戶端的原生瀏覽器分頁工具：Chrome 工具可操作其可存取的已登入分頁，內建 `@Browser` 可處理一般網頁操作。若目前用戶端未提供原生瀏覽器工具，使用已安裝的 Playwright `browser-tools`，依序呼叫 `plugins_list` → `plugin_tools` → `plugin_call`；後兩者指定 `plugin=browser-tools`、`server=browser`。安裝方式見[瀏覽器操作](BROWSER_USE.md)。
+
+`browser-tools` 預設以 headless 模式在背景操作，不需要使用者切換分頁，也不移動桌面滑鼠；它使用 task 獨立狀態，不會自動沿用使用者 Chrome 的登入。
+
+`computer_*` 用於原生桌面程式、OS 對話框，以及瀏覽器工具無法完成的必要步驟。它會共用使用者的滑鼠、鍵盤與前景視窗；完成必要步驟後回到瀏覽器工具。網站或工具拒絕權限時，依拒絕原因處理，不轉用桌面工具繞過。
+
 ## 啟用
 
 Ubuntu 先安裝桌面依賴，登入 **Ubuntu on Xorg** 工作階段，並在該桌面的終端機啟動 Runner：

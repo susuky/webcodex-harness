@@ -22,7 +22,8 @@ async def test_mcp_handoff_is_explicit_and_resumes_the_same_execution_once(harne
 
         task = (await call("task_create", {"project": "local/project", "title": "Handoff"}))["id"]
         presented = await call("task_present", {"task_id": task})
-        assert presented["continuation"]["handoff"]["reason"] == "not_connected"
+        assert presented["continuation"]["controller"]["state"] == "unbound"
+        assert presented["continuation"]["auto_enabled"] is False
         view = {"task_id": task, "view_id": "1" * 32}
         bound = await call("task_app", {**view, "action": "bind"})
         view["generation"] = bound["control"]["generation"]
@@ -43,40 +44,19 @@ async def test_mcp_handoff_is_explicit_and_resumes_the_same_execution_once(harne
         async with asyncio.timeout(10):
             while job["status"] in {"queued", "running"}:
                 job = await call("job_get", {"job_id": job["job_id"], "wait_seconds": 2})
-        handoff = job["continuation"]["handoff"]
-        assert handoff["state"] == "available"
-        assert handoff["condition"] == "only_when_no_independent_work"
-        action = handoff["next_action"]
-        assert action["tool"] == "task_wait"
-        assert action["arguments"]["job_ids"] == [job["job_id"]]
-        assert job["next_action"]["tool"] == "task_wait"
-        assert job["next_action"]["arguments"] == action["arguments"]
-        assert job["next_action"]["condition"] == "only_when_no_independent_work"
-        assert job["observation_action"]["tool"] == "read_process"
-        observed = await call("job_get", {"job_id": job["job_id"]})
-        assert observed["continuation"]["handoff"]["next_action"] == action
+        assert job["next_action"]["tool"] == "read_process"
+        assert "next_action" not in job["continuation"]["handoff"]
         restored = await call("task_get", {"task_id": task})
-        assert restored["continuation"]["handoff"]["next_action"] == action
-        assert restored["progress"]["next_actions"][0]["tool"] == "task_wait"
-        assert restored["progress"]["observation_actions"][0]["tool"] == "read_process"
-        assert "yield" in restored["progress"]["next_step"]
+        assert restored["progress"]["next_actions"][0]["tool"] == "read_process"
+        assert "this turn" in restored["progress"]["next_step"]
         assert harness.app.state.service.continuations.current(task) is None
-
-        read = await call(
-            "read_process", {"task_id": task, "process_id": job["result"]["process_id"]}
-        )
-        action = read["next_action"]
-        assert action["tool"] == "task_wait"
-        assert action["arguments"]["job_ids"] == [read["job_id"]]
-        waiting = await call(action["tool"], action["arguments"])
-        assert waiting["continuation"]["handoff"]["state"] == "watching"
-        assert "report what is running and yield" in waiting["progress"]["next_step"]
-        assert "next_action" not in waiting["continuation"]["handoff"]
+        args = {"task_id": task, "job_ids": [job["job_id"]], "request_id": "watch-explicit"}
+        waiting = await call("task_wait", args)
+        assert waiting["continuation"]["wait"]["state"] == "watching"
+        assert not waiting["continuation"]["auto_enabled"]
+        assert "yield" not in waiting["progress"]["next_step"]
         wait_id = waiting["continuation"]["wait"]["id"]
-        assert (await call(action["tool"], action["arguments"]))["continuation"]["wait"][
-            "id"
-        ] == wait_id
-
+        assert (await call("task_wait", args))["continuation"]["wait"]["id"] == wait_id
         (harness.repo / "handoff-release").touch()
         deadline = time.monotonic() + 15
         while True:
@@ -85,7 +65,7 @@ async def test_mcp_handoff_is_explicit_and_resumes_the_same_execution_once(harne
                 break
             assert time.monotonic() < deadline
             await asyncio.sleep(0.1)
-        prepared = await call("task_app", {**view, "action": "prepare", "wait_id": wait_id})
+        prepared = await call("task_app", {**view, "action": "prepare_manual", "wait_id": wait_id})
         assert prepared["continuation"]["handoff"]["state"] == "prepared"
         assert "next_action" not in prepared["continuation"]["handoff"]
         message = prepared["control"]["app_protocol"]["message"]
@@ -148,16 +128,14 @@ async def test_handoff_requires_the_current_enabled_writable_view(
         service.store.db.execute("UPDATE task_controllers SET lease_until=0")
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window=window)
     handoff = result["continuation"]["handoff"]
-    expected = {
-        "state": "blocked",
-        "condition": "only_when_no_independent_work",
-        "reason": reason,
-    }
-    if reason == "expired":
-        expected["next_action"] = {"tool": "task_present", "arguments": {"task_id": task["id"]}}
-        assert result["next_action"]["tool"] == "task_present"
-        assert result["observation_action"]["tool"] == "job_get"
-    assert handoff == expected
+    assert handoff["condition"] == "explicit_user_request"
+    assert result["next_action"]["tool"] == "job_get"
+    assert "next_action" not in handoff
+    assert result["continuation"]["auto_enabled"] is False
+    if case == "read_only":
+        assert handoff["reason"] == "read_only"
+    if case == "expired":
+        assert result["continuation"]["controller"]["state"] == "expired"
     if existing_wait:
         assert result["continuation"]["wait"] == {"id": wait["id"], "state": "watching"}
         assert service.continuations.current(task["id"])["state"] == "watching"
@@ -172,7 +150,9 @@ async def test_handoff_never_silently_discards_waiting_jobs(waiting_service, cou
         service.store.enqueue(task, "workspace_info", {}, str(index), 200)
     result = await service.call("owner", "task_get", {"task_id": task["id"]}, window="window")
     handoff = result["continuation"]["handoff"]
-    assert handoff["state"] == "blocked" and handoff["reason"] == reason
+    assert len(result["progress"]["pending_jobs"]) == min(count, 100)
+    assert result["progress"]["pending_jobs_truncated"] is (count > 100)
+    assert all(a["tool"] == "job_get" for a in result["progress"]["next_actions"])
     assert "next_action" not in handoff
     assert service.continuations.current(task["id"]) is None
 
@@ -202,7 +182,11 @@ async def test_handoff_includes_running_processes_older_than_the_visible_history
             running_job = job["job_id"]
     result = await service.call("owner", "task_get", {"task_id": task["id"]}, window="window")
     assert all(p["process_id"] != "process-0" for p in result["progress"]["process_observations"])
-    assert result["continuation"]["handoff"]["next_action"]["arguments"]["job_ids"] == [running_job]
+    assert result["progress"]["state"] == "observing"
+    assert any(
+        a["arguments"].get("process_id") == "process-0" for a in result["progress"]["next_actions"]
+    )
+    assert service.store.job(running_job, "owner")["result"]["status"] == "running"
 
 
 @pytest.mark.parametrize("state", ["prepared", "accepted", "unknown"])
@@ -214,11 +198,10 @@ async def test_handoff_never_replaces_an_uncertain_delivery(waiting_service, sta
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
     assert result["continuation"]["handoff"] == {
         "state": state,
-        "condition": "only_when_no_independent_work",
+        "condition": "explicit_user_request",
     }
     assert service.continuations.current(task["id"])["id"] == wait["id"]
-    assert "next_action" not in result
-    assert result["observation_action"]["tool"] == "job_get"
+    assert result["next_action"]["tool"] == "job_get"
 
 
 async def test_workspace_handoff_uses_the_same_window_as_the_task(waiting_service):
@@ -226,9 +209,9 @@ async def test_workspace_handoff_uses_the_same_window_as_the_task(waiting_servic
     result = await service.call(
         "owner", "work_on_project", {"task_id": task["id"]}, window="window"
     )
-    assert result["workspace"]["continuation"]["handoff"]["state"] == "available"
-    assert result["task"]["continuation"]["handoff"]["state"] == "available"
-    assert result["workspace"]["next_action"]["tool"] == "task_wait"
+    assert result["workspace"]["continuation"]["controller"]["state"] == "owned"
+    assert result["task"]["continuation"]["controller"]["state"] == "owned"
+    assert result["workspace"]["next_action"]["tool"] == "job_get"
     assert result["workspace"]["observation_action"]["tool"] == "job_get"
     assert service.continuations.current(task["id"]) is None
 
@@ -239,26 +222,14 @@ async def test_expired_card_has_an_executable_repair_action_before_handoff(waiti
     with service.store.db:
         service.store.db.execute("UPDATE task_controllers SET lease_until=0")
     observed = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
-    assert observed["next_action"] == {
-        "tool": "task_present",
-        "arguments": {"task_id": task["id"]},
-        "condition": "only_when_no_independent_work",
-    }
+    assert observed["next_action"]["tool"] == "job_get"
+    assert observed["continuation"]["controller"]["state"] == "expired"
     assert service.continuations.current(task["id"]) is None
     service.continuations.bind(task["id"], "2" * 32, "window")
     observed = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
-    action = observed["next_action"]
-    assert action["tool"] == "task_wait"
-    waiting = await service.call("owner", action["tool"], action["arguments"], window="window")
-    assert waiting["continuation"]["wait"]["state"] == "watching"
-    observed = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
-    assert "next_action" not in observed
-    assert observed["observation_action"]["arguments"]["job_id"] == job["job_id"]
-    progress = (await service.call("owner", "task_get", {"task_id": task["id"]}, window="window"))[
-        "progress"
-    ]
-    assert progress["next_actions"] == []
-    assert progress["observation_actions"]
+    assert observed["next_action"]["tool"] == "job_get"
+    assert observed["continuation"]["controller"]["state"] == "owned"
+    assert not observed["continuation"]["auto_enabled"]
 
 
 @pytest.mark.parametrize("status", ["running", "completed"])
@@ -286,7 +257,7 @@ async def test_unread_output_keeps_its_exact_cursor_before_any_handoff(waiting_s
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
     assert result["next_action"]["tool"] == "read_process"
     assert result["next_action"]["arguments"]["cursor"] == 17
-    assert "observation_action" not in result
+    assert result["observation_action"] == result["next_action"]
     progress = (await service.call("owner", "task_get", {"task_id": task["id"]}, window="window"))[
         "progress"
     ]
@@ -336,7 +307,7 @@ async def test_completed_result_is_not_replaced_by_waiting_for_another_job(waiti
     )
     service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
-    assert result["continuation"]["handoff"]["state"] == "available"
+    assert result["continuation"]["handoff"]["state"] == "not_armed"
     assert "next_action" not in result and result["result"]["exit_code"] == 0
 
 
@@ -384,7 +355,7 @@ async def test_waiting_never_hides_new_execution_problems(waiting_service, wait_
     result = await service.call("owner", "task_get", {"task_id": task["id"]}, window="window")
     progress = result["progress"]
     assert progress["state"] == "observing"
-    assert "before yielding" in progress["next_step"]
+    assert "Inspect recent_issues" in progress["next_step"]
     assert all(action["tool"] != "task_wait" for action in progress["next_actions"])
     assert any(
         (action["tool"] == "job_get" and action["arguments"]["job_id"] == failed["job_id"])

@@ -21,6 +21,9 @@
         "browser_tabs",
         "browser_evaluate",
         "browser_take_screenshot",
+        "browser_console_messages",
+        "browser_network_requests",
+        "browser_file_upload",
         "browser_close"
       ]
     }

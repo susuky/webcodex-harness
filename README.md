@@ -19,10 +19,14 @@ WebCodex provides an interactive task card through MCP Apps. Open it with `task_
 
 ![WebCodex task card in ChatGPT showing task progress, changes and execution results](docs/images/chatgpt-task-card.png)
 
+操作示範（測試資料）。
+
 - Follow task status, work steps and connection state.
 - Inspect the project's current uncommitted changes and open individual file diffs.
 - View this task's recent command results, exit codes and output.
-- Pause or enable automatic continuation. When work registered with `task_wait` produces a result, the foreground card can request that the conversation continue; already running work continues while automatic continuation is paused.
+- Continue long commands in the same turn with `job_get` / `read_process`.
+- Use **Continue work** manually, or explicitly enable **Send a message when finished** with a task limit and interval. Automatic messages start off and reset on reconnect or takeover.
+- Take over a task in another conversation using its saved changes, validation, unread output and next steps.
 
 See [Task cards and continuation](docs/CHATGPT.md#任務卡片與跨回合續接) for client requirements and the continuation workflow.
 
@@ -75,21 +79,47 @@ Windows can run both Server and Runner independently. See the [Windows setup gui
 
 For an installation managed by the Windows keepalive task, run [`Start-WebCodex.ps1`](examples/windows/Start-WebCodex.ps1) to start the services using the saved configuration and key.
 
-子代理由 ChatGPT／MCP 用戶端原生協調；WebCodex 提供檔案、命令與桌面工具。[子代理分工](docs/SUBAGENTS.md)說明工具使用與舊版遷移。
+子代理由 ChatGPT／MCP 用戶端原生協調；WebCodex 提供檔案、命令與桌面工具。所有對話都禁止經由 WebCodex 啟動 Codex／Work worker，沒有可重新開啟的設定。[子代理分工](docs/SUBAGENTS.md)說明工具使用、啟動拒絕規則與舊版遷移。
 
 Browser tools use a separately installed Node.js/Chrome provider, with isolated sessions per task. Follow [Browser use](docs/BROWSER_USE.md) for setup and optional login persistence.
+
+## A complete first run
+
+After starting Server and Runner, run this from the same installation:
+
+```sh
+uv run webcodex call projects_list
+uv run python examples/same_turn_demo.py --project local/project
+```
+
+The demo creates a task, runs a four-second command once, reads its original process until it finishes, and saves the result. It prints the task ID, `demo started`, `demo finished`, and `exit_code: 0`. Open `/manage` to inspect that same task outside ChatGPT. See [the complete walkthrough](docs/DEMO.md).
+
+## Manage and maintain
+
+Open `http://127.0.0.1:8765/manage` with the client token to view Runners, tasks, live process observations, output and errors. Task state comes from the existing Server records; running processes are refreshed through `read_process`.
+
+```sh
+uv run webcodex doctor --share --output diagnostics.json
+uv run webcodex backup
+uv run webcodex update-check
+uv run webcodex retention --days 30 --max-mib 1024 --save-policy
+```
+
+Diagnostics redact private paths and exclude credentials. `update-check` lists running process and delivery IDs before a Runner restart. Retention previews finished output and attachments; add `--apply` to clean them. [Windows/Ubuntu installation, updates and recovery](docs/INSTALLATION.md) covers the full flow.
+
+Windows UI Automation and Ubuntu AT-SPI can now find controls by window, name, role or automation ID, then invoke buttons or set text. Each action resolves the current control. Setup and runnable native checks are in [Semantic desktop control](docs/SEMANTIC_DESKTOP.md).
 
 ## Permissions and limits
 
 - 已授權的專案建立、命令、Git、擴充與桌面操作會直接執行，不需逐筆核准或信任設定。設定與舊版升級方式見[授權與執行](docs/EXECUTION.md)。
-- Shells, plugins and desktop input use the Runner account's permissions, with **no OS sandbox**. Desktop access covers the shared screen, including content outside the project. Keep configuration and state private; screenshots and typed text have no automatic expiry.
+- Shells, plugins and desktop input use the Runner account's permissions, with **no OS sandbox**. Desktop access covers the shared screen, including content outside the project. Keep configuration and state private; configure output and attachment retention with `webcodex retention`; preview cleanup before applying it.
 - Ubuntu X11 control has been tested on a virtual desktop. Windows capture and input have been tested on three physical monitors, including a left-side display and mixed 150%/100% scaling. Interactive macOS validation is pending. Wayland/WSLg and locked desktops are unsupported.
 
 ## Guides
 
 Detailed guides are in Traditional Chinese:
 
-- Usage: [Operations](docs/OPERATIONS.md) · [Computer use](docs/COMPUTER_USE.md) · [Browser use](docs/BROWSER_USE.md) · [Connections](docs/CHATGPT.md) · [Extensions](docs/EXTENSIONS.md)
+- Usage: [Installation and management](docs/INSTALLATION.md) · [Demo](docs/DEMO.md) · [Operations](docs/OPERATIONS.md) · [Computer use](docs/COMPUTER_USE.md) · [Browser use](docs/BROWSER_USE.md) · [Connections](docs/CHATGPT.md) · [Extensions](docs/EXTENSIONS.md)
 - Project: [Architecture](docs/ARCHITECTURE.md) · [Platform validation](docs/PLATFORMS.md) · [Feature roadmap](docs/ROADMAP.md)
 - Development: [Contributing and tests](CONTRIBUTING.md) · [Security reporting](.github/SECURITY.md) · [Release readiness](docs/RELEASING.md)
 

@@ -19,6 +19,8 @@ def test_distribution_contains_sources_and_excludes_private_files():
             with zipfile.ZipFile(path) as archive:
                 names = archive.namelist()
             assert "webcodex/task_app.html" in names
+            assert "webcodex/management.html" in names
+            assert "webcodex/semantic_windows.ps1" in names
         else:
             with tarfile.open(path) as archive:
                 names = [member.name for member in archive.getmembers()]

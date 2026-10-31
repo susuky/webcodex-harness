@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebCodex 管理</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f6f8;--panel:#fff;--text:#18212c;--muted:#647184;--line:#dce2e8;--accent:#096c77;--bad:#b12b36}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}header,main{max-width:1180px;margin:auto;padding:22px}header{display:flex;gap:18px;align-items:center;border-bottom:1px solid var(--line)}h1{font-size:23px;margin:0}h2{font-size:18px;margin:0 0 14px}button,input{font:inherit}button{cursor:pointer;background:var(--panel);color:var(--text);border:1px solid var(--line);padding:8px 14px;border-radius:7px}button:hover,button[aria-pressed=true]{border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}input{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:9px;max-width:100%}#auth{max-width:440px;margin:7vh auto;padding:25px;background:var(--panel);border:1px solid var(--line);border-radius:12px}#auth label{display:block;margin-bottom:8px}#token{width:100%;margin-bottom:14px}#toolbar{margin-left:auto;display:flex;gap:10px;align-items:center}.muted{color:var(--muted);font-size:13px}#error{color:var(--bad);white-space:pre-wrap}#runners{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}.runner{border:1px solid var(--line);border-radius:8px;padding:10px 14px;background:var(--panel)}.online{color:var(--accent)}.offline{color:var(--bad)}#work{display:grid;grid-template-columns:minmax(320px,1fr) minmax(0,1.2fr);gap:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}#tasks{display:flex;flex-direction:column}.task{border:0;border-bottom:1px solid var(--line);border-radius:0;text-align:left;padding:15px 17px}.task strong{display:block;font-weight:600}.taskmeta{display:flex;gap:12px;justify-content:space-between;margin-top:5px}.task.selected{background:color-mix(in srgb,var(--accent) 10%,var(--panel))}#detail{padding:19px;min-height:250px;max-height:78vh;overflow:auto}pre{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:12px;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.kv{display:grid;grid-template-columns:110px 1fr;gap:7px;margin:16px 0}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}.process{border-top:1px solid var(--line);padding-top:14px;margin-top:16px}.process h3{font:600 13px ui-monospace,monospace;overflow-wrap:anywhere}.badge{font-size:12px;border:1px solid var(--line);border-radius:4px;padding:2px 5px}.hidden,[hidden]{display:none!important}#more{width:100%;border:0}#query{width:100%;margin-bottom:12px}@media(prefers-color-scheme:dark){:root{--bg:#10151c;--panel:#18212b;--text:#e8edf2;--muted:#9aaabd;--line:#2d3b4a;--accent:#63cbd2;--bad:#ff8b96}}@media(max-width:760px){header,main{padding:15px}header{flex-wrap:wrap}#work{grid-template-columns:1fr}#detail{max-height:none}#toolbar{margin-left:0}h1{font-size:20px}}
+</style>
+<header><h1>WebCodex</h1><span class="muted">管理</span><div id="toolbar" hidden><span id="updated" class="muted"></span><button id="refresh">重新整理</button><button id="logout">登出</button></div></header>
+<main><div id="auth"><label for="token">用戶端 Token</label><input id="token" type="password" autocomplete="off" spellcheck="false"><button id="login">連線</button></div><p id="error" role="alert"></p><div id="dashboard" hidden><div id="runners"></div><div id="work"><section><input id="query" aria-label="搜尋任務" placeholder="搜尋任務"><div class="panel"><div id="tasks"></div><button id="more" hidden>載入更多</button></div></section><section id="detail" class="panel"><h2>選擇任務</h2></section></div></div></main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let token = '', selected = null, tasks = [], runners = [], currentDetail = null;
+  let nextOffset = null, busy = null, timer = null, sessionVersion = 0, connectionStale = false, paging = false;
+  const stateNames = {ready:'待處理',running:'執行中',waiting:'等待中',completed:'已完成',failed:'失敗',unknown:'狀態未知',queued:'排隊中',active:'處理中',interrupted:'已中斷',cancelled:'已取消',timed_out:'逾時',runner_offline:'Runner 離線',observing:'背景工作執行中',waiting_runner:'Runner 離線',waiting_operator:'等待操作員',needs_attention:'有結果需要處理',project_changed:'專案位置已變更'};
+  const label = value => stateNames[value] || value || '—';
+  const stamp = value => value ? new Date(value * 1000).toLocaleString() : '—';
+  const node = (tag, text, cls) => {const e=document.createElement(tag); if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
+  function checkSession(version) {if(version!==sessionVersion || !token){const error=new Error('Session changed');error.staleSession=true;throw error;}}
+  async function api(path, body, version=sessionVersion) {
+    checkSession(version);
+    const response = await fetch('/api/manage/' + path, {method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),cache:'no-store'});
+    const data=await response.json();checkSession(version);
+    if(!response.ok)throw new Error(response.status===401?'Token 無效或已撤銷。':data.error||'讀取失敗');return data;
+  }
+  function renderRunners() {
+    $('runners').replaceChildren();
+    for(const r of runners){const e=node('div',undefined,'runner');e.append(node('strong',r.id+' · '+(connectionStale?'連線狀態待更新':r.online?'在線':'離線'),connectionStale?'muted':r.online?'online':'offline'),node('div',(connectionStale?'舊紀錄 · ':'')+stamp(r.last_seen),'muted'));$('runners').append(e);}
+  }
+  function renderTasks() {
+    $('tasks').replaceChildren();const q=$('query').value.toLowerCase();
+    const visible=tasks.filter(t=>(t.title+' '+t.project+' '+t.id).toLowerCase().includes(q));
+    if(!visible.length)$('tasks').append(node('p','沒有符合的任務','muted'));
+    for(const t of visible){
+      const b=node('button',undefined,'task'+(selected===t.id?' selected':''));b.append(node('strong',t.title));
+      const meta=node('div',undefined,'taskmeta muted'),running=t.processes.filter(p=>p.status==='running').length;
+      meta.append(node('span',t.runner+'/'+t.project),node('span',(t.stale||connectionStale?'舊紀錄 · ':'')+(running?running+' 個程序執行中':label(t.state))));
+      b.append(meta);b.addEventListener('click',()=>select(t.id));$('tasks').append(b);
+    }
+    $('more').hidden=nextOffset===null;
+  }
+  function renderDetails(t) {
+    if(!t || t.id!==selected)return;
+    const d=$('detail');d.replaceChildren(node('h2',t.title));
+    if(connectionStale)d.append(node('span','舊紀錄 · 管理頁連線中斷','badge'));
+    else if(t.stale)d.append(node('span','舊紀錄 · Runner 離線','badge'));
+    const dl=node('dl',undefined,'kv'),activity=t.liveness.conversation||{};
+    for(const [k,v]of[['工作狀態',label(t.state)],['Runner',t.runner+' · '+(connectionStale?'連線狀態待更新':t.runner_online?'在線':'離線')],['上次工具活動',stamp(activity.finished_at||activity.started_at)],['上次觀察',stamp(t.observed_at)]])dl.append(node('dt',k),node('dd',v));
+    d.append(dl);if(t.summary)d.append(node('p',t.summary));
+    for(const p of t.outputs){const section=node('section',undefined,'process');section.append(node('h3',p.process_id),node('span',label(p.status)+(p.exit_code!==null?' · exit '+p.exit_code:''),'badge'),node('p',stamp(p.observed_at),'muted'),node('pre',p.output||'尚無輸出'));d.append(section);}
+    for(const e of t.errors){const section=node('section',undefined,'process');section.append(node('h3',e.tool+' · '+label(e.status)),node('pre',JSON.stringify(e.result,null,2)));d.append(section);}
+  }
+  function failed(error,version) {
+    if(error.staleSession || version!==sessionVersion || !token)return;
+    connectionStale=true;renderRunners();renderTasks();renderDetails(currentDetail);
+    $('error').textContent=error.message==='Failed to fetch'?'管理頁連線中斷。顯示上次紀錄。':error.message;
+  }
+  async function select(id){selected=id;renderTasks();const version=sessionVersion;try{await api('refresh',{task_id:id},version);await details(version);}catch(error){failed(error,version);}}
+  async function details(version){
+    if(!selected)return;const id=selected,t=await api('tasks/'+encodeURIComponent(id),undefined,version);
+    if(t.id!==selected)return;currentDetail=t;renderDetails(t);
+  }
+  async function refresh(){
+    const version=sessionVersion;if(!token||busy===version||paging)return;busy=version;$('refresh').disabled=true;
+    const loadedCount=tasks.length;
+    try{
+      const oldest=t=>Math.min(...t.processes.filter(p=>p.status==='running').map(p=>p.observed_at||0));
+      const running=tasks.filter(t=>t.runner_online&&t.processes.some(p=>p.status==='running')).sort((a,b)=>oldest(a)-oldest(b));
+      const ids=[...new Set([...(selected?[selected]:[]),...running.map(t=>t.id)])].slice(0,100);
+      await api('refresh',tasks.length?{task_ids:ids}:{},version);
+      const data=await api('state',undefined,version),loaded=data.tasks;let offset=data.next_offset;
+      while(offset!==null&&loaded.length<loadedCount){
+        const page=await api('state?offset='+offset,undefined,version),known=new Set(loaded.map(t=>t.id));
+        loaded.push(...page.tasks.filter(t=>!known.has(t.id)));offset=page.next_offset;
+      }
+      tasks=loaded;runners=data.runners;nextOffset=offset;connectionStale=false;
+      renderRunners();renderTasks();await details(version);checkSession(version);$('updated').textContent=stamp(data.observed_at);$('error').textContent='';
+    }catch(error){failed(error,version);}
+    finally{if(version===sessionVersion){busy=null;$('refresh').disabled=false;}}
+  }
+  async function login(){
+    const value=$('token').value.trim();if(!value)return;const version=++sessionVersion;token=value;$('login').disabled=true;
+    try{
+      await api('state',undefined,version);$('token').value='';$('auth').hidden=true;$('dashboard').hidden=false;$('toolbar').hidden=false;
+      await refresh();checkSession(version);clearInterval(timer);timer=setInterval(()=>{if(!document.hidden)refresh();},10000);
+    }catch(error){if(version===sessionVersion){token='';$('error').textContent=error.message;}}
+    finally{if(version===sessionVersion)$('login').disabled=false;}
+  }
+  function logout(){
+    sessionVersion++;token='';clearInterval(timer);busy=null;paging=false;tasks=[];runners=[];selected=null;currentDetail=null;connectionStale=false;nextOffset=null;
+    for(const id of ['tasks','detail','runners'])$(id).replaceChildren();
+    $('token').value='';$('query').value='';$('updated').textContent='';$('dashboard').hidden=true;$('toolbar').hidden=true;$('auth').hidden=false;$('error').textContent='';$('login').disabled=false;$('refresh').disabled=false;
+  }
+  $('login').addEventListener('click',login);$('token').addEventListener('keydown',e=>{if(e.key==='Enter'&&!$('login').disabled)login();});
+  $('refresh').addEventListener('click',refresh);$('logout').addEventListener('click',logout);$('query').addEventListener('input',renderTasks);
+  $('more').addEventListener('click',async()=>{
+    if(nextOffset===null||$('more').disabled||busy===sessionVersion)return;const version=sessionVersion;paging=true;$('more').disabled=true;
+    try{const data=await api('state?offset='+nextOffset,undefined,version);const known=new Set(tasks.map(t=>t.id));tasks.push(...data.tasks.filter(t=>!known.has(t.id)));nextOffset=data.next_offset;renderTasks();}
+    catch(error){failed(error,version);}finally{if(version===sessionVersion){paging=false;$('more').disabled=false;}}
+  });
+})();
+</script>
+</html>

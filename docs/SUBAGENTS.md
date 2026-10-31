@@ -2,11 +2,19 @@
 
 ChatGPT 的原生子代理由 ChatGPT 協調，WebCodex 提供專案檔案、命令、Git、技能與桌面操作工具。Runner 的角色是執行工具及回傳結果。
 
+所有 ChatGPT／MCP 對話都禁止透過 WebCodex 啟動 Codex／Work worker。這項規則也適用於 shell、持續程序輸入、技能腳本、外掛、MCP provider、SDK 與 HTTP API，沒有自動模式、選用設定或替代後端可以開啟它。
+
 ## 使用方式
 
 在支援原生子代理的 ChatGPT 對話中，直接要求把獨立工作分給子代理，由主對話收集結果與整合。是否可用及思考程度設定依 ChatGPT 的帳號與模型而定；官方說明見 [Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)。
 
 操作專案時仍使用相同的 WebCodex 專案與任務識別。並行寫入需分配不同檔案，命令的執行狀態由 `job_get`、`read_process` 觀察，避免重複執行。
+
+## 啟動拒絕與測試
+
+Runner 在命令與外掛 provider 的啟動邊界拒絕已知 Codex／Work 啟動命令；shell 輸入、技能腳本及 provider 工具也套用檢查。拒絕發生在啟動前，工具會回報明確原因。回歸測試使用假的可執行檔與 provider，確認拒絕時沒有啟動任何外部代理。
+
+WebCodex 的一般程式執行仍使用 Runner 作業系統帳號權限。這些檢查防止已知入口誤派，不是任意程式的作業系統沙箱；若要限制受執行程式的全部後代與網路存取，需在 Runner 帳號或容器另外設定執行及網路政策。
 
 ## 從舊版升級
 

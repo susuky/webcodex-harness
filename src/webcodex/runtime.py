@@ -19,6 +19,7 @@ from pydantic import Field
 from .catalog import OutcomeUnknown, tool
 from .computer import Computer
 from .config import RunnerConfig
+from .execution_policy import check_worker_script
 from .extensions import Extensions
 from .filesystem import MAX_FILE, Workspace, sha256
 from .processes import Processes, environment, executable
@@ -500,7 +501,7 @@ class Runtime:
         timeout_seconds: Annotated[int, Field(ge=1, le=86400)] = 3600,
         yield_time_ms: Annotated[int, Field(ge=0, le=2000)] = 500,
     ) -> dict:
-        """Start a real command, using exactly one of argv or command. command uses PowerShell on Windows and bash on Linux. Prefer argv for exact executable arguments. Returns a persistent process_id and output cursor; continue with read_process/write_stdin, never restart to obtain output. tty allocates ConPTY on Windows or PTY on Linux. Execute permission grants the Runner OS user's access; cwd is not an OS sandbox. Environment changes persist only inside the same live process."""
+        """Start a real command, using exactly one of argv or command. command uses PowerShell on Windows and bash on Linux. Prefer argv for exact executable arguments. Returns a persistent process_id and output cursor; continue with read_process/write_stdin, never restart to obtain output. Starting Codex/Work agents is prohibited, including through wrappers, scripts, SDKs and APIs. tty allocates ConPTY on Windows or PTY on Linux. Execute permission grants the Runner OS user's access; cwd is not an OS sandbox. Environment changes persist only inside the same live process."""
         if (command is None) == (argv is None):
             raise ValueError("Supply exactly one of command or argv")
         if argv is not None:
@@ -547,7 +548,7 @@ class Runtime:
     async def write_stdin(
         self, process_id: str, chars: Annotated[str, Field(max_length=4096)] = "", eof: bool = False
     ) -> dict:
-        """Write input to this task's live process. For a PTY, a single Ctrl-C interrupts the process group. eof closes pipe input or sends Ctrl-D to a PTY. This can execute further commands and is subject to execution policy."""
+        """Write input to this task's live process. For a PTY, a single Ctrl-C interrupts the process group. eof closes pipe input or sends Ctrl-D to a PTY. This can execute further commands and is subject to execution policy. Never use process input to start Codex/Work agents."""
         await self.processes.write(process_id, self.task_id, chars, eof)
         return {"process_id": process_id, "input_sent": True}
 
@@ -600,7 +601,7 @@ class Runtime:
 
     @tool("computer_observe")
     async def computer_status(self) -> dict:
-        """Check this Runner's desktop backend and dimensions without capturing pixels. Windows also lists monitors with id, primary, physical-pixel x/y/width/height and dpi_x/dpi_y, plus desktop_monitor_id for a virtual-desktop screenshot. Requires computer_observe; supports Ubuntu X11, macOS and native Windows. available reports backend detection; use computer_screenshot to verify capture."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Check this Runner's desktop backend and dimensions without capturing pixels. Windows also lists monitors with id, primary, physical-pixel x/y/width/height and dpi_x/dpi_y, plus desktop_monitor_id for a virtual-desktop screenshot. Requires computer_observe; supports Ubuntu X11, macOS and native Windows. available reports backend detection; use computer_screenshot to verify capture."""
         return await asyncio.to_thread(self.computer.status)
 
     @tool("computer_observe")
@@ -609,14 +610,14 @@ class Runtime:
         max_dimension: Annotated[int, Field(ge=320, le=2560)] = 1600,
         monitor_id: Annotated[str, Field(min_length=1, max_length=256)] | None = None,
     ) -> dict:
-        """Capture a desktop monitor as a native MCP JPEG (at most 1 MiB). On Windows choose monitor_id from computer_status; omission selects the primary monitor. Use desktop_monitor_id (desktop) to capture all monitors for cross-monitor dragging; input endpoints must land on connected monitors, not desktop gaps. Returns monitor_id, origin_x/origin_y and a snapshot_id valid for one input within 5 minutes. Use nonnegative coordinates relative to this image's source_width/source_height for input; do not add the origin. Rescale thumbnail coordinates to source dimensions. Monitor layout or DPI changes and newer screenshots invalidate the snapshot. macOS uses logical display points, with Retina capture normalized to that space. Images can show project-external data and are retained in private job journals."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Capture a desktop monitor as a native MCP JPEG (at most 1 MiB). On Windows choose monitor_id from computer_status; omission selects the primary monitor. Use desktop_monitor_id (desktop) to capture all monitors for cross-monitor dragging; input endpoints must land on connected monitors, not desktop gaps. Returns monitor_id, origin_x/origin_y and a snapshot_id valid for one input within 5 minutes. Use nonnegative coordinates relative to this image's source_width/source_height for input; do not add the origin. Rescale thumbnail coordinates to source dimensions. Monitor layout or DPI changes and newer screenshots invalidate the snapshot. macOS uses logical display points, with Retina capture normalized to that space. Images can show project-external data and are retained in private job journals."""
         return await asyncio.to_thread(
             self.computer.screenshot, self.task_id, max_dimension, monitor_id
         )
 
     @tool("computer_control")
     async def computer_move(self, snapshot_id: str, x: Offset, y: Offset) -> dict:
-        """Move the pointer using nonnegative coordinates relative to the selected monitor's source_width/source_height from a fresh screenshot; do not add origin_x/origin_y. macOS uses logical display points. Consumes snapshot_id. The desktop is shared with the human and other applications."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Move the shared desktop pointer using nonnegative coordinates relative to the selected monitor's source_width/source_height from a fresh screenshot; do not add origin_x/origin_y. macOS uses logical display points. Consumes snapshot_id. The desktop is shared with the human and other applications."""
         return await asyncio.to_thread(
             self.computer.perform, self.task_id, snapshot_id, "move", x=x, y=y
         )
@@ -630,7 +631,7 @@ class Runtime:
         button: Literal["left", "right", "middle"] = "left",
         clicks: Annotated[int, Field(ge=1, le=2)] = 1,
     ) -> dict:
-        """Click at source-pixel coordinates relative to the monitor in the screenshot; do not add its origin. clicks=2 double-clicks. Consumes a fresh snapshot_id from this task. Requires computer_control. Success means input was sent; take a new screenshot to verify the application's result."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Click on the shared desktop at source-pixel coordinates relative to the monitor in the screenshot; do not add its origin. clicks=2 double-clicks. Consumes a fresh snapshot_id from this task. Requires computer_control. Success means input was sent; take a new screenshot to verify the application's result."""
         return await asyncio.to_thread(
             self.computer.perform,
             self.task_id,
@@ -650,7 +651,7 @@ class Runtime:
         y: Offset,
         clicks: Annotated[int, Field(ge=-100, le=100)],
     ) -> dict:
-        """Move to source-pixel coordinates relative to the monitor in the screenshot and scroll vertically; positive clicks scroll up, negative down. Do not add the monitor origin. Consumes a fresh snapshot_id from this task. Scroll units depend on the application/platform."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Move the shared desktop pointer to source-pixel coordinates relative to the monitor in the screenshot and scroll vertically; positive clicks scroll up, negative down. Do not add the monitor origin. Consumes a fresh snapshot_id from this task. Scroll units depend on the application/platform."""
         if clicks == 0:
             raise ValueError("Scroll clicks must be nonzero")
         return await asyncio.to_thread(
@@ -667,7 +668,7 @@ class Runtime:
         y: Offset,
         duration: Annotated[float, Field(ge=0.2, le=3, allow_inf_nan=False)] = 0.5,
     ) -> dict:
-        """Drag with the left button between two source-pixel coordinates relative to the screenshot, then release it. For cross-monitor dragging on Windows first capture monitor_id=desktop and use that image's physical source pixels for both endpoints. Do not add the screenshot origin; endpoints must be on connected monitors. Consumes a fresh snapshot_id from this task. Re-observe after the drag to verify the result."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Drag on the shared desktop with the left button between two source-pixel coordinates relative to the screenshot, then release it. For cross-monitor dragging on Windows first capture monitor_id=desktop and use that image's physical source pixels for both endpoints. Do not add the screenshot origin; endpoints must be on connected monitors. Consumes a fresh snapshot_id from this task. Re-observe after the drag to verify the result."""
         return await asyncio.to_thread(
             self.computer.perform,
             self.task_id,
@@ -689,7 +690,7 @@ class Runtime:
             Field(min_length=1, max_length=4),
         ],
     ) -> dict:
-        """Press one key or a chord in the currently focused application, e.g. ['enter'] or ['ctrl','a'], then release in reverse order. Use lowercase PyAutoGUI key names. Consumes a fresh snapshot_id from this task; input can affect any application."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Press one key or a chord in the shared desktop's currently focused application, e.g. ['enter'] or ['ctrl','a'], then release in reverse order. Use lowercase PyAutoGUI key names. Consumes a fresh snapshot_id from this task; input can affect any application."""
         return await asyncio.to_thread(
             self.computer.perform, self.task_id, snapshot_id, "key", keys=keys
         )
@@ -698,9 +699,49 @@ class Runtime:
     async def computer_type(
         self, snapshot_id: str, text: Annotated[str, Field(min_length=1, max_length=4096)]
     ) -> dict:
-        """Type printable Unicode into the focused application without using the clipboard. Ubuntu uses xdotool, macOS Quartz events, and Windows Unicode SendInput. Use computer_key separately for Enter/Tab. Consumes a fresh snapshot_id from this task. Text is retained in private job arguments; do not use for secrets. Confirm the resulting text in the application."""
+        """Prefer a suitable connector/API. For web UI, use native browser tab tools, then installed browser-tools via plugins_list/plugin_tools/plugin_call. Use desktop tools only for native apps, OS dialogs or necessary steps unsupported by browser tools; return to browser tools afterward. Never bypass browser/site permission denials by switching to desktop tools. Type printable Unicode into the shared desktop's focused application without using the clipboard. Ubuntu uses xdotool, macOS Quartz events, and Windows Unicode SendInput. Use computer_key separately for Enter/Tab. Consumes a fresh snapshot_id from this task. Text is retained in private job arguments; do not use for secrets. Confirm the resulting text in the application."""
         return await asyncio.to_thread(
             self.computer.perform, self.task_id, snapshot_id, "text", text=text
+        )
+
+    @tool("computer_observe")
+    async def computer_ui_observe(
+        self,
+        action: Literal["windows", "tree", "find"],
+        window: dict[str, str | int] | None = None,
+        selector: dict[str, str | int] | None = None,
+        max_depth: Annotated[int, Field(ge=1, le=20)] = 6,
+        max_nodes: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict:
+        """Observe native Windows UI Automation or Ubuntu AT-SPI controls. List windows, inspect a bounded accessibility tree, or find exact control names/roles/automation IDs. Use a returned window identity or a window selector with name/pid/window_id. Control selectors match name/role/automation_id literally. Password values are masked. For website work prefer the existing browser tools. Use these semantic selectors for native controls across window movement, resizing, monitors and DPI changes."""
+        return await asyncio.to_thread(
+            self.computer.observe_ui,
+            action,
+            window=window,
+            selector=selector,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+        )
+
+    @tool("computer_control")
+    async def computer_ui_control(
+        self,
+        action: Literal["invoke", "focus", "set_text"],
+        window: dict[str, str | int],
+        selector: dict[str, str | int],
+        text: Annotated[str, Field(max_length=4096)] | None = None,
+        max_depth: Annotated[int, Field(ge=1, le=20)] = 12,
+        max_nodes: Annotated[int, Field(ge=1, le=1000)] = 500,
+    ) -> dict:
+        """Resolve a native Windows/Ubuntu control again, then invoke, focus or set its text using the platform accessibility API. Pass the exact window and control selectors from computer_ui_observe. Ambiguous selectors return candidates instead of choosing a control. Re-observe after the action. An unknown native result requires observation before retrying. Existing screenshot/coordinate tools remain available for controls without accessibility support. Text is retained in private job arguments; use an authorized credential entry flow for secrets."""
+        return await asyncio.to_thread(
+            self.computer.control_ui,
+            action,
+            window=window,
+            selector=selector,
+            text=text,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
         )
 
     @tool("execute")
@@ -747,11 +788,12 @@ class Runtime:
         args: Argv | None = None,
         interpreter: Literal["python3", "bash", "node"] = "python3",
     ) -> dict:
-        """Run an explicitly selected script from a skill bundle in this task's project. Read the skill/script first. This requires execute permission and returns a process_id for observation."""
+        """Run an explicitly selected script from a skill bundle in this task's project. Read the skill/script first. Scripts must not launch Codex/Work agents through subprocesses, SDKs, APIs or another provider. This requires execute permission and returns a process_id for observation."""
         root = self.extensions.skill_root(self.workspace, name)
         path = root.path(script)
         if not path.is_file():
             raise ValueError("Skill script does not exist")
+        check_worker_script(root.read(script, MAX_FILE).decode("utf-8"), interpreter)
         process = await self.processes.start(
             self.job_id,
             self.task_id,
@@ -781,18 +823,18 @@ class Runtime:
 
     @tool()
     async def plugins_list(self) -> dict:
-        """List installed plugins, pinned origins and MCP provider names without starting their code."""
+        """List installed plugins, pinned origins and MCP provider names without starting their code. For web UI prefer a suitable connector/API, then the client's native browser tab tools. When native browser tools are unavailable, look for browser-tools here, then use plugin_tools and plugin_call with plugin=browser-tools and server=browser before computer_* tools. Respect browser/site permission denials."""
         return {"plugins": self.extensions.plugins()}
 
     @tool("execute")
     async def plugin_tools(self, plugin: str, server: str, cursor: str | None = None) -> dict:
-        """Start/connect an installed plugin's MCP provider and discover its actual tools and schemas. This executes provider code and requires execute permission. The provider session is retained per task; use nextCursor for pagination."""
+        """Start/connect an installed plugin's MCP provider and discover its actual tools and schemas. Codex/Work worker providers are prohibited. For web UI without suitable connector/API or native browser tools, use plugin=browser-tools and server=browser after plugins_list confirms installation. Its default headless browser runs in the background with independent task state and does not inherit the user's Chrome login. This executes provider code and requires execute permission. The provider session is retained per task; use nextCursor for pagination."""
         provider = await self.extensions.provider(self.task_id, self.workspace, plugin, server)
         return await provider.request("list_tools", cursor=cursor)
 
     @tool("execute")
     async def plugin_call(self, plugin: str, server: str, tool_name: str, arguments: dict) -> dict:
-        """Call a tool discovered by plugin_tools on this task's persistent MCP provider. Native text/image/resource results and provider errors are preserved. Do not automatically retry modifying provider calls after a timeout."""
+        """Call a tool discovered by plugin_tools on this task's persistent MCP provider. Never delegate to Codex/Work agents through a provider. For browser-tools keep headless background operation and use browser_snapshot plus browser element/tab tools before computer_*; its independent browser state does not inherit the user's Chrome login. Use desktop tools only for necessary unsupported steps, then return to browser tools; never switch tools to bypass browser/site permission denials. Native text/image/resource results and provider errors are preserved. Do not automatically retry modifying provider calls after a timeout."""
         provider = await self.extensions.provider(self.task_id, self.workspace, plugin, server)
         result = await provider.request("call_tool", name=tool_name, arguments=arguments)
         if len(json.dumps(result, ensure_ascii=False).encode()) > 2 * 1024 * 1024:

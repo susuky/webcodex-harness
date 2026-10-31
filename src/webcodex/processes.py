@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .catalog import OutcomeUnknown
 from .config import RunnerConfig, private_dir
+from .execution_policy import check_worker_command, check_worker_input
 
 if os.name != "nt":
     import fcntl
@@ -118,6 +119,7 @@ class Processes:
                 raise ValueError("Too many running processes; cancel or wait for one first")
             if not argv or not argv[0] or any("\x00" in arg for arg in argv):
                 raise ValueError("A nonempty command without NUL characters is required")
+            check_worker_command(argv, cwd=cwd)
             proc = master = slave = job = terminal = gate = log = None
             try:
                 log = (self.directory / (process_id + ".log")).open("wb")
@@ -400,10 +402,13 @@ class Processes:
                 await asyncio.wait_for(asyncio.shield(state["monitor"]), seconds)
 
     async def write(self, process_id: str, task_id: str, chars: str, eof: bool):
-        self.row(process_id, task_id)
+        row = self.row(process_id, task_id)
         state = self.active.get(process_id)
         if not state:
             raise ValueError("Process is no longer running")
+        state["policy_input"] = check_worker_input(
+            json.loads(row["command"]), state.get("policy_input", ""), chars
+        )
         if state["terminal"] is not None:
             data = chars.replace("\r\n", "\n").replace("\n", "\r") + ("\x1a\r" if eof else "")
             state["terminal"].write(data)

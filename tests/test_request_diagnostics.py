@@ -202,7 +202,7 @@ async def test_finish_delivery_diagnostics_are_logged_without_notification_token
     wait = service.continuations.arm(task["id"], ["c" * 32], "diagnostic-wait")
     service.continuations.refresh(wait["id"], wait["jobs"], [], True)
     prepared = service.continuations.action(
-        task["id"], view_id, control["generation"], window, "prepare", wait["id"]
+        task["id"], view_id, control["generation"], window, "prepare_manual", wait["id"]
     )
     result = await service.traced_call(
         "owner",

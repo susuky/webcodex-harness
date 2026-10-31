@@ -88,7 +88,7 @@ Windows 11（10.0.26300）、Python 3.12.14，使用 Windows 本機程式副本�
 
 提交前以 Git 暫存內容建立獨立目錄，對該快照執行完整 pytest、Ruff 與格式檢查。
 
-子代理測試使用獨立專案與暫存 Server／Runner，透過真正 TCP MCP 執行；不修改正式專案。`WEBCODEX_TEST_SUBAGENTS=1` 明確啟用真實 CLI 與帳號用量測試，重現方式見 [子代理指南](SUBAGENTS.md)。桌面測試使用獨立 Xvfb，沒有操作使用者正在使用的桌面。
+目前已移除外部 Codex／Work worker 路徑；子代理回歸只驗證舊入口不存在及禁止啟動規則，不啟動外部代理或使用模型帳號額度。詳見[子代理指南](SUBAGENTS.md)。桌面測試使用獨立 Xvfb，沒有操作使用者正在使用的桌面。
 
 ## 2026-09-11 驗證
 

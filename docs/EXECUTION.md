@@ -27,5 +27,6 @@ WebCodex 在驗證用戶端身分、專案範圍與工具權限後直接執行�
 - 依 `next_action`／`next_actions` 觀察同一 job 或 process，不重新啟動命令。
 - 程序尚未結束時，使用 `read_process` 與回傳的 byte cursor 讀取新增輸出。
 - `status: succeeded` 表示工具成功回傳；命令結果依 `outcome`、`exit_code` 與輸出判斷。
-- 只剩等待且卡片已連線時，成功呼叫 `task_wait` 後才交接；其他工作仍可獨立進行時，繼續處理並使用觀察動作刷新原程序。
+- 長命令預設在原回合用 `job_get`／`read_process` 等待，完成後繼續。執行期間先做其他獨立工作；`task_wait` 只登記監看。
+- 自動發訊由使用者在卡片明確開啟，受每任務上限與間隔限制；重新連線與接手後回到關閉。
 - Runner 離線時保留原 job，恢復後接續。取消未開始的工作使用 `job_cancel`；停止已開始的程序使用 `cancel_process`。

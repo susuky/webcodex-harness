@@ -17,31 +17,41 @@
     @media(prefers-color-scheme:dark){:root:not([data-theme=light]){--ink:var(--color-text-primary,#edf2ee);--muted:var(--color-text-secondary,#b2beb5);--surface:var(--color-background-primary,#202422);--soft:var(--color-background-secondary,#303a33);--line:var(--color-border-tertiary,#414b44);--control-line:var(--color-border-secondary,#58625b);--accent:#a9dbba;--good:#a9dbba;--good-bg:#244632;--bad:#f0aaa2;--bad-bg:#4b2926}}
     :root[data-theme=dark]{color-scheme:dark;--ink:var(--color-text-primary,#edf2ee);--muted:var(--color-text-secondary,#b2beb5);--surface:var(--color-background-primary,#202422);--soft:var(--color-background-secondary,#303a33);--line:var(--color-border-tertiary,#414b44);--control-line:var(--color-border-secondary,#58625b);--accent:#a9dbba;--good:#a9dbba;--good-bg:#244632;--bad:#f0aaa2;--bad-bg:#4b2926}
     :root[data-theme=light]{color-scheme:light}
+    .messaging{margin:20px 0;padding-top:16px;border-top:1px solid var(--line);font-size:14px}.toggle{display:flex;align-items:center;gap:9px;min-height:40px;font-weight:600}.toggle input{width:18px;height:18px;accent-color:var(--accent)}.message-count{margin:4px 0;color:var(--muted)}#auto-count{margin-left:8px;color:var(--ink);font-variant-numeric:tabular-nums}.messaging summary,.handoff>summary{cursor:pointer;min-height:40px;padding:7px 0;font-size:14px}.message-settings{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;padding:8px 0}.message-settings label{display:flex;flex-direction:column;gap:6px}.message-settings input{width:130px;max-width:100%;padding:7px 9px;border:1px solid var(--control-line);border-radius:6px;background:var(--surface);min-height:40px}.delivery{border-top:1px solid var(--line);padding:8px 0}.delivery p{margin:4px 0}.delivery pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px}.handoff{border-top:1px solid var(--line);padding-top:8px}.handoff h3{font-size:14px;margin:12px 0 4px}.handoff p,.handoff li{font-size:14px;margin:4px 0}.handoff ul{padding-left:20px;margin:4px 0}.handoff li{display:list-item}.activity dl>div{grid-template-columns:110px minmax(0,1fr)}
     @media(max-width:600px){main{padding:18px}main>header{flex-wrap:wrap;gap:4px}.signal{padding-top:0}.review-layout{grid-template-columns:1fr;gap:16px}.file-list{max-height:180px;border-bottom:1px solid var(--line);padding-bottom:10px}button,.run summary{min-height:44px}footer{align-items:flex-start;flex-direction:column;gap:10px}.footer-actions{width:100%}.review-tabs{gap:24px}h1{font-size:18px}}
   </style>
 </head>
 <body>
 <main aria-label="任務進度">
   <header><h1 id="title">任務進度</h1><div class="signal"><span id="dot" class="dot"></span><span id="connection">卡片連線中</span></div></header>
-  <section aria-live="polite" aria-atomic="true"><p id="status">正在讀取任務</p><p id="detail">連線後會顯示目前進度。</p></section>
+  <section aria-live="polite" aria-atomic="true"><p id="status">正在讀取任務</p><p id="detail"></p></section>
   <section id="activity" class="activity" aria-label="連線與工作狀態">
     <dl>
-      <div><dt>任務工具</dt><dd id="conversation-activity">尚未取得工具活動紀錄</dd></div>
-      <div><dt>工作電腦</dt><dd><span id="runner-activity">確認中</span><span id="work-observation" class="work-observation"></span></dd></div>
-      <div id="continuation-row"><dt>自動續接</dt><dd id="continuation-state">尚未安排</dd></div>
+      <div><dt>Runner 連線</dt><dd id="runner-activity">確認中</dd></div>
+      <div><dt>工作狀態</dt><dd id="work-observation"></dd></div>
+      <div><dt>上次工具活動</dt><dd id="conversation-activity">尚無紀錄</dd></div>
+      <div><dt>卡片控制權</dt><dd><span id="controller-state">確認中</span><span id="controller-updated" class="work-observation"></span></dd></div>
     </dl>
-    <button id="check-status" type="button" disabled>檢查狀態</button>
+    <div class="footer-actions"><button id="check-status" type="button" disabled>更新狀態</button><button id="takeover" type="button" hidden>在此接手</button><button id="resume" type="button" disabled>接續工作</button></div>
   </section>
+  <section class="messaging" aria-label="接續工作設定">
+    <label class="toggle"><input id="auto-message" type="checkbox" disabled>完成後自動傳訊</label>
+    <p class="message-count">本任務自動發訊次數 <span id="auto-count">0 / 3</span></p>
+    <p id="continuation-state" class="review-state" aria-live="polite"></p>
+    <details id="message-settings"><summary>發訊設定</summary><div class="message-settings"><label>最多次數<input id="max-auto-messages" type="number" min="0" max="20" value="3" inputmode="numeric"></label><label>最短間隔（秒）<input id="min-interval" type="number" min="10" max="86400" value="60" inputmode="numeric"></label><button id="save-policy" type="button" disabled>儲存</button></div><p id="policy-error" class="review-state" role="status"></p></details>
+    <details id="delivery-history" hidden><summary>發訊紀錄</summary><div id="deliveries"></div></details>
+  </section>
+  <details id="handoff" class="handoff" hidden><summary>接棒資訊</summary><div id="handoff-content"></div></details>
   <div id="plan-progress" class="plan-progress" hidden><span id="step-summary"></span><progress id="step-progress" aria-labelledby="step-summary"></progress></div>
   <ol id="steps" aria-label="工作步驟"></ol>
   <section class="review" aria-labelledby="review-title">
     <header><h2 id="review-title">檢查成果</h2><button id="review-refresh" type="button">讀取修改與結果</button></header>
     <div class="review-tabs" role="tablist" aria-label="檢視內容"><button id="changes-tab" type="button" role="tab" aria-selected="true" aria-controls="changes">修改內容<span id="changes-count" class="count"></span></button><button id="runs-tab" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="runs">執行結果<span id="runs-count" class="count"></span></button></div>
-    <p id="review-state" class="review-state" role="status">讀取後可選擇檔案，查看修改內容與執行紀錄。</p>
-    <div id="changes" role="tabpanel" aria-labelledby="changes-tab"><p class="review-note" id="changes-note">專案目前尚未提交的變更。</p><div id="review-layout" class="review-layout"><div id="files" class="file-list" aria-label="檔案清單"></div><div id="preview" class="preview"><p>讀取後會顯示檔案差異。</p></div></div></div>
+    <p id="review-state" class="review-state" role="status"></p>
+    <div id="changes" role="tabpanel" aria-labelledby="changes-tab"><p class="review-note" id="changes-note">尚未提交的變更</p><div id="review-layout" class="review-layout"><div id="files" class="file-list" aria-label="檔案清單"></div><div id="preview" class="preview"></div></div></div>
     <div id="runs" role="tabpanel" aria-labelledby="runs-tab" hidden><p class="review-note">此任務最近的命令紀錄。</p><p id="run-summary" class="run-summary"></p><div id="executions"></div></div>
   </section>
-  <footer><span id="updated" class="updated">尚未取得進度</span><div class="footer-actions"><button id="reconnect" type="button" hidden>重新連線</button><button id="pause" type="button" hidden>暫停自動續接</button></div></footer>
+  <footer><span id="updated" class="updated">尚未取得進度</span><button id="reconnect" type="button" hidden>重新連線</button></footer>
 </main>
 <script>
 (() => {
@@ -51,21 +61,22 @@
   const attempted = new Set();
   const taskPattern = /^[0-9a-f]{32}$/;
   let sequence = 0, taskId = null, generation = null, ready = false, stopped = false;
-  let busy = false, timer = null, nextPollAt = 0, paused = false, last = null, pendingFinish = null, changingPause = false;
-  let failedPrepare = null, pollingBlocked = false;
+  let busy = false, timer = null, nextPollAt = 0, last = null, pendingFinish = null;
+  let autoConsent = false, sending = false, changingPolicy = false, manualSequence = 0, manualRequest = null, manualWaitId = null;
+  let failedPrepare = null;
   let activityReceivedAt = 0, connectionFailed = false, stateCopy = null;
-  let pauseRevision = 0;
+  let consentRevision = 0;
   let reviewVersion = 0, reviewLoaded = false, selectedPath = null, pendingReview = null;
   let reviewTimer = null, retryAt = 0, retryDelay = 15000, retryLimited = false, lastHeight = null;
   const viewId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,"0")).join("");
   const states = {
-    ready: ["準備接續工作", "目前沒有等待中的工作。"],
-    observing: ["工作進行中", ""],
+    ready: ["目前沒有執行中的工作", ""],
+    observing: ["背景工作執行中", ""],
     waiting_runner: ["工作電腦未連線", "連線恢復後會確認原工作。"],
     waiting_operator: ["等待回覆", "請先回答任務中的待確認事項。"],
-    needs_attention: ["有結果需要處理", "請在對話中接續檢查結果。"],
+    needs_attention: ["有結果需要處理", ""],
     project_changed: ["需要確認專案", "專案位置已變更，請先在對話中確認。"],
-    completed: ["任務已完成", "已保存工作摘要，下方可檢查目前的修改與執行紀錄。"],
+    completed: ["任務已完成", ""],
   };
   function notify(method, params={}) {
     if (method === "ui/notifications/size-changed") {
@@ -124,12 +135,12 @@
     throw new Error("missing-result");
   }
   async function call(action, extra={}) {
-    const revision = pauseRevision;
+    const revision = consentRevision;
     const args = {task_id:taskId,view_id:viewId,action,...extra};
-    if (action !== "bind") args.generation = generation;
+    if (!["bind","takeover"].includes(action) && generation !== null) args.generation = generation;
     const result = payload(await request("tools/call", {name:"task_app",arguments:args}));
     if (!result.task || result.task.id !== taskId) throw new Error("wrong-task");
-    result.pauseRevision = revision;
+    result.consentRevision = revision;
     return result;
   }
   function select(id) {
@@ -142,59 +153,135 @@
     taskId = id;
     if (ready) void poll();
   }
+  function resetConsent() {
+    autoConsent = false; consentRevision++;
+    el("auto-message").checked = false;
+  }
+  function controlled(value=last) {
+    const controller = value?.continuation?.controller;
+    return generation !== null && value?.control?.bound !== false
+      && (!controller || controller.state === "owned" && controller.generation === generation);
+  }
+  function timestamp(stamp) {
+    return Number.isFinite(stamp) ? new Date(stamp*1000).toLocaleString("zh-TW",{
+      month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}) : "";
+  }
   function activityView(value, elapsed=0) {
     const progress = value.progress, live = progress.liveness;
     const now = Number.isFinite(live?.observed_at) ? live.observed_at + Math.max(0,elapsed) : null;
     const age = stamp => now !== null && Number.isFinite(stamp) ? Math.max(0,now-stamp) : null;
     const ago = seconds => seconds < 10 ? "剛剛" : seconds < 60 ? `${Math.floor(seconds)} 秒前`
       : seconds < 3600 ? `${Math.floor(seconds/60)} 分鐘前` : `${Math.floor(seconds/3600)} 小時前`;
-    const clock = stamp => new Date(stamp*1000).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
     const conversation = live?.conversation;
     const conversationStamp = conversation?.finished_at ?? conversation?.started_at;
     const newerTask = Number.isFinite(progress.last_job_update)
       && (!Number.isFinite(conversationStamp) || progress.last_job_update > conversationStamp);
-    const stamp = newerTask ? progress.last_job_update : conversationStamp;
-    const seconds = age(stamp);
-    const outcomes = {running:"工具等候回應",returned:"最近工具回應",error:"最近工具失敗",cancelled:"最近工具已取消",interrupted:"上次工具連線中斷"};
-    const text = seconds === null ? "尚未取得工具活動紀錄"
-      : newerTask ? `最近任務工具活動 ${clock(stamp)}（${ago(seconds)}）`
-      : `${live.operation ? live.operation + " · " : ""}${outcomes[conversation.outcome] || "最近工具活動"} ${clock(stamp)}（${ago(seconds)}）`;
+    const stamp = newerTask ? progress.last_job_update : conversationStamp, seconds = age(stamp);
+    const outcomes = {running:"工具等候回應",returned:"工具已回傳",error:"工具失敗",cancelled:"工具已取消",interrupted:"工具連線中斷"};
+    const text = seconds === null ? "尚無紀錄"
+      : `${newerTask ? "任務工具更新" : (live.operation ? live.operation + " · " : "") + (outcomes[conversation?.outcome] || "工具活動")} ${timestamp(stamp)}（${ago(seconds)}）`;
     const seen = age(live?.runner_last_seen);
-    const runner = progress.runner_online ? `已連線${seen === null ? "" : `（${ago(seen)}確認）`}`
-      : `尚未連線${seen === null ? "" : `，最後活動 ${clock(live.runner_last_seen)}（${ago(seen)}）`}`;
+    const runner = progress.runner_online ? `已連線${seen === null ? "" : ` · ${ago(seen)}確認`}`
+      : `未連線${seen === null ? "" : ` · 最後連線 ${timestamp(live.runner_last_seen)}`}`;
     const observed = live?.work, observedAge = age(observed?.observed_at);
     const work = !observed ? "尚未取得工作狀態"
-      : observed.running_count ? `上次觀察有 ${observed.running_count} 項工作執行中${observedAge === null ? "" : `（${ago(observedAge)}）`}`
-      : observed.pending_count ? `有 ${observed.pending_count} 項未完成工作` : "沒有待處理的背景工作";
-    const wait = value.continuation.wait;
-    const waiting = ["watching","ready","prepared","accepted","unknown"].includes(wait?.state);
-    const quiet = seconds !== null && seconds >= 180 && value.task.status !== "completed"
-      && value.control?.bound !== false && !value.continuation.paused && !waiting
-      && ["ready","observing"].includes(progress.state);
-    const notice = quiet ? !newerTask && conversation?.outcome === "running" ? "工具回應已等候超過 3 分鐘"
-      : `已有 ${ago(seconds).replace(/前$/,"")}沒有新的任務工具活動` : null;
-    return {conversation:text,runner,work,notice};
+      : observed.running_count ? `${observed.running_count} 項工作執行中${observedAge === null ? "" : ` · ${ago(observedAge)}確認`}`
+      : observed.pending_count ? `${observed.pending_count} 項工作等待執行` : "沒有執行中的背景工作";
+    return {conversation:text,runner,work};
   }
   function refreshActivity() {
     if (!last) return;
     const elapsed = Math.max(0,(Date.now()-activityReceivedAt)/1000);
     const view = activityView(last,elapsed);
-    const stale = last.task.status !== "completed" && elapsed >= 90;
+    const stale = elapsed >= 90 || last.progress.liveness?.data_freshness === "historical";
     const unavailable = connectionFailed || stale;
-    el("conversation-activity").textContent = view.conversation;
-    el("runner-activity").textContent = unavailable ? "尚無最新連線狀態"
-      : last.task.status === "completed" && elapsed >= 45 ? "任務完成後未再檢查連線" : view.runner;
-    el("work-observation").textContent = view.work;
-    el("activity").dataset.attention = String(Boolean(view.notice) || unavailable);
+    el("conversation-activity").textContent = (unavailable ? "舊紀錄 · " : "") + view.conversation;
+    el("runner-activity").textContent = connectionFailed || elapsed >= 90 ? "連線狀態待更新" : view.runner;
+    el("work-observation").textContent = (unavailable ? "舊紀錄 · " : "") + view.work;
+    el("activity").dataset.attention = String(unavailable);
+    const controller = last.continuation.controller || {};
+    const serverNow = Number(last.progress.liveness?.observed_at) || activityReceivedAt/1000;
+    const expired = Number.isFinite(controller.lease_until) && controller.lease_until <= serverNow + elapsed;
+    const ownership = expired ? "expired" : controller.state;
+    const ownerLabels = {owned:controlled() ? "此視窗持有控制權" : "其他卡片持有控制權",other:"其他視窗持有控制權",expired:"控制權已到期",unbound:"尚未接手"};
+    el("controller-state").textContent = ownerLabels[ownership] || (controlled() ? "此視窗持有控制權" : "尚未接手");
+    el("controller-updated").textContent = controller.updated_at ? `最後更新 ${timestamp(controller.updated_at)}` : "";
+    if (expired && autoConsent) resetConsent();
     if (unavailable) {
-      el("connection").textContent = connectionFailed ? "卡片重新連線中" : "卡片等待更新"; el("dot").className = "dot attention";
-      el("status").textContent = connectionFailed ? "卡片暫時無法更新" : "卡片資料待更新";
-      el("detail").textContent = "目前顯示上次紀錄。請重新連線，確認最新工作狀態。";
+      el("connection").textContent = "舊紀錄"; el("dot").className = "dot attention";
+      el("detail").textContent = connectionFailed ? "卡片連線中斷，顯示上次紀錄。" : "顯示上次紀錄。";
       el("reconnect").hidden = false;
     } else if (stateCopy) {
-      el("status").textContent = view.notice || stateCopy[0];
-      el("detail").textContent = view.notice
-        ? "若原對話只顯示白點或沒有結尾，請重新載入頁面，查看已保存的回覆。" : stateCopy[1];
+      el("status").textContent = stateCopy[0]; el("detail").textContent = stateCopy[1];
+    }
+    el("detail").hidden = !el("detail").textContent;
+  }
+  function renderHandoff(handoff) {
+    const sections = [["目標",handoff?.goal || handoff?.summary], ["已改檔案",handoff?.changed_files],
+      ["驗證結果",handoff?.validation], ["待處理問題",handoff?.issues], ["下一步",handoff?.next_steps]];
+    const outputs = handoff?.unread_outputs || [];
+    const visible = sections.some(([,value]) => Array.isArray(value) ? value.length : Boolean(value)) || outputs.length;
+    el("handoff").hidden = !visible; el("handoff-content").replaceChildren();
+    for (const [label,value] of sections) {
+      if (Array.isArray(value) ? !value.length : !value) continue;
+      el("handoff-content").append(node("h3",label));
+      if (Array.isArray(value)) {
+        const list = document.createElement("ul");
+        for (const line of value) {
+          if (line && typeof line === "object") {
+            const states = {failed:"失敗",timed_out:"逾時",interrupted:"已中斷",cancelled:"已取消",unknown:"狀態未知"};
+            const parts = [line.tool,states[line.status] || line.status,
+              Number.isInteger(line.exit_code) ? `結束碼 ${line.exit_code}` : null,
+              line.process_id || line.job_id];
+            list.append(node("li",parts.filter(Boolean).join(" · ") || JSON.stringify(line)));
+          } else list.append(node("li",String(line)));
+        }
+        el("handoff-content").append(list);
+      } else el("handoff-content").append(node("p",String(value)));
+    }
+    if (outputs.length) {
+      el("handoff-content").append(node("h3","未讀輸出"));
+      for (const output of outputs) {
+        el("handoff-content").append(node("p",`${output.process_id || output.job_id || "工作"} · ${output.status || "待讀取"}`));
+        if (output.output) el("handoff-content").append(node("pre",output.output));
+      }
+    }
+  }
+  function renderMessaging(value) {
+    const continuation = value.continuation, policy = continuation.policy || {}, wait = continuation.wait;
+    if (!sending && (wait?.state === "consumed" || manualWaitId && wait?.id !== manualWaitId)) {
+      manualRequest = null; manualWaitId = null;
+    }
+    if (autoConsent && (!controlled(value) || !continuation.auto_enabled)) resetConsent();
+    const owns = controlled(value), completed = value.task.status === "completed";
+    el("auto-message").checked = autoConsent && owns && continuation.auto_enabled === true;
+    el("auto-message").disabled = !owns || completed || changingPolicy;
+    el("auto-count").textContent = `${policy.auto_message_count || 0} / ${policy.max_auto_messages ?? 3}`;
+    if (document.activeElement !== el("max-auto-messages")) el("max-auto-messages").value = String(policy.max_auto_messages ?? 3);
+    if (document.activeElement !== el("min-interval")) el("min-interval").value = String(policy.min_interval_seconds ?? 60);
+    el("save-policy").disabled = !owns || changingPolicy;
+    const messages = {watching:"監看工作進度",ready:"工作結果已就緒",prepared:"正在傳送",accepted:"已傳送，等待接續",unknown:"傳送結果未知",consumed:"",cancelled:""};
+    let state = messages[wait?.state] || "";
+    if (autoConsent && policy.auto_blocked_reason === "limit") state = "已達自動發訊上限，結果已保留。";
+    else if (autoConsent && policy.auto_blocked_reason === "interval") state = `下次可自動傳訊 ${timestamp(policy.next_auto_at)}`;
+    else if (autoConsent && policy.auto_blocked_reason === "batching") state = "正在合併工作結果";
+    el("continuation-state").textContent = state;
+    el("continuation-state").hidden = !state;
+    el("resume").disabled = !owns || completed || sending || busy || ["prepared","accepted","unknown"].includes(wait?.state);
+    el("resume").textContent = sending ? "傳送中…" : "接續工作";
+    const blockedIdentity = ["missing_window","read_only"].includes(value.control?.reason);
+    el("takeover").hidden = completed || blockedIdentity || (owns && wait?.state !== "unknown");
+    el("takeover").disabled = sending || busy;
+    const deliveries = continuation.deliveries || [];
+    el("delivery-history").hidden = !deliveries.length;
+    el("deliveries").replaceChildren();
+    const deliveryStates = {prepared:"準備傳送",accepted:"已傳送",unknown:"傳送結果未知",consumed:"已接續",not_sent:"未傳送"};
+    for (const delivery of deliveries) {
+      const row = node("details","","delivery");
+      row.append(node("summary",`${timestamp(delivery.sent_at || delivery.created)} · ${delivery.mode === "auto" ? "自動" : "手動"} · ${deliveryStates[delivery.status] || delivery.status}`));
+      row.append(node("p",delivery.reason === "jobs_completed" ? "工作完成" : delivery.reason === "user_resume" ? "手動接續" : String(delivery.reason || "")));
+      row.append(node("pre",delivery.content || ""));
+      el("deliveries").append(row);
     }
   }
   function render(value) {
@@ -202,48 +289,17 @@
     if (!states[value.progress.state] || !Array.isArray(value.task.plan)) throw new Error("invalid-state");
     const justCompleted = value.task.status === "completed" && last && last.task.status !== "completed";
     last = value; activityReceivedAt = Date.now(); connectionFailed = false;
-    if (!changingPause && value.pauseRevision === pauseRevision) paused = value.continuation.paused;
     el("title").textContent = value.task.title;
     let [status,detail] = states[value.progress.state];
-    const wait = value.continuation.wait;
-    const handoff = value.continuation.handoff;
-    const blocked = handoff?.state === "blocked" && ["watching","ready"].includes(wait?.state);
-    if (paused && value.task.status !== "completed") {
-      status = "自動續接已暫停"; detail = "已啟動的工作仍會執行，進度會持續更新。";
-    } else if (wait?.state === "prepared") {
-      status = "正在傳送接續通知"; detail = "";
-    } else if (wait?.state === "accepted") {
-      status = "已送出接續通知"; detail = "接續狀態可在原對話查看；若回覆未顯示，請重新載入頁面。";
-    } else if (wait && wait.state === "unknown") {
-      status = "尚未確認是否接續"; detail = "請在對話中確認目前任務。";
-    } else if (blocked) {
-      const blockedStates = {
-        expired:["自動續接尚未連線","請在對話中重新開啟任務卡片。"],
-        not_connected:["自動續接尚未連線","請在對話中重新開啟任務卡片。"],
-        missing_window:["此對話無法自動續接","請在對話中繼續原任務。"],
-        another_window:["由其他視窗接續","請回到已連線的視窗繼續原任務。"],
-        read_only:["此對話僅能檢視進度","請使用有修改權限的連線繼續任務。"],
-      };
-      [status,detail] = blockedStates[handoff.reason] || states[handoff.reason] || ["自動續接目前無法使用","請在對話中確認任務狀態並繼續。"];
-    } else if (wait?.state === "ready") {
-      status = "工作結果已就緒"; detail = document.hidden ? "切回此對話後會請求接續。" : "正在準備接續原任務。";
-    }
+    const work = value.progress.liveness?.work;
+    if (value.progress.state === "observing" && !work?.running_count && !work?.pending_count) status = "工作狀態待確認";
+    if (value.continuation.wait?.state === "ready") status = "工作結果已就緒";
     stateCopy = [status,detail];
     el("status").textContent = status; el("detail").textContent = detail;
-    const activeWait = wait && ["watching","ready","prepared","accepted","unknown"].includes(wait.state);
-    const continuationLabels = {
-      watching: document.hidden ? "已安排，回到此對話後處理結果" : "已安排，等待工作結果",
-      ready:"已安排，結果已就緒", prepared:"正在傳送通知",
-      accepted:"已送出通知", unknown:"接續請求尚未確認", consumed:"先前通知已處理，目前未安排", cancelled:"先前等待已取消，目前未安排",
-    };
-    el("continuation-row").hidden = value.task.status === "completed" || paused || blocked || ["prepared","accepted","unknown"].includes(wait?.state);
-    el("continuation-state").textContent = paused ? "已暫停"
-      : continuationLabels[wait?.state] || "尚未安排";
     const completed = value.task.plan.filter(item => item.status === "completed").length;
     el("plan-progress").hidden = value.task.plan.length === 0;
     el("step-summary").textContent = `已完成 ${completed} / ${value.task.plan.length} 步驟`;
-    el("step-progress").max = value.task.plan.length || 1;
-    el("step-progress").value = completed;
+    el("step-progress").max = value.task.plan.length || 1; el("step-progress").value = completed;
     el("steps").replaceChildren();
     value.task.plan.forEach((item,index) => {
       const li = document.createElement("li"), marker = document.createElement("span"), text = document.createElement("span");
@@ -254,14 +310,9 @@
       if (item.status === "in_progress") li.append(node("span","進行中","step-state"));
       el("steps").append(li);
     });
-    el("pause").hidden = generation === null || value.task.status === "completed" || (!activeWait && !paused);
-    el("pause").textContent = paused ? "啟用自動續接" : "暫停自動續接";
-    el("updated").textContent = "卡片更新 " + new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-    if (generation !== null) {
-      el("connection").textContent = document.hidden ? "卡片背景連線" : "卡片已連線";
-      el("dot").className = "dot live";
-    }
-    refreshActivity();
+    el("updated").textContent = "更新 " + timestamp(Date.now()/1000);
+    el("connection").textContent = "監看中"; el("dot").className = "dot live";
+    renderMessaging(value); renderHandoff(value.handoff); refreshActivity();
     notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
     if (justCompleted && ready && reviewLoaded) void loadReview(selectedPath);
   }
@@ -430,7 +481,7 @@
   }
   function schedule() {
     clearTimeout(timer);
-    if (!stopped && !document.hidden && !pollingBlocked && last?.task.status !== "completed") timer = setTimeout(poll,Math.max(0,nextPollAt-Date.now(),retryAt-Date.now()));
+    if (!stopped && !document.hidden && last?.task.status !== "completed") timer = setTimeout(poll,Math.max(0,nextPollAt-Date.now(),retryAt-Date.now()));
   }
   async function finish(waitId,outcome,error={}) {
     const metadata = {};
@@ -443,75 +494,69 @@
     const result = await call("finish",{wait_id:waitId,outcome,...metadata});
     pendingFinish = null; render(result);
   }
-  async function dispatch(wait) {
-    if (attempted.has(wait.id) || document.hidden || paused || stopped) return;
-    const attemptGeneration = generation;
-    attempted.add(wait.id);
-    let prepared;
+  async function dispatch(wait=null,manual=false,requestId=null) {
+    if (stopped || document.hidden || sending || !controlled()) return;
+    if (!manual && (!autoConsent || !last?.continuation.auto_enabled || last.continuation.policy?.auto_blocked_reason)) return;
+    if (wait && attempted.has(wait.id)) return;
+    sending = true;
+    const attemptGeneration = generation, revision = consentRevision;
+    if (wait) attempted.add(wait.id);
+    el("resume").disabled = true; el("resume").textContent = "傳送中…";
+    let prepared, waitId = wait?.id;
     try {
-      prepared = await call("prepare",{wait_id:wait.id});
+      const args = {request_id:requestId || `${viewId}:auto:${wait.id}`};
+      if (waitId) args.wait_id = waitId;
+      prepared = await call(manual ? "prepare_manual" : "prepare",args);
       const control = prepared.control;
-      if (!control || control.wait_id !== wait.id || control.state !== "prepared"
-          || typeof control.app_protocol?.message !== "string" || control.app_protocol.message.length > 4096) throw deliveryError("invalid_prepare");
+      if (control?.duplicate) { render(prepared); return; }
+      waitId = control?.wait_id;
+      if (!waitId || control.state !== "prepared" || typeof control.app_protocol?.message !== "string"
+          || control.app_protocol.message.length > 4096) throw deliveryError("invalid_prepare");
+      attempted.add(waitId);
+      if (manual) manualWaitId = waitId;
+      let outcome = "not_sent", error = deliveryError("interrupted");
+      if (!stopped && !document.hidden && controlled() && last?.task.status !== "completed"
+          && generation === attemptGeneration && (manual || autoConsent && consentRevision === revision)) {
+        outcome = "unknown";
+        try {
+          const response = await request("ui/message",{role:"user",content:[{type:"text",text:control.app_protocol.message}]});
+          if (response?.isError) error = deliveryError("host_rejected");
+          else { outcome = "accepted"; error = {}; }
+        } catch (failure) { error = failure?.delivery_error ? failure : deliveryError("interrupted"); }
+      }
+      if (!stopped) { try { await finish(waitId,outcome,error); } catch (_) {} }
     } catch (error) {
-      // A later confirmed ready state may recover a request that never reached the Server.
-      failedPrepare = {wait_id:wait.id,generation:attemptGeneration};
-      try { await finish(wait.id,"unknown",error?.delivery_error ? error : deliveryError("invalid_prepare")); } catch (_) {}
-      return;
+      failedPrepare = {wait_id:waitId,generation:attemptGeneration};
+      if (waitId) { try { await finish(waitId,"unknown",error?.delivery_error ? error : deliveryError("invalid_prepare")); } catch (_) {} }
+      el("continuation-state").hidden = false;
+      el("continuation-state").textContent = "傳送狀態待確認，更新狀態後可在此接手。";
+    } finally {
+      sending = false;
+      if (last) renderMessaging(last);
     }
-    let outcome = "unknown";
-    let error = deliveryError("interrupted");
-    if (!stopped && !document.hidden && !paused) {
-      try {
-        const response = await request("ui/message",{role:"user",content:[{type:"text",text:prepared.control.app_protocol.message}]});
-        if (response?.isError) error = deliveryError("host_rejected");
-        else { outcome = "accepted"; error = {}; }
-      } catch (failure) { error = failure?.delivery_error ? failure : deliveryError("interrupted"); }
-    }
-    if (!stopped) { try { await finish(wait.id,outcome,error); } catch (_) {} }
   }
   async function poll(manual=false) {
-    if (!ready || !taskId || stopped || document.hidden || busy || (pollingBlocked && !manual)) return;
+    if (!ready || !taskId || stopped || document.hidden || busy || sending) return;
     if (!manual && Date.now() < nextPollAt) { schedule(); return; }
-    pollingBlocked = false;
     busy = true; el("check-status").disabled = true;
     try {
       let value;
       if (generation === null) {
-        const result = await call("bind");
-        if (!result.control?.bound) {
-          pollingBlocked = true;
-          render(result);
-          el("dot").className = "dot attention";
-          el("reconnect").hidden = false;
-          const unsupported = ["missing_window","read_only"].includes(result.control?.reason);
-          const replaced = result.control?.reason === "replaced_view";
-          el("connection").textContent = unsupported ? "僅顯示進度" : replaced ? "已由新卡片接手" : "其他視窗已連線";
-          if (result.task.status !== "completed") {
-            el("detail").textContent = unsupported ? "請在對話中繼續原任務。" : replaced ? "請使用此任務最新的卡片。" : "請回到已連線的視窗接續工作。";
-            el("continuation-state").textContent = unsupported ? "此對話僅顯示進度" : replaced ? "此卡片已由新卡片接手" : "由其他視窗接續";
-            stateCopy = [el("status").textContent,el("detail").textContent];
-          }
-          return;
+        resetConsent();
+        value = await call("bind");
+        if (value.control?.bound) {
+          if (!Number.isSafeInteger(value.control.generation) || value.control.generation < 1) throw new Error("invalid-bind");
+          generation = value.control.generation;
         }
-        if (!Number.isSafeInteger(result.control.generation) || result.control.generation < 1) throw new Error("invalid-bind");
-        generation = result.control.generation; value = result;
       } else value = await call("state");
+      if (value.control?.bound === false) { generation = null; resetConsent(); }
       render(value);
       if (Date.now() >= retryAt) retryDelay = 15000;
-      if (value.control?.bound === false) {
-        generation = null; pollingBlocked = true;
-        el("connection").textContent = "卡片已中斷連線";
-        el("dot").className = "dot attention";
-        el("reconnect").hidden = false;
-        return;
-      }
       el("reconnect").hidden = true;
-      if (value.task.status === "completed") return;
+      if (!controlled(value) || value.task.status === "completed") return;
       const wait = value.continuation.wait;
-      if (wait?.state === "ready" && failedPrepare?.wait_id === wait.id
-          && failedPrepare.generation === generation && value.control?.bound === true
-          && value.control.generation === generation) {
+      if (wait?.state === "ready" && failedPrepare?.wait_id === wait.id && failedPrepare.generation === generation
+          && !value.continuation.deliveries?.some(item => item.wait_id === wait.id)) {
         attempted.delete(wait.id); failedPrepare = null;
       }
       if (pendingFinish) {
@@ -522,36 +567,74 @@
       if (wait?.state === "prepared") {
         attempted.add(wait.id);
         await finish(wait.id,"unknown",deliveryError("interrupted"));
-      } else if (wait?.state === "ready") await dispatch(wait);
+      } else if (wait?.state === "ready" && autoConsent) await dispatch(wait);
+      if (wait?.state === "consumed") manualRequest = null;
     } catch (error) {
-      deferRetry(error);
-      generation = null; connectionFailed = true;
-      el("connection").textContent = "卡片重新連線中"; el("dot").className = "dot attention";
-      el("status").textContent = "卡片暫時無法更新";
-      el("detail").textContent = error.rate_limited ? "請求暫時受限，稍後自動重試。" : "目前顯示上次紀錄，稍後自動重試。";
-      el("reconnect").hidden = false;
-      refreshActivity();
+      deferRetry(error); generation = null; resetConsent(); connectionFailed = true;
+      el("connection").textContent = "舊紀錄"; el("dot").className = "dot attention";
+      el("detail").textContent = error.rate_limited ? "請求暫時受限，稍後重新連線。" : "卡片連線中斷，顯示上次紀錄。";
+      el("reconnect").hidden = false; refreshActivity();
     } finally {
-      nextPollAt = Date.now() + (!paused && ["watching","ready"].includes(last?.continuation.wait?.state) ? 10000 : 60000);
-      busy = false; el("check-status").disabled = false; schedule();
+      const active = last?.progress?.liveness?.work;
+      nextPollAt = Date.now() + (autoConsent || active?.running_count || active?.pending_count ? 10000 : generation === null ? 30000 : 60000);
+      busy = false; el("check-status").disabled = false;
+      if (last) renderMessaging(last);
+      schedule();
     }
   }
-  el("pause").addEventListener("click",async () => {
-    if (generation === null || stopped) return;
-    const action = paused ? "enable" : "pause";
-    pauseRevision++;
-    changingPause = true; paused = true; el("pause").disabled = true;
-    try { const value = await call(action); changingPause = false; render(value); }
-    catch (_) { el("detail").textContent = "設定尚未確認，請稍後再試。"; }
-    finally { changingPause = false; el("pause").disabled = false; }
+  async function savePolicy() {
+    const maximum = Number(el("max-auto-messages").value), interval = Number(el("min-interval").value);
+    if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > 20 || !Number.isSafeInteger(interval) || interval < 10 || interval > 86400) {
+      el("policy-error").textContent = "最多次數需為 0–20，最短間隔需為 10–86400 秒。";
+      return false;
+    }
+    const value = await call("configure",{max_auto_messages:maximum,min_interval_seconds:interval});
+    render(value); el("policy-error").textContent = ""; return true;
+  }
+  el("save-policy").addEventListener("click",async () => {
+    if (!controlled() || changingPolicy || stopped) return;
+    changingPolicy = true; el("save-policy").disabled = true;
+    try { await savePolicy(); }
+    catch (_) { el("policy-error").textContent = "儲存失敗，請更新狀態後重試。"; }
+    finally { changingPolicy = false; if (last) renderMessaging(last); }
+  });
+  el("auto-message").addEventListener("change",async () => {
+    const enabling = el("auto-message").checked;
+    if (!controlled() || changingPolicy || stopped) { el("auto-message").checked = autoConsent; return; }
+    resetConsent(); changingPolicy = true; el("auto-message").disabled = true;
+    const revision = consentRevision, expectedGeneration = generation;
+    try {
+      const value = await call(enabling ? "enable" : "pause");
+      if (revision === consentRevision && expectedGeneration === generation && value.continuation.auto_enabled === true && enabling) autoConsent = true;
+      render(value);
+      if (autoConsent) { nextPollAt = 0; schedule(); }
+    } catch (_) { resetConsent(); el("policy-error").textContent = "設定尚未確認，請更新狀態後重試。"; }
+    finally { changingPolicy = false; if (last) renderMessaging(last); }
+  });
+  el("resume").addEventListener("click",async () => {
+    if (!controlled() || stopped || busy || sending || el("resume").disabled) return;
+    manualRequest ||= `${viewId}:manual:${++manualSequence}`;
+    await dispatch(last?.continuation.wait?.state === "consumed" ? null : last?.continuation.wait,true,manualRequest);
+  });
+  el("takeover").addEventListener("click",async () => {
+    if (stopped || busy || sending) return;
+    busy = true; resetConsent(); el("takeover").disabled = true;
+    try {
+      const value = await call("takeover");
+      if (!value.control?.bound || !Number.isSafeInteger(value.control.generation)) throw new Error("invalid-bind");
+      generation = value.control.generation; pendingFinish = null; failedPrepare = null; manualRequest = null; manualWaitId = null;
+      render(value); el("handoff").open = true;
+      nextPollAt = 0;
+    } catch (_) { el("detail").hidden = false; el("detail").textContent = "接手失敗，請更新狀態後重試。"; }
+    finally { busy = false; if (last) renderMessaging(last); schedule(); }
   });
   el("check-status").addEventListener("click",async () => {
-    if (stopped || busy) return;
+    if (stopped || busy || sending) return;
     if (!ready) await initialize(); else await poll(true);
   });
   el("reconnect").addEventListener("click",async () => {
-    if (stopped || busy) return;
-    el("reconnect").disabled = true;
+    if (stopped || busy || sending) return;
+    resetConsent(); generation = null; el("reconnect").disabled = true;
     try {
       if (!ready) { await initialize(); return; }
       await poll(true);
@@ -560,6 +643,7 @@
   });
   function teardown() {
     if (stopped) return;
+    resetConsent();
     if (taskId && generation !== null) {
       parent.postMessage({jsonrpc:"2.0",id:++sequence,method:"tools/call",params:{name:"task_app",arguments:{task_id:taskId,action:"unbind",view_id:viewId,generation}}},"*");
     }
@@ -588,7 +672,7 @@
   addEventListener("visibilitychange",() => {
     clearTimeout(timer); clearTimeout(reviewTimer); reviewTimer = null;
     if (!document.hidden) {
-      if (!busy && !pollingBlocked && Date.now() >= nextPollAt) generation = null;
+      if (!busy && !sending && Date.now() >= nextPollAt) { resetConsent(); generation = null; }
       void poll();
       if (pendingReview) scheduleReview(15000);
     }

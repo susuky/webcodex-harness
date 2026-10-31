@@ -13,6 +13,7 @@ from . import __version__
 from .config import StrictModel, identifier, private_dir
 
 PROCESS_STATUSES = {"running", "completed", "failed", "timed_out", "interrupted", "cancelled"}
+INTERNAL_OBSERVATION_PREFIXES = ("card-observe:", "manage-observe:", "watch:")
 _ACTIVITY_COLUMNS = """
     task_id TEXT NOT NULL REFERENCES tasks(id), trace_id TEXT NOT NULL,
     tool TEXT NOT NULL, started_at REAL NOT NULL, finished_at REAL,
@@ -446,6 +447,21 @@ class Store:
             self.event(task["id"], "job." + status, {"job_id": job, "tool": tool})
         return self.job(job, task["owner"])
 
+    def process_output_cursors(self, task_id: str, process_id: str) -> dict:
+        """Keep UI observations separate from output returned by model tool calls."""
+        return self.one(
+            "WITH observations AS (SELECT request_id,"
+            "CASE WHEN json_valid(result) THEN CASE WHEN json_type(result,'$.next_cursor')='integer' "
+            "THEN max(0,json_extract(result,'$.next_cursor')) ELSE 0 END ELSE 0 END AS cursor "
+            "FROM jobs WHERE task_id=? AND process_id=? AND status='succeeded') "
+            "SELECT coalesce(max(cursor),0) AS confirmed_end,"
+            "coalesce(max(CASE WHEN request_id IS NULL OR NOT "
+            "(instr(request_id,'card-observe:')=1 OR instr(request_id,'manage-observe:')=1 "
+            "OR instr(request_id,'watch:')=1) THEN cursor ELSE 0 END),0) AS model_cursor "
+            "FROM observations",
+            (task_id, process_id),
+        )
+
     def job(self, job_id: str, owner: str) -> dict:
         row = self.one("SELECT * FROM jobs WHERE id=? AND owner=?", (job_id, owner))
         if row is None:
@@ -505,14 +521,24 @@ class Store:
                 "not that the command or tests passed. Check outcome, exit_code and output. "
                 "Continue observing the original process until its result is available."
             )
-            if result["status"] == "running" or result.get("has_more"):
+            cursor = result.get("next_cursor", 0)
+            unread = bool(result.get("has_more"))
+            if (row.get("request_id") or "").startswith(INTERNAL_OBSERVATION_PREFIXES):
+                cursors = self.process_output_cursors(row["task_id"], result["process_id"])
+                cursor = cursors["model_cursor"]
+                unread = cursors["confirmed_end"] > cursor or (
+                    bool(result.get("has_more")) and cursor <= result.get("next_cursor", 0)
+                )
+                row["output_cursor"] = cursor
+                row["unread_output"] = unread
+            if result["status"] == "running" or unread:
                 row["next_action"] = {
                     "tool": "read_process",
                     "arguments": {
                         "task_id": row["task_id"],
                         "process_id": result["process_id"],
-                        "cursor": result.get("next_cursor", 0),
-                        "wait_seconds": 1 if result.get("has_more") else 20,
+                        "cursor": cursor,
+                        "wait_seconds": 1 if unread else 20,
                     },
                 }
                 row["next_step"] += (

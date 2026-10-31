@@ -44,6 +44,18 @@ jobs:
       - run: uv sync --locked --extra computer
       - name: Install optional browser provider
         run: npm install --prefix "${{ runner.temp }}/webcodex-browser" --ignore-scripts --no-audit --no-fund --save-exact @playwright/mcp@0.0.80
+      - name: Verify task card behavior
+        run: node --test tests/task_app.test.cjs tests/task_app_review.test.cjs
+      - name: Install Chromium for interface tests
+        run: node "${{ runner.temp }}/webcodex-browser/node_modules/playwright/cli.js" install chromium
+      - name: Verify task card in Chromium
+        env:
+          NODE_PATH: '${{ runner.temp }}/webcodex-browser/node_modules'
+        run: node tests/task_app.browser.cjs
+      - name: Verify management page in Chromium
+        env:
+          NODE_PATH: '${{ runner.temp }}/webcodex-browser/node_modules'
+        run: node tests/management.browser.cjs
       - run: uv run webcodex doctor
       - run: cargo --version
       - run: rg --version
@@ -68,5 +80,5 @@ jobs:
         env:
           WEBCODEX_TEST_DIST: dist
       - run: uvx twine check dist/*
-      - name: Check installation without desktop extras
-        run: uv run --isolated --no-project --with . webcodex --version
+      - name: Verify installed CLI, Server, Runner and first tool call
+        run: uv run --isolated --no-project --with . python tests/fixtures/installation_smoke.py

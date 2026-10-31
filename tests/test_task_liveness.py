@@ -62,7 +62,7 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
             "succeeded",
             {"process_id": "observed-process", "status": "running"},
         )
-        observed_at = 1700000000.0
+        observed_at = time.time()
         with service.store.db:
             service.store.db.execute(
                 "UPDATE jobs SET updated=? WHERE id=?", (observed_at, running["job_id"])

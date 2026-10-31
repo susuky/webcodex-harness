@@ -20,3 +20,4 @@ dist/
 htmlcov/
 .codex-remote-attachments/
 /[Hh][Aa][Nn][Dd][Oo][Ff][Ff].[Mm][Dd]
+/.state/

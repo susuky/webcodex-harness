@@ -237,6 +237,44 @@ class Computer:
         self.lock = threading.Lock()
         self.snapshot: tuple[str, str, list[dict], float, dict] | None = None
 
+    def observe_ui(
+        self,
+        action: str = "windows",
+        window: dict | None = None,
+        selector: dict | None = None,
+        max_depth: int = 6,
+        max_nodes: int = 200,
+    ) -> dict:
+        from .semantic import OBSERVE_ACTIONS, run_request, validate_request
+
+        if action not in OBSERVE_ACTIONS:
+            raise ValueError("Observation action must be windows, tree or find")
+        request = validate_request(
+            action, window, selector, max_depth=max_depth, max_nodes=max_nodes
+        )
+        with self.lock:
+            return run_request(request)
+
+    def control_ui(
+        self,
+        action: str,
+        window: dict,
+        selector: dict,
+        text: str | None = None,
+        max_depth: int = 12,
+        max_nodes: int = 500,
+    ) -> dict:
+        from .semantic import CONTROL_ACTIONS, run_request, validate_request
+
+        if action not in CONTROL_ACTIONS:
+            raise ValueError("Control action must be invoke, focus or set_text")
+        request = validate_request(
+            action, window, selector, text, max_depth=max_depth, max_nodes=max_nodes
+        )
+        with self.lock:
+            self.snapshot = None
+            return run_request(request)
+
     @staticmethod
     def _size(api) -> tuple[int, int]:
         if sys.platform == "win32":
