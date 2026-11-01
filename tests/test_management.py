@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -209,9 +210,20 @@ async def test_management_refresh_rejects_invalid_selection(harness, body):
 
 def test_management_activity_excludes_internal_observations_and_tracks_latest_call(
     activity_service,
+    monkeypatch,
 ):
     service, current_task = activity_service
     store = service.store
+    # Windows Python 3.11/3.12 wall clocks can return the same timestamp for
+    # several calls. Keep event ordering explicit instead of relying on clock resolution.
+    clock = time.time()
+
+    def next_timestamp():
+        nonlocal clock
+        clock += 0.05
+        return clock
+
+    monkeypatch.setattr("webcodex.store.time", SimpleNamespace(time=next_timestamp))
 
     def complete(tool, request):
         job = store.enqueue(current_task, tool, {}, request, 200)
@@ -228,7 +240,7 @@ def test_management_activity_excludes_internal_observations_and_tracks_latest_ca
         complete("read_process", prefix + first)
     assert management.describe(current_task)["liveness"]["conversation"] == initial
     store.start_tool_activity(
-        current_task["id"], "mcp-call", "task_get", time.time(), window="chat"
+        current_task["id"], "mcp-call", "task_get", next_timestamp(), window="chat"
     )
     assert management.describe(current_task)["liveness"]["conversation"]["tool"] == "task_get"
     complete("write_file", "cli-call")
