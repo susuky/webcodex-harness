@@ -29,6 +29,19 @@ def run(cli: Path, *args: str, env: dict[str, str], cwd: Path) -> str:
     return result.stdout
 
 
+class RetryTemporaryDirectory(tempfile.TemporaryDirectory):
+    """Wait for Windows to release SQLite shared-memory mappings during cleanup."""
+
+    def cleanup(self):
+        for attempt in range(100):
+            try:
+                return super().cleanup()
+            except PermissionError:
+                if attempt == 99:
+                    raise
+                time.sleep(0.1)
+
+
 def main():
     source = Path(__file__).resolve().parents[2]
     installed = Path(webcodex.__file__).resolve()
@@ -38,7 +51,7 @@ def main():
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     env.pop("PYTHONPATH", None)
     processes = []
-    with tempfile.TemporaryDirectory(prefix="webcodex-install-") as temporary:
+    with RetryTemporaryDirectory(prefix="webcodex-install-") as temporary:
         root = Path(temporary)
         project = root / "project"
         project.mkdir()
