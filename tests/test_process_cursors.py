@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from webcodex.store import Store
@@ -227,3 +229,46 @@ def test_bad_legacy_cursor_data_cannot_break_an_internal_observation(observation
     assert observed["output_cursor"] == 0
     assert observed["unread_output"] is True
     assert observed["next_action"]["arguments"]["cursor"] == 0
+
+
+def test_cursor_lookup_indexes_the_exact_process_after_upgrading(observations):
+    store, task, add = observations
+    first = add(output="model", request_id="model")
+    process = first["result"]["process_id"]
+    add(process_id=process, cursor=5, output=" unseen", request_id="watch:latest")
+    with store.db:
+        store.db.execute("DROP INDEX process_history")
+    state_dir = store.db.execute("PRAGMA database_list").fetchone()[2]
+    upgraded = Store(Path(state_dir).parent)
+    try:
+        statements = []
+        upgraded.db.set_trace_callback(statements.append)
+        assert upgraded.process_output_cursors(task["id"], process) == {
+            "model_cursor": 5,
+            "confirmed_end": 12,
+        }
+        upgraded.db.set_trace_callback(None)
+        query = next(sql for sql in statements if "WITH observations" in sql)
+        plan = upgraded.db.execute("EXPLAIN QUERY PLAN " + query).fetchall()
+        assert any(
+            "process_history" in row[3] and "task_id=? AND process_id=?" in row[3] for row in plan
+        )
+    finally:
+        upgraded.close()
+
+
+def test_cursor_lookup_never_parses_saved_result_json(observations):
+    store, task, add = observations
+    first = add(output="model", request_id="model")
+    process = first["result"]["process_id"]
+    add(process_id=process, cursor=5, output="x" * 16384, request_id="watch:latest")
+
+    def unexpected_json(*args):
+        raise AssertionError("Cursor lookup must read its projection without parsing result JSON")
+
+    for name, arity in [("json_valid", 1), ("json_type", 2), ("json_extract", 2)]:
+        store.db.create_function(name, arity, unexpected_json, deterministic=True)
+    assert store.process_output_cursors(task["id"], process) == {
+        "model_cursor": 5,
+        "confirmed_end": 16389,
+    }

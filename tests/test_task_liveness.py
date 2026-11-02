@@ -428,6 +428,111 @@ async def test_card_progress_omits_execution_payloads_but_model_retains_them(
     assert model["progress"]["output_actions"][0]["arguments"]["cursor"] == 65536
 
 
+async def test_task_get_recent_jobs_reads_only_the_ordered_covering_index(activity_service):
+    service, task = activity_service
+    store = service.store
+    jobs = []
+    for index in range(40):
+        job = store.enqueue(task, "read_file", {}, None, 100)
+        store.claim("local", "instance", 1)
+        store.complete("local", job["job_id"], "instance", "succeeded", {"content": "x" * 65536})
+        with store.db:
+            store.db.execute(
+                "UPDATE jobs SET created=?,updated=? WHERE id=?",
+                (index, 100 - index, job["job_id"]),
+            )
+        jobs.append(job["job_id"])
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    try:
+        result = await service.call("owner", "task_get", {"task_id": task["id"]})
+    finally:
+        store.db.set_trace_callback(None)
+    assert [job["job_id"] for job in result["jobs"]] == jobs[-30:][::-1]
+    query = next(
+        sql
+        for sql in statements
+        if sql.startswith("SELECT id AS job_id,tool,status,created,updated")
+    )
+    plan = store.db.execute("EXPLAIN QUERY PLAN " + query).fetchall()
+    assert any("USING COVERING INDEX task_job_history" in row[3] for row in plan)
+    assert not any("TEMP B-TREE" in row[3] for row in plan)
+
+
+@pytest.mark.parametrize("running", [False, True])
+async def test_card_monitoring_reads_json_only_for_selected_running_processes(
+    activity_service, monkeypatch, running
+):
+    service, task = activity_service
+    store = service.store
+    now = time.time()
+    monkeypatch.setattr("webcodex.server.time.time", lambda: now)
+
+    def observe(process_id, status, cursor, age):
+        job = store.enqueue(task, "read_process", {}, None, 100)
+        store.claim("local", "instance", 1)
+        store.complete(
+            "local",
+            job["job_id"],
+            "instance",
+            "succeeded",
+            {
+                "process_id": process_id,
+                "status": status,
+                "next_cursor": cursor,
+                "output": "x" * 16384,
+            },
+        )
+        with store.db:
+            store.db.execute("UPDATE jobs SET updated=? WHERE id=?", (now - age, job["job_id"]))
+        return job["job_id"]
+
+    historical = observe("finished", "completed", 0, 1000)
+    with store.db:
+        store.db.executemany(
+            "INSERT INTO jobs(id,task_id,owner,runner,project,binding,tool,arguments,status,"
+            "instance,result,created,updated,process_id,process_status) "
+            "SELECT ?,task_id,owner,runner,project,binding,tool,arguments,status,instance,"
+            "result,created,updated,process_id,process_status FROM jobs WHERE id=?",
+            [(new_id(), historical) for _ in range(500)],
+        )
+    observe("superseded", "running", 100, 100)
+    observe("superseded", "completed", 200, 90)
+    observe("fresh", "running", 300, 5)
+    expected = []
+    if running:
+        for process_id, cursor, age in [("first", 41, 40), ("second", 42, 30), ("third", 43, 20)]:
+            job_id = observe(process_id, "running", cursor, age)
+            if len(expected) < 2:
+                expected.append((process_id, cursor, "card-observe:" + job_id))
+
+    calls, reads = [], []
+
+    async def call(owner, name, arguments):
+        assert owner == "owner" and name == "read_process"
+        calls.append((arguments["process_id"], arguments["cursor"], arguments["request_id"]))
+
+    monkeypatch.setattr(service, "call", call)
+    original_json = sqlite3.connect(":memory:")
+
+    def counted(name, *args):
+        reads.append(name)
+        return original_json.execute(
+            f"SELECT {name}({','.join('?' for _ in args)})", args
+        ).fetchone()[0]
+
+    try:
+        store.db.create_function("json_valid", 1, lambda value: counted("json_valid", value))
+        store.db.create_function(
+            "json_extract", 2, lambda value, path: counted("json_extract", value, path)
+        )
+        await service.observe_card_processes(task)
+    finally:
+        original_json.close()
+    assert calls == expected
+    assert reads.count("json_valid") == reads.count("json_extract") == len(expected)
+
+
 def test_work_counts_include_observations_outside_the_bounded_detail_lists(activity_service):
     service, task = activity_service
     store = service.store

@@ -89,6 +89,7 @@ def test_old_database_backfills_once_and_preserves_raw_results(tmp_path):
     store.close()
     with sqlite3.connect(tmp_path / "state.sqlite3") as db:
         db.execute("DROP INDEX process_observations")
+        db.execute("DROP INDEX process_history")
         for column in ["process_id", "process_status", "process_exit_code"]:
             db.execute("ALTER TABLE jobs DROP COLUMN " + column)
     store = Store(tmp_path)

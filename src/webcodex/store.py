@@ -180,6 +180,17 @@ class Store:
             "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files')"
         )
         self.db.execute(
+            "CREATE INDEX IF NOT EXISTS process_history ON jobs "
+            "(task_id,process_id,CASE WHEN json_valid(result) "
+            "THEN CASE WHEN json_type(result,'$.next_cursor')='integer' "
+            "THEN max(0,json_extract(result,'$.next_cursor')) ELSE 0 END ELSE 0 END,request_id) "
+            "WHERE status='succeeded' AND process_id IS NOT NULL"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS task_job_history ON jobs "
+            "(task_id,created DESC,id,tool,status,updated)"
+        )
+        self.db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS task_requests ON tasks(owner,request_id) "
             "WHERE request_id IS NOT NULL"
         )

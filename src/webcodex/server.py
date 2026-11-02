@@ -589,12 +589,14 @@ class Service:
             return
         observations = self.store.rows(
             "WITH latest AS (SELECT id,process_id,process_status,updated,"
-            "CASE WHEN json_valid(result) THEN coalesce(json_extract(result,'$.next_cursor'),0) ELSE 0 END AS cursor,"
             "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
             "FROM jobs WHERE task_id=? AND status='succeeded' AND process_id IS NOT NULL "
-            "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files')) "
-            "SELECT id,process_id,cursor FROM latest WHERE rank=1 AND process_status='running' "
-            "AND updated<? ORDER BY updated,id LIMIT 2",
+            "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files')), "
+            "selected AS (SELECT id,process_id,updated FROM latest "
+            "WHERE rank=1 AND process_status='running' AND updated<? ORDER BY updated,id LIMIT 2) "
+            "SELECT selected.id,selected.process_id,CASE WHEN json_valid(jobs.result) "
+            "THEN coalesce(json_extract(jobs.result,'$.next_cursor'),0) ELSE 0 END AS cursor "
+            "FROM selected JOIN jobs ON jobs.id=selected.id ORDER BY selected.updated,selected.id",
             (task["id"], time.time() - 10),
         )
         for observed in observations:
