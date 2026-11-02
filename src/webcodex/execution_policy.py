@@ -87,6 +87,67 @@ def _shell(source: str, cwd: Path | None, depth: int) -> None:
     check_worker_command(command, cwd=cwd, _depth=depth + 1)
 
 
+def _powershell_pipeline_start(prefix: str) -> bool:
+    if "$(" in prefix:
+        return False
+    quote, escaped, last = "", False, ""
+    nesting = []
+    closing = {")": "(", "]": "[", "}": "{"}
+    for char in prefix:
+        if escaped:
+            escaped = False
+        elif char == "`" and quote != "'":
+            escaped, last = True, char
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = last = char
+        elif char == "#":
+            return False
+        elif char in "([{":
+            nesting.append(char)
+            last = char
+        elif char in closing:
+            if not nesting or nesting.pop() != closing[char]:
+                return False
+            last = char
+        elif not char.isspace():
+            last = char
+    return not quote and not escaped and not nesting and last in {"", ";"}
+
+
+def _powershell_here_strings(source: str, cwd: Path | None, depth: int) -> str:
+    def replace(match: re.Match) -> str:
+        original = match.group(0)
+        if not _powershell_pipeline_start(source[: match.start()]):
+            return original
+        receiver = re.match(
+            r"""[ \t]*\|[ \t\r\n]*(?:&[ \t]*)?("[^"\r\n]+"|'[^'\r\n]+'|[^\s;|(){}]+)""",
+            source[match.end() :],
+        )
+        if receiver is None:
+            return original
+        language = _name(receiver[1])
+        if language in {"iex", "invoke-expression"}:
+            language = "powershell"
+        if not (language in SHELLS | {"node", "nodejs", "bun"} or language.startswith("python")):
+            return original
+        body = match["body"]
+        # Expanding strings keep the existing shell checks for evaluated expressions.
+        if match["quote"] == '"' and ("$" in body or "`" in body):
+            return original
+        check_worker_script(body, language, cwd=cwd, _depth=depth + 1)
+        return "''"
+
+    return re.sub(
+        r"""(?<!\x60)@(?P<quote>['"])[ \t]*\r?\n(?P<body>.*?)^(?P=quote)@""",
+        replace,
+        source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+
+
 def check_worker_script(
     source: str, interpreter: str, *, cwd: Path | None = None, _depth: int = 0
 ) -> None:
@@ -94,6 +155,8 @@ def check_worker_script(
         raise ValueError("Command wrappers exceed the supported nesting depth")
     language = _name(interpreter)
     if language in SHELLS:
+        if language in {"powershell", "pwsh"}:
+            source = _powershell_here_strings(source, cwd, _depth)
         _shell(source, cwd, _depth)
     elif language.startswith("python"):
         try:

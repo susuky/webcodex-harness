@@ -33,6 +33,30 @@ from webcodex.processes import Processes
         ["python", "-c", "import subprocess; subprocess.run(['codex', 'exec', 'test'])"],
         ["node", "-e", "const cp=require('child_process'); cp.spawn('codex',['exec','test'])"],
         ["bash", "-lc", "bash <<'EOF'\ncodex exec test\nEOF"],
+        [
+            "powershell",
+            "-Command",
+            "@'\nimport subprocess\nsubprocess.run(['work', 'run', 'test'])\n'@ | python -",
+        ],
+        ["pwsh", "-Command", "@'\ncodex exec test\n'@ | powershell -Command -"],
+        ["powershell", "-Command", "@'\nwork run test\n'@ | iex"],
+        [
+            "powershell",
+            "-Command",
+            "@'\nprint('ordinary data')\n'@ | python -; work run test",
+        ],
+        ["powershell", "-Command", '@"\n$(work run test)\n"@ | python -'],
+        ["powershell", "-Command", "@'\nordinary data\n'@ | python -m work"],
+        [
+            "powershell",
+            "-Command",
+            "@'\nconst cp=require('child_process'); cp.spawn('codex',['exec','test'])\n'@ | node",
+        ],
+        ["powershell", "-Command", "@'\nwork run test\n'@ | bash"],
+        ["powershell", "-Command", "powershell -Command @'\nwork run test\n'@ | python -"],
+        ["powershell", "-Command", "iex @'\nwork run test\n'@ | python -"],
+        ["powershell", "-Command", "powershell -Command `\n@'\nwork run test\n'@ | python -"],
+        ["powershell", "-Command", "powershell -Command (\n@'\nwork run test\n'@ | python -\n)"],
     ],
 )
 async def test_known_worker_launches_never_reach_process_creation(tmp_path, monkeypatch, argv):
@@ -66,10 +90,23 @@ async def test_known_worker_launches_never_reach_process_creation(tmp_path, monk
         ["bash", "-lc", "python - <<'PY'\nprint('codex exec test')\nPY"],
         ["npx", "--yes", "@playwright/mcp@0.0.80", "--headless"],
         ["tunnel-client", "run", "--profile", "webcodex"],
+        ["powershell", "-Command", "@'\nprint('$(work run test)')\n'@ | python -"],
     ],
 )
 def test_ordinary_commands_and_worker_documentation_are_allowed(argv):
     check_worker_command(argv)
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize("quote", ["'", '"'])
+@pytest.mark.parametrize("prefix,newline", [("", "\n"), ("$OutputEncoding = 'utf8'; ", "\r\n")])
+def test_powershell_here_string_python_data_is_not_a_worker(shell, quote, prefix, newline):
+    source = prefix + (
+        f"@{quote}\nfrom pathlib import Path\n"
+        "print(Path('work'), Path('codex'), 'worker documentation')\n"
+        f"{quote}@ | python -"
+    ).replace("\n", newline)
+    check_worker_command([shell, "-Command", source])
 
 
 async def test_terminal_worker_input_cannot_be_split_across_calls(tmp_path):
@@ -182,12 +219,14 @@ async def test_mcp_exposes_host_tools_without_a_cli_worker_backend(tmp_path):
             info = await call(client, "workspace_info", args)
             assert "subagents" not in info["result"]
             assert "codex" not in info["result"]["toolchains"]
-            job = await call(
-                client,
-                "exec_command",
-                {**args, "argv": [sys.executable, "-c", "print('host-tools-ok')"]},
-            )
+            execution = {"argv": [sys.executable, "-c", "print('host-tools-ok work')"]}
+            if sys.platform == "win32":
+                execution = {
+                    "command": "@'\nfrom pathlib import Path\n"
+                    "print('host-tools-ok', Path('work').name)\n'@ | python -"
+                }
+            job = await call(client, "exec_command", {**args, **execution})
             result = await process_result(client, task["id"], job)
-            assert result["exit_code"] == 0 and "host-tools-ok" in result["output"]
+            assert result["exit_code"] == 0 and "host-tools-ok work" in result["output"]
     finally:
         await harness.close()
