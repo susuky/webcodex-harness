@@ -533,9 +533,13 @@ async def test_card_monitoring_reads_json_only_for_selected_running_processes(
     assert reads.count("json_valid") == reads.count("json_extract") == len(expected)
 
 
-def test_work_counts_include_observations_outside_the_bounded_detail_lists(activity_service):
+def test_work_counts_include_observations_outside_the_bounded_detail_lists(
+    activity_service, monkeypatch
+):
     service, task = activity_service
     store = service.store
+    # Cover creation-time ties on clocks with coarse resolution.
+    monkeypatch.setattr("webcodex.store.time.time", lambda: 1000.0)
     for tool in ["exec_command", "subagent_spawn"]:
         job = store.enqueue(task, tool, {}, tool, 200)
         store.claim("local", "instance", 1)
@@ -544,9 +548,10 @@ def test_work_counts_include_observations_outside_the_bounded_detail_lists(activ
             result["agent_id"] = job["job_id"]
         store.complete("local", job["job_id"], "instance", "succeeded", result)
         with store.db:
-            store.db.execute("UPDATE jobs SET updated=10 WHERE id=?", (job["job_id"],))
+            store.db.execute("UPDATE jobs SET created=10,updated=10 WHERE id=?", (job["job_id"],))
             store.db.execute(
-                "UPDATE agent_observations SET updated=20 WHERE job_id=?", (job["job_id"],)
+                "UPDATE agent_observations SET created=10,updated=20 WHERE job_id=?",
+                (job["job_id"],),
             )
     for index in range(100):
         job = store.enqueue(task, "exec_command", {}, str(index), 200)
