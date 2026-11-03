@@ -7,7 +7,7 @@ Let an MCP client work with repositories and desktop applications on your machin
 ## What it does
 
 - Read, search and edit files with hash checks; use Git, commands, tests and interactive terminals.
-- Resume saved tasks and monitor running processes.
+- Resume saved tasks across conversations using `task_id` and monitor running processes.
 - Create or register projects under explicitly allowed parent directories, even with no existing task.
 - Load project skills and plugins with persistent MCP connections.
 - Optionally capture and control the desktop, including Unicode text input.
@@ -35,6 +35,18 @@ See [Task cards and continuation](docs/CHATGPT.md#任務卡片與跨回合續接
 長時間對話可能再次出現「允許一次／一律允許」的工具確認。已觀察到外掛設定為 `Allow all actions`、WebCodex 服務持續在線時仍發生此情況，列為 ChatGPT 平台端的已知限制。WebCodex 沒有數小時後撤銷工具授權的設定。
 
 遇到提示時，在原對話確認工具操作；已送到 Runner 的工作仍可繼續執行。服務正常時，無需為此重啟 Server、bridge 或 Runner。官方說明對話內記住的允許可在重新整理後再次詢問；每個外掛的允許設定仍重問的觸發原因尚未確認，也未查到固定到期時間。詳見[平台授權限制與排查](docs/CHATGPT.md#chatgpt-平台已知限制再次詢問工具授權)。
+
+## Resume tasks across conversations
+
+A `task_id` identifies work saved by the Server, including its goal, progress, jobs, processes and results. It persists independently of a ChatGPT conversation. Start new work with a new task ID; conversations working in the same repo share task records only when they explicitly use the same `task_id`.
+
+To continue existing work in another conversation:
+
+1. Find the original task with `task_list` and check its current progress with `task_get(task_id)`.
+2. Call `task_takeover(task_id)` or select **Take over here** in the task card.
+3. Use `work_on_project(task_id=...)` and continue the original job and process IDs with `job_get` / `read_process`. Keep existing commands running and read their results instead of creating a replacement task or rerunning them.
+
+Resuming requires the same WebCodex client identity (owner) and authorization for the task's project. Each task has one active card controller; takeover transfers card messaging authority to the new conversation. See [the handoff workflow](docs/CHATGPT.md#跨對話接棒).
 
 ## Accounts and computers
 

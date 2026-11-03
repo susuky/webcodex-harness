@@ -238,15 +238,37 @@ test("invalid or out-of-range Host RPC codes are omitted", async () => {
 
 
 test("runner state, work observations, tool activity and control ownership are separate",()=>{
-  for(const label of ["Runner 連線","工作狀態","上次工具活動","卡片控制權","本任務自動發訊次數"])assert.ok(html.includes(label));
+  for(const label of ["Runner 連線","工作狀態","本對話工具呼叫","卡片控制權","本任務自動發訊次數"])assert.ok(html.includes(label));
   const f=fixture();vm.runInContext(between("  function activityView(","  function renderHandoff("),f.context);
   const now=1000;f.context.activityReceivedAt=f.context.Date.now();f.context.stateCopy=["沒有執行中的背景工作",""];
   f.context.last.progress.liveness={observed_at:now,runner_last_seen:now,host_turn_state:"unknown",data_freshness:"live",
-    operation:"讀取檔案",conversation:{outcome:"returned",finished_at:900},work:{running_count:0,pending_count:0}};
+    operation:"讀取檔案",conversation:{outcome:"returned",started_at:850,finished_at:900},work:{running_count:0,pending_count:0}};
   f.context.refreshActivity();assert.match(f.context.el("runner-activity").textContent,/已連線/);assert.match(f.context.el("work-observation").textContent,/沒有執行中/);
   f.context.connectionFailed=true;f.context.refreshActivity();assert.match(f.context.el("conversation-activity").textContent,/舊紀錄/);assert.match(f.context.el("work-observation").textContent,/舊紀錄/);
   f.context.connectionFailed=false;f.context.last.continuation.controller={state:"other",generation:2,updated_at:900,lease_until:999};f.context.refreshActivity();
   assert.equal(f.context.el("controller-state").textContent,"控制權已到期");assert.match(f.context.el("controller-updated").textContent,/最後更新/);
+});
+
+test("conversation call time stays at request start despite completion and newer task updates",()=>{
+  const f=fixture();vm.runInContext(between("  function activityView(","  function renderHandoff("),f.context);
+  const value=f.snapshot();value.progress.last_job_update=999;
+  value.progress.liveness={observed_at:1000,operation:"讀取檔案",conversation:{outcome:"running",started_at:700,finished_at:null}};
+  const started=f.context.timestamp(700);
+  assert.equal(f.context.activityView(value).conversation,`${started}（5 分鐘前） · 讀取檔案 · 工具等候回應`);
+  value.progress.liveness.conversation={outcome:"returned",started_at:700,finished_at:995};
+  value.progress.last_job_update=1000;
+  assert.equal(f.context.activityView(value).conversation,`${started}（5 分鐘前） · 讀取檔案 · 工具已回傳`);
+  value.progress.liveness.observed_at=1060;
+  assert.equal(f.context.activityView(value).conversation,`${started}（6 分鐘前） · 讀取檔案 · 工具已回傳`);
+});
+
+test("missing conversation call never falls back to a task update or return time",()=>{
+  const f=fixture();vm.runInContext(between("  function activityView(","  function renderHandoff("),f.context);
+  const value=f.snapshot();value.progress.last_job_update=999;
+  value.progress.liveness={observed_at:1000,conversation:null};
+  assert.equal(f.context.activityView(value).conversation,"尚無紀錄");
+  value.progress.liveness.conversation={outcome:"returned",finished_at:998};
+  assert.equal(f.context.activityView(value).conversation,"尚無紀錄");
 });
 
 test("a consumed tool-result resets the manual click id before the next poll",async()=>{

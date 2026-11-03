@@ -162,7 +162,7 @@ class TaskTools:
         title: Annotated[str, Field(min_length=1, max_length=500)] | None = None,
         request_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None,
     ) -> dict:
-        """Start or resume coding in one call. For new work pass an exact project ID and title; reuse request_id on retries. To continue pass an existing task_id, which supplies its authorized project. Returns current progress plus workspace_info (Git, instructions, tools). Follow next_action to present the task card for this user-initiated turn, then follow workspace.next_action if it is still running. A completed task stays completed until task_update explicitly reopens it. Never infer an ambiguous project or silently create a replacement task."""
+        """Start or resume coding in one call. For new work pass an exact project ID and title; reuse request_id on retries. A task_id identifies persistent Server work, independent of a conversation or repository; separate work in the same repository gets a new task. When the user requests cross-conversation continuation, find the original with task_list/task_get, take control with task_takeover, then pass that task_id here. It supplies its authorized project; preserve original job_id/process_id and inspect their results instead of rerunning commands. Returns current progress plus workspace_info (Git, instructions, tools). Follow next_action to present the task card for this user-initiated turn, then follow workspace.next_action if it is still running. A completed task stays completed until task_update explicitly reopens it. Never infer an ambiguous project or silently create a replacement task."""
         if "read" not in self.service.config.clients[self.owner].permissions:
             raise ValueError("Starting a workspace requires read permission")
         if task_id:
@@ -1000,7 +1000,7 @@ class Service:
                 "ready",
                 "No queued job blocks this task. Continue the authorized work and refresh the handoff; a saved waiting status is not a current blocker.",
             )
-        conversation = self.store.tool_activity(task["id"], window)
+        conversation = self.store.tool_activity(task["id"], window) if window else None
         return {
             "state": state,
             "next_step": message,
@@ -1481,6 +1481,11 @@ def create_app(config: ServerConfig):
             "cannot perform. Return to browser tools after that step. A denied website or tool permission "
             "must not be bypassed through desktop control. For existing projects, use projects_list, "
             "then work_on_project(project, title, request_id) to start, or work_on_project(task_id) to resume. "
+            "A task_id identifies persistent Server work, not a conversation or repository. Independent work "
+            "gets a new task even in the same repository. When the user requests continuation from another "
+            "conversation, use task_list/task_get to find the original task, task_takeover to read its handoff "
+            "and transfer card control, then work_on_project(task_id) with that same ID. Preserve original "
+            "job_id/process_id and read their results instead of restarting commands or creating a replacement. "
             "The returned workspace already contains the initial Git status and root instructions; avoid "
             "repeating those reads without a reason. task_create and task_list/task_get remain available. Read applicable "
             "AGENTS.md and matching skills before changing code. Preserve unrelated edits. Use file hashes for "
@@ -1506,9 +1511,10 @@ def create_app(config: ServerConfig):
             "only the user's explicit card choice enables bounded delivery. Reconnects and task takeover "
             "reset that choice. Manual continuation uses one idempotent delivery. On a continuation "
             "message call task_resume first; already_consumed=true ends the duplicate workflow. "
-            "For an explicit cross-conversation takeover, use task_takeover and read its handoff; "
-            "continue original jobs and revoke old card control. Runner connectivity and last tool "
-            "activity are observations; Host model turn status is unknown. "
+            "The card's last tool call time is the request start for this task in this conversation only; "
+            "task updates, other conversations and card polling do not advance it. Runner connectivity "
+            "and tool activity are observations; Host model turn status is unknown. Do not restart a "
+            "conversation automatically based on inactivity; report observations and leave restart to the user. "
             "Ask ordinary clarification directly in the conversation; request_user_input records an "
             "out-of-band CLI question and is not the ChatGPT question UI. "
             "Reasoning and any subagent orchestration stay in ChatGPT or the MCP client. "

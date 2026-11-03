@@ -29,7 +29,7 @@
     <dl>
       <div><dt>Runner 連線</dt><dd id="runner-activity">確認中</dd></div>
       <div><dt>工作狀態</dt><dd id="work-observation"></dd></div>
-      <div><dt>上次工具活動</dt><dd id="conversation-activity">尚無紀錄</dd></div>
+      <div><dt>本對話工具呼叫</dt><dd id="conversation-activity">尚無紀錄</dd></div>
       <div><dt>卡片控制權</dt><dd><span id="controller-state">確認中</span><span id="controller-updated" class="work-observation"></span></dd></div>
     </dl>
     <div class="footer-actions"><button id="check-status" type="button" disabled>更新狀態</button><button id="takeover" type="button" hidden>在此接手</button><button id="resume" type="button" disabled>接續工作</button></div>
@@ -173,13 +173,10 @@
     const ago = seconds => seconds < 10 ? "剛剛" : seconds < 60 ? `${Math.floor(seconds)} 秒前`
       : seconds < 3600 ? `${Math.floor(seconds/60)} 分鐘前` : `${Math.floor(seconds/3600)} 小時前`;
     const conversation = live?.conversation;
-    const conversationStamp = conversation?.finished_at ?? conversation?.started_at;
-    const newerTask = Number.isFinite(progress.last_job_update)
-      && (!Number.isFinite(conversationStamp) || progress.last_job_update > conversationStamp);
-    const stamp = newerTask ? progress.last_job_update : conversationStamp, seconds = age(stamp);
+    const stamp = conversation?.started_at, seconds = age(stamp);
     const outcomes = {running:"工具等候回應",returned:"工具已回傳",error:"工具失敗",cancelled:"工具已取消",interrupted:"工具連線中斷"};
     const text = seconds === null ? "尚無紀錄"
-      : `${newerTask ? "任務工具更新" : (live.operation ? live.operation + " · " : "") + (outcomes[conversation?.outcome] || "工具活動")} ${timestamp(stamp)}（${ago(seconds)}）`;
+      : `${timestamp(stamp)}（${ago(seconds)}） · ${(live.operation ? live.operation + " · " : "") + (outcomes[conversation?.outcome] || "工具活動")}`;
     const seen = age(live?.runner_last_seen);
     const runner = progress.runner_online ? `已連線${seen === null ? "" : ` · ${ago(seen)}確認`}`
       : `未連線${seen === null ? "" : ` · 最後連線 ${timestamp(live.runner_last_seen)}`}`;
@@ -260,7 +257,7 @@
     if (document.activeElement !== el("max-auto-messages")) el("max-auto-messages").value = String(policy.max_auto_messages ?? 3);
     if (document.activeElement !== el("min-interval")) el("min-interval").value = String(policy.min_interval_seconds ?? 60);
     el("save-policy").disabled = !owns || changingPolicy;
-    const messages = {watching:"監看工作進度",ready:"工作結果已就緒",prepared:"正在傳送",accepted:"已傳送，等待接續",unknown:"傳送結果未知",consumed:"",cancelled:""};
+    const messages = {watching:"監看工作進度",prepared:"正在傳送",accepted:"已傳送，等待接續",unknown:"傳送結果未知",consumed:"",cancelled:""};
     let state = messages[wait?.state] || "";
     if (autoConsent && policy.auto_blocked_reason === "limit") state = "已達自動發訊上限，結果已保留。";
     else if (autoConsent && policy.auto_blocked_reason === "interval") state = `下次可自動傳訊 ${timestamp(policy.next_auto_at)}`;

@@ -47,7 +47,7 @@
   let limitedReviews = reviewMode === "rate" ? 1 : 0, droppedReviews = reviewMode === "drop" ? 1 : 0;
   const app = document.getElementById("app");
   const taskId = "1".repeat(32), waitId = "2".repeat(32);
-  const host = {state:"ready",generation:1,bound:true,paused:false,autoEnabled:false,autoCount:0,maximum:3,interval:60,deliveries:[],view:null,prepare:0,messages:0,binds:0,stateCalls:0,failedStates:0,pendingStateFailures:0,reviews:0,operation:"檢視圖片",activityAge:5,taskActivityAge:null};
+  const host = {state:"ready",generation:1,bound:true,paused:false,autoEnabled:false,autoCount:0,maximum:3,interval:60,deliveries:[],view:null,prepare:0,messages:0,binds:0,stateCalls:0,failedStates:0,pendingStateFailures:0,reviews:0,operation:"檢視圖片",activityStartedAt:Date.now()/1000-6,activityFinishedAt:Date.now()/1000-5,activityOutcome:"returned",taskActivityAge:null};
   const logs = [];
   const el = id => document.getElementById(id);
   el("mode").textContent = activity ? "工具活動（不安排續接）" : mode;
@@ -66,7 +66,7 @@
       progress:{state:activity ? "observing" : "ready",runner_online:true,pending_count:0,updated:now,
         last_job_update:host.taskActivityAge === null ? null : now-host.taskActivityAge,
         liveness:{observed_at:now,runner_last_seen:now-1,operation:host.operation,
-          conversation:{outcome:"returned",started_at:now-host.activityAge-1,finished_at:now-host.activityAge},
+          conversation:host.activityStartedAt === null ? null : {outcome:host.activityOutcome,started_at:host.activityStartedAt,finished_at:host.activityFinishedAt},
           host_turn_state:"unknown",data_freshness:"live",work:{running_count:0,pending_count:0,observed_at:now}}},
       continuation:{paused:host.paused,auto_enabled:host.autoEnabled,wait:activity ? null : {id:waitId,state:host.state},
         controller:{state:host.bound ? "owned" : "other",generation:host.generation,updated_at:now,lease_until:now+120},
@@ -170,10 +170,10 @@
     log("controller generation replaced");
   });
   for (const [id,operation,seconds] of [["image-activity","檢視圖片",5],["file-activity","修改檔案",5],["quiet-activity","檢視圖片",300]]) {
-    el(id).addEventListener("click",() => { host.operation = operation; host.activityAge = seconds; host.taskActivityAge = null; log("activity changed"); });
+    el(id).addEventListener("click",() => { host.operation = operation; host.activityStartedAt = Date.now()/1000-seconds; host.activityFinishedAt = host.activityStartedAt+1; host.taskActivityAge = null; log("activity changed"); });
   }
   el("task-activity").addEventListener("click",() => {
-    host.activityAge = 3600; host.taskActivityAge = 5; log("another connection updated this task");
+    host.taskActivityAge = 5; log("another connection updated this task");
   });
   window.taskCardTest = {host,inspect};
   inspect();

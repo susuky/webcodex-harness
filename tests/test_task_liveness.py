@@ -160,6 +160,7 @@ def test_legacy_activity_migration_preserves_each_conversation(activity_service,
 async def test_mcp_request_is_visible_while_running_then_finishes(harness, monkeypatch):
     service = harness.app.state.service
     task = service.store.create_task("owner", "local/project", "Running")
+    window = fingerprint("window\0chat")
     original = service.call
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -171,15 +172,21 @@ async def test_mcp_request_is_visible_while_running_then_finishes(harness, monke
 
     monkeypatch.setattr(service, "call", blocked)
     async with harness.mcp() as client:
-        request = asyncio.create_task(client.call_tool("task_get", {"task_id": task["id"]}))
+        request = asyncio.create_task(
+            client.call_tool("task_get", {"task_id": task["id"]}, meta={"openai/session": "chat"})
+        )
         try:
             await asyncio.wait_for(entered.wait(), 5)
-            running = service.task_presentation(task)["progress"]["liveness"]["conversation"]
+            running = service.task_presentation(task, window)["progress"]["liveness"][
+                "conversation"
+            ]
             assert running["tool"] == "task_get" and running["outcome"] == "running"
             assert running["finished_at"] is None
             release.set()
             assert not (await request).isError
-            finished = service.task_presentation(task)["progress"]["liveness"]["conversation"]
+            finished = service.task_presentation(task, window)["progress"]["liveness"][
+                "conversation"
+            ]
             assert finished["outcome"] == "returned"
             assert finished["started_at"] == running["started_at"]
             assert finished["finished_at"] >= running["started_at"]
@@ -191,6 +198,7 @@ async def test_mcp_request_is_visible_while_running_then_finishes(harness, monke
 @pytest.mark.parametrize("outcome", ["returned", "error", "cancelled"])
 async def test_request_outcomes_remain_observable(activity_service, monkeypatch, outcome):
     service, task = activity_service
+    window = fingerprint("window\0chat")
 
     async def complete(owner, name, arguments, *, window=None):
         if outcome == "error":
@@ -200,7 +208,9 @@ async def test_request_outcomes_remain_observable(activity_service, monkeypatch,
         return {"status": "succeeded"}
 
     monkeypatch.setattr(service, "call", complete)
-    request = service.traced_call("owner", "task_get", {"task_id": task["id"]}, track_activity=True)
+    request = service.traced_call(
+        "owner", "task_get", {"task_id": task["id"]}, window=window, track_activity=True
+    )
     if outcome == "error":
         with pytest.raises(ValueError, match="private payload"):
             await request
@@ -209,7 +219,7 @@ async def test_request_outcomes_remain_observable(activity_service, monkeypatch,
             await request
     else:
         await request
-    observed = service.task_presentation(task)["progress"]["liveness"]["conversation"]
+    observed = service.task_presentation(task, window)["progress"]["liveness"]["conversation"]
     assert observed["outcome"] == outcome and observed["finished_at"] >= observed["started_at"]
     assert set(observed) == {"tool", "started_at", "finished_at", "outcome"}
     assert "private payload" not in json.dumps(observed)
@@ -368,14 +378,19 @@ async def test_server_reconstruction_marks_only_running_requests_interrupted(act
     await service.traced_call("owner", "task_events", {"task_id": task["id"]}, track_activity=True)
     finished = service.store.tool_activity(task["id"])
     unfinished = service.store.create_task("owner", "local/project", "Unfinished")
-    service.store.start_tool_activity(unfinished["id"], new_id(), "read_process", time.time())
+    window = fingerprint("window\0chat")
+    service.store.start_tool_activity(
+        unfinished["id"], new_id(), "read_process", time.time(), window=window
+    )
     config = service.config
     service.store.close()
     service.diagnostics.close()
     restored = Service(config)
     try:
         assert restored.store.tool_activity(task["id"]) == finished
-        interrupted = restored.task_presentation(unfinished)["progress"]["liveness"]["conversation"]
+        interrupted = restored.task_presentation(unfinished, window)["progress"]["liveness"][
+            "conversation"
+        ]
         assert interrupted["outcome"] == "interrupted"
         assert interrupted["finished_at"] >= interrupted["started_at"]
         assert restored.store.one("SELECT count(*) AS count FROM task_tool_activity")["count"] == 2
@@ -626,7 +641,7 @@ def test_activity_read_failure_returns_unknown_without_losing_task_progress(
         return original(sql, params)
 
     monkeypatch.setattr(service.store, "one", read)
-    progress = service.task_presentation(task)["progress"]
+    progress = service.task_presentation(task, fingerprint("window\0chat"))["progress"]
     assert progress["liveness"]["conversation"] is None
     assert progress["runner_online"]
 
@@ -635,3 +650,25 @@ async def test_non_mcp_traced_calls_do_not_create_conversation_activity(activity
     service, task = activity_service
     await service.traced_call("owner", "task_get", {"task_id": task["id"]})
     assert service.store.tool_activity(task["id"]) is None
+
+
+async def test_missing_conversation_identity_never_exposes_shared_tool_activity(harness):
+    service = harness.app.state.service
+    task = service.store.create_task("owner", "local/project", "Unidentified chats")
+    async with harness.mcp() as first:
+        result = await first.call_tool("task_get", {"task_id": task["id"]})
+        assert not result.isError
+        assert result.structuredContent["progress"]["liveness"]["conversation"] is None
+    async with harness.mcp() as second:
+        result = await second.call_tool("task_events", {"task_id": task["id"]})
+        assert not result.isError
+        assert service.store.tool_activity(task["id"])["tool"] == "task_events"
+    async with harness.mcp() as first:
+        card = await first.call_tool(
+            "task_app", {"task_id": task["id"], "view_id": "1" * 32, "action": "bind"}
+        )
+        assert not card.isError
+        assert card.structuredContent["control"]["reason"] == "missing_window"
+        liveness = card.structuredContent["progress"]["liveness"]
+        assert liveness["conversation"] is None and liveness["operation"] is None
+        assert card.structuredContent["progress"]["runner_online"]
