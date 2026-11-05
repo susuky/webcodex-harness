@@ -67,7 +67,16 @@ def test_management_preserves_last_output_after_thirteen_empty_observations(tmp_
         request = SimpleNamespace(
             state=SimpleNamespace(owner="owner"), path_params={"task_id": task["id"]}
         )
+        statements = []
+        store.db.set_trace_callback(statements.append)
         running = json.loads(asyncio.run(management.detail(request)).body)
+        store.db.set_trace_callback(None)
+        output_query = next(sql for sql in statements if "SELECT result,updated FROM jobs" in sql)
+        plan = store.db.execute("EXPLAIN QUERY PLAN " + output_query).fetchall()
+        assert any(
+            "process_observations" in row[3] and "task_id=? AND process_id=?" in row[3]
+            for row in plan
+        )
         assert running["outputs"][0]["status"] == "running"
         assert running["outputs"][0]["output"] == original_output
         observation(14, "", "completed", 0)

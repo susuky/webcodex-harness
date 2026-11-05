@@ -140,13 +140,16 @@ async def call(client, name, args=None, *, error=False, timeout_seconds=30):
         deadline = time.monotonic() + timeout_seconds
         while value.get("status") in {"queued", "running"} and time.monotonic() < deadline:
             response = await client.call_tool(
-                "job_get", {"job_id": value["job_id"], "wait_seconds": 2}
+                "job_get", {"job_id": value["job_id"], "wait_seconds": 1}
             )
             value = response.structuredContent
+            assert value is not None, response
         if error:
             assert response.isError, value
         else:
-            assert not response.isError, json.dumps(value.get("result", value), ensure_ascii=False)
+            assert not response.isError, "\n".join(
+                block.text for block in response.content if block.type == "text"
+            )
             assert value.get("status") not in {"queued", "running", "unknown", "failed"}, value
         return value
     assert error and response.isError, response

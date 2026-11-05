@@ -99,6 +99,47 @@ async def test_modern_discovery_probe_falls_back_to_legacy_and_reads_current_ui(
     )
 
 
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/"])
+@pytest.mark.parametrize("rpc_id,version", [(41, None), ("openai-mcp-discover", "2026-07-28")])
+async def test_http_discovery_probe_preserves_the_legacy_fallback(harness, path, rpc_id, version):
+    headers = {"Accept": "application/json, text/event-stream"}
+    params = {}
+    if version is not None:
+        headers["MCP-Protocol-Version"] = version
+        params["_meta"] = {"io.modelcontextprotocol/protocolVersion": version}
+    async with harness.http() as client:
+        response = await client.post(
+            path,
+            json={"jsonrpc": "2.0", "id": rpc_id, "method": "server/discover", "params": params},
+            headers=headers,
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "error": {"code": types.METHOD_NOT_FOUND, "message": "Method not found"},
+    }
+    async with harness.mcp() as client:
+        assert (await client.list_tools()).tools
+
+
+async def test_http_discovery_keeps_auth_origin_and_body_limits(harness):
+    probe = {"jsonrpc": "2.0", "id": "openai-mcp-discover", "method": "server/discover"}
+    async with harness.http() as client:
+        unauthorized = await client.post(
+            "/mcp", json=probe, headers={"Authorization": "Bearer invalid"}
+        )
+        forbidden = await client.post(
+            "/mcp", json=probe, headers={"Origin": "https://untrusted.example"}
+        )
+        oversized = await client.post(
+            "/mcp", json={**probe, "params": {"padding": "x" * (4 * 1024 * 1024)}}
+        )
+    assert unauthorized.status_code == 401
+    assert forbidden.status_code == 403
+    assert oversized.status_code == 413
+
+
 @asynccontextmanager
 async def interrupted_proxy(harness, mode):
     dropped = asyncio.Event()
@@ -173,8 +214,17 @@ async def interrupted_proxy(harness, mode):
 
 @pytest.mark.parametrize("mode", ["eof", "progress"])
 async def test_incomplete_sse_times_out_one_rpc_without_replay_or_poisoning_the_bridge(
-    harness, tmp_path, mode
+    harness, tmp_path, monkeypatch, mode
 ):
+    execute = harness.runner.execute
+
+    async def slow_observation(job):
+        if job["tool"] == "read_process":
+            # Recovery must also work when a durable job outlasts the 2-second RPC deadline.
+            await asyncio.sleep(3)
+        await execute(job)
+
+    monkeypatch.setattr(harness.runner, "execute", slow_observation)
     async with interrupted_proxy(harness, mode) as (url, dropped, progress_sent):
         bootstrap = (
             "import asyncio,sys; from datetime import timedelta; import webcodex.bridge as bridge; "

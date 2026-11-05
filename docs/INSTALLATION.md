@@ -51,11 +51,86 @@ ChatGPT 的連線入口、Bearer token 與 tunnel 設定見[連線指南](CHATGP
 
 ## 管理頁
 
-開啟 `http://127.0.0.1:8765/manage`，輸入 `client.json` 的用戶端 Token。使用遠端 Server 時改成該 Server 的入口網址；`public_url` 必須與瀏覽器實際 origin 相符。
+開啟 `http://127.0.0.1:8765/manage`。設定帳密後使用帳號與密碼登入；未設定時沿用 `client.json` 的用戶端 Token。使用遠端 Server 時改成該 Server 的入口網址。
 
-管理頁列出該 client 可見的 Runner、任務、程序、上次工具活動、最後輸出與錯誤。選取任務可展開命令輸出；每十秒觀察正在執行的原程序。Runner 斷線或頁面失去連線後，顯示舊紀錄與最後觀察時間。
+管理頁以任務列表與詳情呈現進度，支援來源、專案與狀態篩選。
 
-Token 只留在目前頁面的記憶體，登出後清除。API 使用既有 client 權限與任務 owner 檢查；管理頁不會建立新命令，也不會傳送 ChatGPT 訊息。
+預設顯示「未完成」，排除已完成與已封存；「全部任務」包含這兩類。「執行／排隊中」只列目前工具或背景工作，「需要處理」只列待回覆、待核准或專案位置變更，「執行狀態待確認」列尚未確認的背景工作。已完成任務即使保留舊程序資訊，也只歸入完成範圍。
+
+列表直接顯示開始時間與最近操作的完整時間、經過秒數；最近操作取自實際工具呼叫，不因管理頁輪詢而刷新。選取任務先顯示已載入的摘要與狀態，執行紀錄再補入；命令輸出預設收合。背景命令的觀察超過 90 秒或執行端離線時，顯示「待確認」；重新讀取原命令的結果後才更新狀態。沒有目前工具或背景工作時顯示「閒置」，歷史錯誤留在執行紀錄，不會讓任務一直顯示待處理，也不會自動把任務標為完成。
+
+具 `write` 權限的檢視者可「標記完成」或「重新開啟」，由來源的狀態端點呼叫既有 `task_update` 保存原任務狀態，保留摘要、計畫與歷史；來源 Token 也須允許 `write`，並已更新至支援狀態端點的版本。標記完成會停用原任務的自動續接通知，已啟動的工具與背景命令繼續執行。只有 `read` 權限時不顯示狀態修改按鈕。
+
+任務詳情可封存或還原。封存項目預設隱藏，可從狀態選單查看「已封存」；封存只保存這位檢視者在任務中心的顯示偏好，不修改來源任務、停止程序或刪除紀錄。偏好按檢視者、來源及任務分開保存，重新登入或重啟後仍保留。
+
+密碼由 scrypt 雜湊保存；登入後使用 HttpOnly、SameSite=Strict Cookie，有效七天，登出或 Server 重啟後失效。Cookie 僅授權管理頁 API，不能呼叫執行命令、Runner 或管理員 API。舊 Token 模式只把 Token 留在頁面記憶體。兩種方式均保留 client 權限與任務 owner 檢查。
+
+在本機安裝環境產生雜湊（密碼不會顯示在終端或 shell 歷史）：
+
+```bash
+uv run python -c 'from getpass import getpass; from webcodex.management_auth import hash_password; print(hash_password(getpass("Password: ")))'
+```
+
+將輸出的雜湊填入 `server.json`：
+
+```json
+{
+  "management_login": {
+    "client_id": "viewer",
+    "username": "operator",
+    "password_hash": "<上一步產生的 scrypt 雜湊>",
+    "origins": ["http://ll1:8790"]
+  },
+  "allowed_hosts": ["127.0.0.1", "localhost", "ll1"]
+}
+```
+
+`username` 是登入帳號，省略時沿用 `client_id`。`client_id` 須對應既有、具 `read` 權限的 client。`origins` 使用完整的協定、主機與埠；它只擴充管理頁的瀏覽器入口，其他工具 API 仍使用 `public_url`。Tailnet 入口需另將 Tailscale 位址轉送至本機服務；Server 本身可繼續綁定 loopback。
+
+### 統一任務中心
+
+多台 Runner 已共用同一個 Server 時，直接使用該 Server 的管理頁。有多個 Server 時，可在作為任務中心的 `server.json` 中，為檢視者設定 `management_sources`：
+
+```json
+{
+  "clients": {
+    "viewer": {
+      "token": "<用戶端 API Token，至少 32 字元>",
+      "projects": [],
+      "permissions": ["read"],
+      "management_sources": {
+        "ll1": {
+          "label": "ll1 · Ubuntu",
+          "url": "http://127.0.0.1:8787",
+          "token": "<ll1 原用戶端 Token，至少 32 字元>"
+        },
+        "windows": {
+          "label": "Windows",
+          "runner_labels": {"wsl": "Windows · WSL"},
+          "url": "http://127.0.0.1:18769",
+          "token": "<Windows 原用戶端 Token，至少 32 字元>"
+        }
+      }
+    }
+  }
+}
+```
+
+這是 `clients` 欄位的設定範例；保留 Server 的其餘必要欄位。來源 URL 使用 HTTPS，或已建立 SSH 轉送的 loopback HTTP；上述 Windows 埠只是轉送範例。設定檔須維持私有，來源憑證留在 Server，瀏覽器只取得來源名稱。來源 Token 沿用能讀取原任務 owner 的用戶端身分及專案權限。
+
+`projects` 與 `project_roots` 都為空時，任務中心只列出設定的遠端來源；有本機專案時，也會列出「本機」。新增來源不會搬移任務或重新登記 Runner，舊版 Server 的既有管理 API 也可作為來源。
+
+`runner_labels` 可為同一 Server 的執行環境命名；上例將 `wsl` 顯示為「Windows · WSL」，其他 Runner 顯示為「Windows」。介面依環境分組連線與篩選，來源仍只讀取一次。專案選單使用完整任務目錄，保留不同來源、執行環境的同名專案。
+
+任務依實際背景工作、需處理狀態與最近更新排序，搜尋涵蓋來源內的全部任務。不同來源即使任務 ID 相同，選取、輸出與接手指令仍各自獨立。某個來源斷線時，其已載入資料會標示舊紀錄與最後讀取時間，其他來源仍可操作。
+
+在任務詳情複製「接手指令」，貼到可使用對應 WebCodex 連線的新 ChatGPT 對話。新對話以原 `task_id` 讀取目前進度，再明確接手，沿用原 `job_id` 與 `process_id`；任務中心只產生交接內容，不會移交卡片控制權或重跑命令。舊版來源可提供任務摘要、程序與輸出；新對話用 `task_get` 取得完整交接資訊。
+
+「程序」是 agent 啟動的一次命令，例如測試、下載或網站預覽；同一任務可留下多筆歷史命令。Runner 心跳只代表執行端可連線，命令狀態以該命令最後一次觀察為準。管理頁與卡片的內部狀態查詢不計入新工作的排隊數。
+
+「開始時間」使用首次非內部觀察工作的建立時間；尚無工作時顯示任務建立時間。舊版來源未提供時間欄位時，選取任務後讀取第一筆 `task.created` 事件並快取建立時間；不會將最近幾筆工作的時間推測為開始時間，也不會為列表批量讀取完整任務。事件缺失時維持無日期，來源更新後直接使用原有時間欄位。
+
+摘要沿用原任務內容，支援 Markdown 段落、清單及程式碼；顯示排版不會改寫摘要或自動翻譯。`task_update` 指引要求後續摘要使用使用者語言及短段落。模型是否仍在思考沒有直接訊號，頁面只呈現可觀察的工具與背景命令。這個入口不分配 GPU 或其他運算資源。
 
 ## 桌面與瀏覽器依賴
 

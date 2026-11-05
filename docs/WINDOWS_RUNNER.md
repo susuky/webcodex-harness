@@ -22,9 +22,9 @@ ChatGPT 在指定專案建立或續接任務後，先呼叫 `skills_list(task_id
 
 ## 安裝與啟動
 
-主流程將 **Server 與 Runner 都放在 Windows**，讓 MCP 用戶端操作這台 Windows 的桌面與軟體。安裝完成後，執行環境不依賴 ll1。在 Windows 已登入、解鎖的桌面開啟 PowerShell，依序貼上各段。
+主流程將 **Server 與 Runner 都放在 Windows**，讓 MCP 用戶端操作這台 Windows 的桌面與軟體。安裝完成後，執行環境不依賴 Linux Server。在 Windows 已登入、解鎖的桌面開啟 PowerShell，依序貼上各段。
 
-目前原始碼位於 `\\sshfs.r\nvidia@ll1\home\nvidia\ping\webcodex`。本次多螢幕修改還在工作區，因此安裝會複製目前原始碼到 Windows 本機，再建立 Windows 的 Python 環境。Linux 工作區原有的 `.venv` 留在 ll1。
+以下以 SSHFS 掛載的 `\\sshfs.r\user@linux-host\home\user\src\webcodex` 為原始碼來源。請將帳號、主機與路徑換成自己的工作區；安裝會複製原始碼到 Windows 本機，再建立 Windows 的 Python 環境。Linux 工作區的 `.venv` 不會複製。
 
 | 位置或連線 | 用途 |
 | --- | --- |
@@ -34,7 +34,7 @@ ChatGPT 在指定專案建立或續接任務後，先呼叫 `skills_list(task_id
 | `local/project` | 本機 Server 登記的 Windows 專案 ID |
 | Windows `http://127.0.0.1:18765` | Windows Server 的本機入口 |
 
-若要沿用 ll1 的既有 Server，使用文末附錄。兩種方案使用不同設定目錄、token 與 state；每個桌面一次啟動一個 Runner。
+若要沿用 Linux 上的既有 Server，使用文末附錄。兩種方案使用不同設定目錄、token 與 state；每個桌面一次啟動一個 Runner。
 
 ## 1. 安裝工具
 
@@ -63,13 +63,13 @@ uv 的 Windows 安裝方式見[官方安裝文件](https://docs.astral.sh/uv/get
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-$Source = '\\sshfs.r\nvidia@ll1\home\nvidia\ping\webcodex'
+$Source = '\\sshfs.r\user@linux-host\home\user\src\webcodex'
 $LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
 $Harness = Join-Path $LocalRoot 'harness'
 $Project = Join-Path $env:USERPROFILE 'webcodex-desktop-test'
 
 if (-not (Test-Path -LiteralPath (Join-Path $Source 'pyproject.toml'))) {
-    throw '找不到 SSHFS 工作區，請先連上 ll1 的檔案掛載。'
+    throw '找不到 SSHFS 工作區，請先連上 Linux Server 的檔案掛載。'
 }
 if (Test-Path -LiteralPath $LocalRoot) {
     throw "目的地已存在，請保留並先檢查：$LocalRoot"
@@ -133,7 +133,7 @@ uv run --extra computer webcodex call projects_list --config (Join-Path $LocalRo
 if ($LASTEXITCODE -ne 0) { throw 'Windows 本機專案清單查詢失敗。' }
 ```
 
-應看到 `local/project` 且 `online: true`。Server、Runner 與 client 都讀取 Windows 本機設定；此時可中斷 SSHFS 掛載與 ll1 連線。
+應看到 `local/project` 且 `online: true`。Server、Runner 與 client 都讀取 Windows 本機設定；此時可中斷 SSHFS 掛載與 Linux Server 連線。
 
 ## 4. 連接 MCP 用戶端與 ChatGPT
 
@@ -321,7 +321,7 @@ finally {
 
 4 次拖曳的游標終點與標題列抓取點誤差均為 0 像素，DPI 正確切換 96／144，左鍵均已放開；拖曳後 4 次按鈕點擊全數收到。完整驗收段 25 次雲端呼叫成功；含試跑與服務冷啟動後檢查共 46 次呼叫，0 次 409。Windows 79 項回歸與新增跨螢幕實機案例均通過（實機案例 1 passed、1 deselected）。上方多螢幕實機命令現在也會執行跨螢幕往返，詳細證據見[平台驗證](PLATFORMS.md)。
 
-2026-10-23 14:32 已為本次 Windows 安裝保存 DPAPI 加密金鑰，並建立目前使用者的 `Startup\WebCodex Windows.lnk`。登入 Windows 後自動啟動本機 Server、Runner 與 Tunnel，執行時使用 Windows 本機金鑰，不需要 ll1。已在 Windows PowerShell 5.1 停止三個程序後，以同一捷徑重新啟動，全程無金鑰輸入；重複啟動沒有新增程序，ChatGPT 雲端 `projects_list` 與 `computer_status` 成功。Server、Runner、client 設定及核准政策均保持原值。尚未實際重開 Windows 驗證。
+2026-10-23 14:32 已為本次 Windows 安裝保存 DPAPI 加密金鑰，並建立目前使用者的 `Startup\WebCodex Windows.lnk`。登入 Windows 後自動啟動本機 Server、Runner 與 Tunnel，執行時使用 Windows 本機金鑰，不需要 Linux Server。已在 Windows PowerShell 5.1 停止三個程序後，以同一捷徑重新啟動，全程無金鑰輸入；重複啟動沒有新增程序，ChatGPT 雲端 `projects_list` 與 `computer_status` 成功。Server、Runner、client 設定及核准政策均保持原值。尚未實際重開 Windows 驗證。
 
 ### 已安裝環境的常駐與自動恢復
 
@@ -357,28 +357,30 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-WebCodex.ps1
 
 Windows 通常將雙擊 `.ps1` 設為開啟編輯器。需要雙擊啟動時，可將既有 `Startup\WebCodex Windows.lnk` 複製到桌面；該捷徑直接使用相同的無視窗啟動入口。
 
-## 附錄：改用 ll1 既有 Server
+## 附錄：改用 Linux 上的既有 Server
 
-這是另一種部署方式：ll1 Server 維持既有 ChatGPT MCP 入口，Windows 只執行桌面 Runner。完成步驟 1、2 的工具與原始碼準備後，改用本附錄；獨立目錄 `config-ll1` 保存此方案的新 token 與 state。
+這是另一種部署方式：Linux Server 維持既有 ChatGPT MCP 入口，Windows 只執行桌面 Runner。完成步驟 1、2 的工具與原始碼準備後，改用本附錄；獨立目錄 `config-linux` 保存此方案的新 token 與 state。
+
+本附錄以 SSH 目標 `user@linux-host`、遠端原始碼 `~/src/webcodex` 及遠端使用者家目錄下的 `.config/webcodex-harness/server.json` 為例，請換成實際設定。
 
 先初始化獨立的遠端連線設定：
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 $LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
-$Ll1Cfg = Join-Path $LocalRoot 'config-ll1'
+$LinuxCfg = Join-Path $LocalRoot 'config-linux'
 $Project = Join-Path $env:USERPROFILE 'webcodex-desktop-test'
 Set-Location -LiteralPath (Join-Path $LocalRoot 'harness')
-if (Test-Path -LiteralPath $Ll1Cfg) { throw "設定目錄已存在：$Ll1Cfg" }
-uv run --extra computer webcodex init --config-dir $Ll1Cfg --project $Project --port 18766 --computer-use
-if ($LASTEXITCODE -ne 0) { throw 'll1 方案初始化失敗。' }
+if (Test-Path -LiteralPath $LinuxCfg) { throw "設定目錄已存在：$LinuxCfg" }
+uv run --extra computer webcodex init --config-dir $LinuxCfg --project $Project --port 18766 --computer-use
+if ($LASTEXITCODE -ne 0) { throw 'Linux Server 方案初始化失敗。' }
 ```
 
-此方案使用生成的 `runner.json`；Server 讀取 ll1 的既有設定。Server 與 Runner 都應更新至移除逐筆核准的新版本。
+此方案使用生成的 `runner.json`；Server 讀取 Linux Server 的既有設定。Server 與 Runner 都應更新至移除逐筆核准的新版本。
 
-以下使用 Runner ID `windows-desktop`、ll1 client ID `owner`。若 ChatGPT 的既有連線使用其他 client，先將 `$ClientId` 改成該 ID；配對程式會檢查它是否存在。
+以下使用 Runner ID `windows-desktop`、Linux Server client ID `owner`。若 ChatGPT 的既有連線使用其他 client，先將 `$ClientId` 改成該 ID；配對程式會檢查它是否存在。
 
-配對保留 ll1 該 client 的專案範圍與工具權限；符合權限的輸入直接執行。
+配對保留 Linux Server 該 client 的專案範圍與工具權限；符合權限的輸入直接執行。
 
 Runner token 只經 SSH 標準輸入傳送，指令不會顯示它。遠端程式先驗證完整設定，保留其他欄位，在私有目錄備份原檔後原子替換；同名 Runner 已使用不同 token 時會停止。
 
@@ -387,8 +389,8 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
 $Harness = Join-Path $LocalRoot 'harness'
-$Ll1Cfg = Join-Path $LocalRoot 'config-ll1'
-$RunnerPath = Join-Path $Ll1Cfg 'runner.json'
+$LinuxCfg = Join-Path $LocalRoot 'config-linux'
+$RunnerPath = Join-Path $LinuxCfg 'runner.json'
 $ClientId = 'owner'
 
 $Runner = Get-Content -LiteralPath $RunnerPath -Raw | ConvertFrom-Json
@@ -420,7 +422,7 @@ def pair():
     runner_id = identifier(incoming['runner_id'])
     project = runner_id + '/' + identifier(incoming['project'])
     client_id = identifier(incoming['client_id'])
-    path = Path('/home/nvidia/.config/webcodex-harness/server.json')
+    path = Path.home() / '.config' / 'webcodex-harness' / 'server.json'
     if is_link(path):
         raise ValueError('Server 設定不可是符號連結。')
     original = path.read_bytes()
@@ -466,38 +468,38 @@ except (ValueError, OSError, KeyError, TypeError) as error:
     raise SystemExit(str(error))
 '@
 $PairScript = $PairScript.Replace('__PAIRING_PAYLOAD_BASE64__', $PayloadBase64)
-$PairScript | ssh -T nvidia@ll1 'cd /home/nvidia/ping/webcodex && /home/nvidia/ping/webcodex/.venv/bin/python3 -'
-if ($LASTEXITCODE -ne 0) { throw 'll1 配對失敗，請依上方訊息處理。' }
+$PairScript | ssh -T user@linux-host 'cd ~/src/webcodex && .venv/bin/python3 -'
+if ($LASTEXITCODE -ne 0) { throw 'Linux Server 配對失敗，請依上方訊息處理。' }
 Remove-Variable Runner, Payload, PayloadBase64, PairScript
 ```
 
-配對完成後，**由操作員按原啟動方式重啟 ll1 上的 WebCodex Server**，讓新的 Runner 和 client 權限生效。配對指令本身不重啟服務。
+配對完成後，**由操作員按原啟動方式重啟 Linux Server 上的 WebCodex Server**，讓新的 Runner 和 client 權限生效。配對指令本身不重啟服務。
 
 ### 開啟 SSH 通道與 Windows Runner
 
 第一個 PowerShell 視窗保持執行：
 
 ```powershell
-ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18766:127.0.0.1:8787 nvidia@ll1
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18766:127.0.0.1:8787 user@linux-host
 ```
 
-`18766` 是此方案的 Windows 本機通道入口，`8787` 是目前 ll1 Server 監聽的埠。若 ll1 日後改用其他埠，修改 `-L` 最後的數字。SSH 登入前先完成主機指紋確認或正常的金鑰／密碼登入。
+`18766` 是此方案的 Windows 本機通道入口，`8787` 是目前 Linux Server 監聽的埠。若 Linux Server 日後改用其他埠，修改 `-L` 最後的數字。SSH 登入前先完成主機指紋確認或正常的金鑰／密碼登入。
 
 第二個 PowerShell 視窗在 Windows 正常桌面執行，保持開啟：
 
 ```powershell
 $LocalRoot = Join-Path $env:LOCALAPPDATA 'webcodex-windows'
 Set-Location -LiteralPath (Join-Path $LocalRoot 'harness')
-uv run --extra computer webcodex runner --config (Join-Path $LocalRoot 'config-ll1\runner.json')
+uv run --extra computer webcodex runner --config (Join-Path $LocalRoot 'config-linux\runner.json')
 ```
 
-看到 `Runner windows-desktop connected` 後，在另一個 PowerShell 查 ll1 的專案清單：
+看到 `Runner windows-desktop connected` 後，在另一個 PowerShell 查 Linux Server 的專案清單：
 
 ```powershell
-ssh -T nvidia@ll1 'cd /home/nvidia/ping/webcodex && /home/nvidia/ping/webcodex/.venv/bin/python3 -m webcodex call projects_list'
+ssh -T user@linux-host 'cd ~/src/webcodex && .venv/bin/python3 -m webcodex call projects_list'
 if ($LASTEXITCODE -ne 0) { throw '專案清單查詢失敗。' }
 ```
 
-`windows-desktop/project` 應出現且 `online: true`。此查詢使用 ll1 的 `client.json`；ChatGPT 連線使用的 client 應已在上方配對區塊授權。Refresh 連線並開新對話後，使用步驟 5 的提示詞，將專案 ID 改成 `windows-desktop/project`。
+`windows-desktop/project` 應出現且 `online: true`。此查詢使用 Linux Server 的 `client.json`；ChatGPT 連線使用的 client 應已在上方配對區塊授權。Refresh 連線並開新對話後，使用步驟 5 的提示詞，將專案 ID 改成 `windows-desktop/project`。
 
-停止時先在 Windows Runner 視窗按 `Ctrl+C`，再關閉 SSH 通道。ll1 既有 ChatGPT MCP 入口與其他 Runner 可繼續使用。
+停止時先在 Windows Runner 視窗按 `Ctrl+C`，再關閉 SSH 通道。Linux Server 既有 ChatGPT MCP 入口與其他 Runner 可繼續使用。

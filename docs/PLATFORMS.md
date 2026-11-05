@@ -6,7 +6,7 @@
 
 框架已移除逐筆核准與專案信任設定。Windows 完整測試為 306 passed、36 skipped；Ubuntu 為 328 passed、14 skipped，卡片 JavaScript 測試另有 31 passed。升級測試確認舊工作保留原 job ID，已撤銷的權限與已完成任務不會重新執行，重複請求不會重複派工。
 
-Windows 已套用新版 Server，五個專案均在線，`approval_mode="automatic"`、`approval_required=[]`。ChatGPT 雲端外掛命令實際完成、退出碼 0；原教材對話亦成功執行 `computer_click`、`computer_key`、`computer_type`，繼續操作原生 PowerPoint，沒有本機核准步驟。ll1 亦已更新 Server，既有三個專案的 REST 查詢均回報自動執行；原有憑證、專案範圍與工具權限保留。
+Windows 已套用新版 Server，五個專案均在線，`approval_mode="automatic"`、`approval_required=[]`。ChatGPT 雲端外掛命令實際完成、退出碼 0；原教材對話亦成功執行 `computer_click`、`computer_key`、`computer_type`，繼續操作原生 PowerPoint，沒有本機核准步驟。Linux Server 亦已更新 Server，既有三個專案的 REST 查詢均回報自動執行；原有憑證、專案範圍與工具權限保留。
 
 本輪兩次額外游標探測因教材流程同時擷取新圖，回報 `Stale snapshot`；紀錄保留，未重送輸入。桌面快照在整個 Runner 共用，任何任務的新截圖都會取代舊快照；輸入與觀察應由同一流程依序操作。以下三螢幕與跨螢幕紀錄是先前實機驗收，本輪未重跑整組拖曳。
 
@@ -30,11 +30,11 @@ Windows 已套用新版 Server，五個專案均在線，`approval_mode="automat
 
 整個桌面模式保留新截圖、五分鐘期限及排列／DPI 改變失效檢查；已授權的輸入直接執行。輸入端點若位於螢幕間空白區域，會在送出輸入前拒絕；模擬拖曳失敗時亦驗證左鍵釋放。
 
-完整證據位於 `C:\Users\hpisj\.codex\visualizations\2026\10\22\01a161d4-3dab-7d10-9fc7-e1183cee433c\windows-cross-monitor\run-2\results.json`，同目錄保存 9 張 JPEG、各階段事件、實機回歸 XML 與服務冷啟動紀錄。試跑時紀錄器遇到 Windows 讀取鎖；修正定時發布後，另啟新視窗完成上述四次驗收，試跑資料保留於工作紀錄。本輪未測右側螢幕的跨螢幕路徑。
+完整證據保存在本機驗收目錄的 `windows-cross-monitor/run-2/results.json`，同目錄保存 9 張 JPEG、各階段事件、實機回歸 XML 與服務冷啟動紀錄。試跑時紀錄器遇到 Windows 讀取鎖；修正定時發布後，另啟新視窗完成上述四次驗收，試跑資料保留於工作紀錄。本輪未測右側螢幕的跨螢幕路徑。
 
 ## 2026-10-23 ChatGPT 雲端至 Windows 三螢幕驗收
 
-使用 Windows 本機 Server、Runner、stdio bridge 與官方 `tunnel-client` 0.0.17，經已連接的 ChatGPT 自訂 MCP 外掛執行。Server 與 Runner 使用 Windows 本機副本，執行時不依賴 ll1。
+使用 Windows 本機 Server、Runner、stdio bridge 與官方 `tunnel-client` 0.0.17，經已連接的 ChatGPT 自訂 MCP 外掛執行。Server 與 Runner 使用 Windows 本機副本，執行時不依賴 Linux Server。
 
 | 項目 | 實際結果 |
 | --- | --- |
@@ -50,7 +50,7 @@ Windows 已套用新版 Server，五個專案均在線，`approval_mode="automat
 
 早期驗收曾出現 MCP 初始化 409；已定位 stdio 握手空窗，並於 Windows 啟動流程啟用官方 `MCP_STDIO_SEND_INITIALIZED_NOTIFICATION=true`。修正後本機 12 輪初始化、4 路並行、60 次工具呼叫及 ChatGPT 端 34 次實際呼叫均成功，0 失敗、0 工具重試。
 
-2026-10-23 15:32–15:36（台北時間）解鎖 Windows 後，另建任務 `ed42be79085f4a9ab2c1d922043484b3`，經同一 ChatGPT 外掛重驗上述三個螢幕。25 次雲端呼叫、9 張原生 JPEG、3 次點擊與 3 次拖曳全部成功，0 失敗、0 重試、0 次 409。17 筆工作紀錄成功且沒有重複；左側負座標、150%／100% 混合 DPI 與右側直向螢幕均核對實際視窗事件。測試視窗已關閉，Server、Runner 與 Tunnel 保持執行。證據位於本機 `C:\Users\hpisj\.codex\visualizations\2026\10\22\01a161d4-3dab-7d10-9fc7-e1183cee433c\windows-unlocked-live\results.json`，同目錄保存 9 張截圖、3 份視窗事件紀錄及 25 次雲端呼叫紀錄。本輪未測跨螢幕拖曳。
+2026-10-23 15:32–15:36（台北時間）解鎖 Windows 後，另建獨立驗收任務，經同一 ChatGPT 外掛重驗上述三個螢幕。25 次雲端呼叫、9 張原生 JPEG、3 次點擊與 3 次拖曳全部成功，0 失敗、0 重試、0 次 409。17 筆工作紀錄成功且沒有重複；左側負座標、150%／100% 混合 DPI 與右側直向螢幕均核對實際視窗事件。測試視窗已關閉，Server、Runner 與 Tunnel 保持執行。證據保存在本機驗收目錄的 `windows-unlocked-live/results.json`，同目錄保存 9 張截圖、3 份視窗事件紀錄及 25 次雲端呼叫紀錄。本輪未測跨螢幕拖曳。
 
 2026-10-23 已為這台 Windows 設定 DPAPI 加密金鑰與登入啟動捷徑；停止 Server、Runner、Tunnel 後，使用捷徑重啟與 ChatGPT 連線均通過，無需重新輸入金鑰。完整 Windows 重開機尚未驗證。原桌面測試目標為獨立 Tk 視窗，指定截圖軟體尚未提供。
 

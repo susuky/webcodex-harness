@@ -90,11 +90,36 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ManagementSource(StrictModel):
+    url: str
+    token: str = Field(min_length=32, repr=False)
+    label: str = Field(default="", max_length=100)
+    runner_labels: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def boundaries(self):
+        self.url = server_url(self.url)
+        if urlsplit(self.url).port == 0:
+            raise ValueError("Management source port must be positive")
+        if any(character in self.token for character in "\r\n") or self.token != self.token.strip():
+            raise ValueError(
+                "Management source token must not contain surrounding whitespace or newlines"
+            )
+        self.label = self.label.strip()
+        for runner, label in self.runner_labels.items():
+            identifier(runner)
+            if not label.strip() or len(label) > 100:
+                raise ValueError("Runner labels must contain 1–100 characters")
+        self.runner_labels = {runner: label.strip() for runner, label in self.runner_labels.items()}
+        return self
+
+
 class Client(StrictModel):
     token: str = Field(min_length=32)
     projects: list[str]
     project_roots: list[str] = Field(default_factory=list)
     permissions: set[str] = Field(default_factory=lambda: set(DEFAULT_PERMISSIONS))
+    management_sources: dict[str, ManagementSource] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -112,6 +137,35 @@ class Client(StrictModel):
     def valid_permissions(self):
         if not self.permissions <= PERMISSIONS:
             raise ValueError("Unknown permission")
+        for name in self.management_sources:
+            identifier(name)
+            if name == "local":
+                raise ValueError("The local management source is reserved")
+        return self
+
+
+class ManagementLogin(StrictModel):
+    client_id: str
+    username: str | None = Field(default=None, min_length=1, max_length=128)
+    password_hash: str = Field(repr=False, pattern=r"^scrypt\$[0-9a-f]{32}\$[0-9a-f]{64}$")
+    origins: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def boundaries(self):
+        identifier(self.client_id)
+        for value in self.origins:
+            url = urlsplit(value)
+            if (
+                url.scheme not in {"http", "https"}
+                or not url.hostname
+                or url.username
+                or url.password
+                or url.path
+                or url.query
+                or url.fragment
+                or url.port == 0
+            ):
+                raise ValueError("Management login origins must be exact HTTP(S) origins")
         return self
 
 
@@ -125,6 +179,7 @@ class ServerConfig(StrictModel):
     public_url: str = "http://127.0.0.1:8765"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1", "localhost", "[::1]"])
     max_pending_jobs: int = Field(default=100, ge=1, le=10000)
+    management_login: ManagementLogin | None = None
 
     @model_validator(mode="after")
     def credentials(self):
@@ -141,6 +196,12 @@ class ServerConfig(StrictModel):
             identifier(name)
         self.state_dir = self.state_dir.expanduser().resolve()
         self.public_url = server_url(self.public_url)
+        if self.management_login:
+            client = self.clients.get(self.management_login.client_id)
+            if client is None or "read" not in client.permissions:
+                raise ValueError(
+                    "Management login requires an existing client with read permission"
+                )
         return self
 
 

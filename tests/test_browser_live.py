@@ -45,6 +45,11 @@ async def test_browser_plugin_through_real_mcp(tmp_path):
     harness = Harness(tmp_path)
     source = harness.repo / "browser-tools"
     shutil.copytree(Path(__file__).parents[1] / "examples/plugins/browser-tools", source)
+    config_file = source / "browser.config.json"
+    config = json.loads(config_file.read_text())
+    # CI installs this provider's Chromium; do not depend on the host's separate Chrome version.
+    config["browser"]["launchOptions"]["channel"] = "chromium"
+    config_file.write_text(json.dumps(config))
     harness.runner_config.environment.update(
         BROWSER_NODE=shutil.which("node"),
         BROWSER_MCP_CLI=str(

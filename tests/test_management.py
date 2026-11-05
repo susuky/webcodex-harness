@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from webcodex.management import Management
+from webcodex.management import Management, execution_freshness
 
 pytest_plugins = ["test_harness", "test_task_liveness"]
 
@@ -73,7 +73,14 @@ async def test_management_refresh_observes_completion_without_restarting_command
                 )
             ).json()
         assert initial["result"]["status"] == "running"
+        with harness.app.state.service.store.db:
+            harness.app.state.service.store.db.execute(
+                "UPDATE jobs SET updated=? WHERE id=?", (time.time() - 300, initial["job_id"])
+            )
         before = (await client.get("/api/manage/tasks/" + task_id)).json()
+        assert before["processes"][0]["status"] == "running"
+        assert before["processes"][0]["display_status"] == "unconfirmed"
+        assert before["state"] == "needs_confirmation"
         activity = before["liveness"]["conversation"]
         assert activity["tool"] == "exec_command" and activity["finished_at"] > 0
         await asyncio.sleep(0.3)
@@ -82,6 +89,7 @@ async def test_management_refresh_observes_completion_without_restarting_command
         assert len(refreshed.json()["updates"]) == 1
         detail = (await client.get("/api/manage/tasks/" + task_id)).json()
         assert detail["processes"][0]["status"] == "completed"
+        assert detail["processes"][0]["display_status"] == "completed"
         assert "finished" in detail["outputs"][0]["output"]
         assert detail["liveness"]["conversation"] == activity
         await client.post("/api/manage/refresh", json={"task_id": task_id})
@@ -245,3 +253,142 @@ def test_management_activity_excludes_internal_observations_and_tracks_latest_ca
     assert management.describe(current_task)["liveness"]["conversation"]["tool"] == "task_get"
     complete("write_file", "cli-call")
     assert management.describe(current_task)["liveness"]["conversation"]["tool"] == "write_file"
+
+
+def test_management_observation_queue_is_not_task_work(activity_service):
+    service, current_task = activity_service
+    store = service.store
+    management = Management(service)
+    for prefix in ("card-observe:", "manage-observe:", "watch:"):
+        store.enqueue(current_task, "read_process", {}, prefix + "check", 200)
+    page = management.describe(current_task)
+    assert page["state"] == "ready"
+    assert page["jobs"] == []
+    assert page["liveness"]["work"]["pending_count"] == 0
+    assert page["started_at"] is None
+    assert page["liveness"]["conversation"] is None
+
+    # A model's explicit process read is still real work, even with the same tool name.
+    real = store.enqueue(current_task, "read_process", {}, "model-read", 200)
+    page = management.describe(current_task)
+    assert page["state"] == "observing"
+    assert [job["job_id"] for job in page["jobs"]] == [real["job_id"]]
+    assert page["liveness"]["work"]["pending_count"] == 1
+    assert page["started_at"] == real["created"]
+    assert store.one("SELECT count(*) AS n FROM jobs")["n"] == 4
+
+
+def test_management_history_is_not_a_current_blocker_and_is_never_cleared(activity_service):
+    service, current_task = activity_service
+    store = service.store
+
+    def complete(tool, status, result):
+        job = store.enqueue(current_task, tool, {}, "history-" + str(len(history)), 100)
+        store.claim("local", "instance", 1)
+        store.complete("local", job["job_id"], "instance", status, result)
+        with store.db:
+            store.db.execute(
+                "UPDATE jobs SET updated=? WHERE id=?",
+                (current_task["updated"] + len(history) + 1, job["job_id"]),
+            )
+        history.append(job["job_id"])
+
+    history = []
+    complete("read_file", "failed", {"error": "A historical read failed"})
+    complete("write_file", "unknown", {"error": "A historical write has an unknown outcome"})
+    complete(
+        "exec_command",
+        "succeeded",
+        {"process_id": "old-command", "status": "failed", "exit_code": 1, "output": "old failure"},
+    )
+    assert service.task_progress(current_task, include_output=False)["state"] == "needs_attention"
+    saved_jobs = list(store.db.execute("SELECT id,status,result,updated FROM jobs ORDER BY id"))
+    saved_task = store.task(current_task["id"], "owner")
+    management = Management(service)
+
+    detail = management.detail_data("owner", current_task["id"])
+    assert detail["state"] == "ready" and detail["status"] == "active"
+    assert {error["status"] for error in detail["errors"]} == {"failed", "unknown"}
+    assert len(detail["issues"]) == 2
+    assert detail["outputs"][0]["status"] == "failed"
+    assert detail["outputs"][0]["output"] == "old failure"
+    assert (
+        list(store.db.execute("SELECT id,status,result,updated FROM jobs ORDER BY id"))
+        == saved_jobs
+    )
+    assert store.task(current_task["id"], "owner") == saved_task
+
+    complete("read_file", "succeeded", {"content": "A later successful read"})
+    later = management.detail_data("owner", current_task["id"])
+    assert later["state"] == "ready"
+    assert later["errors"] == detail["errors"] and later["issues"] == detail["issues"]
+    assert later["outputs"] == detail["outputs"]
+    store.update_task(current_task["id"], "owner", "completed", "Explicitly finished", [])
+    finished = management.detail_data("owner", current_task["id"])
+    assert finished["state"] == "completed" and finished["status"] == "completed"
+    assert finished["errors"] == detail["errors"]
+
+
+def test_management_keeps_current_operator_and_approval_requests(activity_service):
+    service, current_task = activity_service
+    store = service.store
+    management = Management(service)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO questions(id,task_id,question,created) VALUES (?,?,?,?)",
+            ("current-question", current_task["id"], "Which project should be used?", time.time()),
+        )
+    assert management.describe(current_task)["state"] == "waiting_operator"
+    with store.db:
+        store.db.execute("UPDATE questions SET answer='Answered' WHERE id='current-question'")
+    pending = store.enqueue(current_task, "write_file", {}, "requires-approval", 100)
+    with store.db:
+        store.db.execute(
+            "UPDATE jobs SET status='pending_approval' WHERE id=?", (pending["job_id"],)
+        )
+    page = management.describe(current_task)
+    assert page["state"] == "pending_approval"
+    assert page["jobs"][0]["status"] == "pending_approval"
+    with store.db:
+        store.db.execute("UPDATE jobs SET status='queued' WHERE id=?", (pending["job_id"],))
+    assert management.describe(current_task)["state"] == "observing"
+    store.claim("local", "instance", 1)
+    store.complete("local", pending["job_id"], "instance", "succeeded", {})
+    assert management.describe(current_task)["state"] == "ready"
+    store.register("local", "instance", {"project": "c" * 64})
+    assert management.describe(current_task)["state"] == "project_changed"
+
+
+@pytest.mark.parametrize(
+    ("observed_at", "jobs", "expected"),
+    [
+        (990, [], "observing"),
+        (200, [], "needs_confirmation"),
+        (200, [{"job_id": "new-call", "status": "queued"}], "observing"),
+        (200, [{"job_id": "approval", "status": "pending_approval"}], "pending_approval"),
+        (990, [{"job_id": "approval", "status": "pending_approval"}], "observing"),
+        (
+            200,
+            [
+                {"job_id": "approval", "status": "pending_approval"},
+                {"job_id": "new-call", "status": "queued"},
+            ],
+            "observing",
+        ),
+    ],
+)
+def test_management_legacy_attention_state_uses_current_work(observed_at, jobs, expected):
+    legacy = {
+        "status": "active",
+        "state": "needs_attention",
+        "runner_online": True,
+        "processes": [{"process_id": "original", "status": "running", "observed_at": observed_at}],
+        "jobs": jobs,
+        "issues": [{"job_id": "historical-error", "status": "failed"}],
+        "liveness": {"work": {"running_count": 1, "pending_count": len(jobs)}},
+    }
+    view = execution_freshness(legacy, now=1000)
+    assert view["state"] == expected
+    assert view["issues"] == legacy["issues"]
+    assert legacy["state"] == "needs_attention"
+    assert "display_status" not in legacy["processes"][0]

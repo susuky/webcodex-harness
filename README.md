@@ -108,7 +108,21 @@ The demo creates a task, runs a four-second command once, reads its original pro
 
 ## Manage and maintain
 
-Open `http://127.0.0.1:8765/manage` with the client token to view Runners, tasks, live process observations, output and errors. Task state comes from the existing Server records; running processes are refreshed through `read_process`.
+Open `http://127.0.0.1:8765/manage` and sign in with your configured username and password. Installations without a management login use the token in `client.json`. The task center brings Windows, WSL and Ubuntu tasks into one page with source, project, status and text filters. View start and last-operation times, summaries and command output; copy handoff instructions; mark tasks complete or reopen them with write permission; archive and restore older tasks. See [the task center setup](docs/INSTALLATION.md#統一任務中心).
+
+The status filter defaults to **未完成** (unfinished). The labels below match the interface:
+
+| Option | Tasks shown |
+| --- | --- |
+| 未完成 | Excludes completed and archived tasks |
+| 執行／排隊中 | Tools or background work are running or queued |
+| 需要處理 | Waiting for a reply, approval or action on a project change |
+| 執行狀態待確認 | Background work has an expired or unconfirmed observation |
+| 已完成 | Completed tasks that are not archived |
+| 已封存 | All archived tasks |
+| 全部任務 | All tasks, including completed and archived ones |
+
+The first five filters exclude archived tasks. Completed tasks stay out of the running, action-required and unconfirmed filters even when old process records remain.
 
 ```sh
 uv run webcodex doctor --share --output diagnostics.json

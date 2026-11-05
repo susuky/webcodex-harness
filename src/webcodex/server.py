@@ -30,6 +30,7 @@ from .continuation import ACTIVE as ACTIVE_WAIT_STATES
 from .continuation import APP_MIME, APP_URI, Continuations, fingerprint
 from .diagnostics import Diagnostics, hash_id
 from .management import management_routes
+from .management_auth import PUBLIC_ROUTES, ManagementAuth
 from .projects import PROJECT_OPERATIONS
 from .runtime import Runtime
 from .store import RunnerCompletion, Store, new_id
@@ -428,7 +429,7 @@ class TaskTools:
         plan: Annotated[list[dict[str, str]], Field(max_length=50)],
         handoff: dict[str, list[str]] | None = None,
     ) -> dict:
-        """Save the task's current status, concise handoff summary and plan. Each plan step has step and status (pending/in_progress/completed). Mark completed only after checking the requested result and relevant tests."""
+        """Save the task's current status, concise handoff summary and plan. Write the summary in the user's language (Traditional Chinese for Traditional Chinese requests), using short Markdown paragraphs or bullets for results, current work and next steps. Put paths and commands in backticks; avoid a single dense paragraph. Each plan step has step and status (pending/in_progress/completed). Mark completed only after checking the requested result and relevant tests."""
         if self.task(task_id)["kind"] != "coding":
             raise ValueError("Project management records stay open; update the coding task instead")
         for step in plan:
@@ -1386,8 +1387,9 @@ class RequestDiagnostics:
 
 
 class Security:
-    def __init__(self, app, config: ServerConfig):
+    def __init__(self, app, config: ServerConfig, management_auth: ManagementAuth):
         self.app, self.config = app, config
+        self.management_auth = management_auth
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -1398,7 +1400,10 @@ class Security:
         headers = dict(scope["headers"])
         header = headers.get(b"authorization", b"").decode("latin-1")
         token = header[7:] if header.startswith("Bearer ") else ""
-        owner = None
+        management = path.startswith("/api/manage/")
+        public_login = (path, scope["method"]) in PUBLIC_ROUTES
+        session_owner = self.management_auth.owner(scope) if management else None
+        owner = session_owner
         if path.startswith("/api/runner/"):
             owner = next(
                 (
@@ -1414,7 +1419,7 @@ class Security:
                 if hmac.compare_digest(self.config.admin_token.encode(), token.encode())
                 else None
             )
-        else:
+        elif owner is None:
             owner = next(
                 (
                     name
@@ -1423,15 +1428,20 @@ class Security:
                 ),
                 None,
             )
-        if owner is None:
+        if owner is None and not public_login:
             return await JSONResponse(
                 {"error": "Unauthorized"}, 401, headers={"WWW-Authenticate": "Bearer"}
             )(scope, receive, send)
-        if b"origin" in headers:
-            # Browser requests need the exact operator-configured origin; token auth remains mandatory.
-            if headers[b"origin"].decode("latin-1").rstrip("/") != self.config.public_url.rstrip(
-                "/"
-            ):
+        origin = headers.get(b"origin", b"").decode("latin-1")
+        if (public_login or session_owner) and scope["method"] != "GET" and not origin:
+            return await JSONResponse({"error": "Origin is required"}, 403)(scope, receive, send)
+        if origin:
+            allowed = (
+                self.management_auth.allowed_origin(origin)
+                if management
+                else origin == self.config.public_url
+            )
+            if not allowed:
                 return await JSONResponse({"error": "Origin is not allowed"}, 403)(
                     scope, receive, send
                 )
@@ -1449,6 +1459,22 @@ class Security:
             messages.append(message)
             if not message.get("more_body", False):
                 break
+        if path.rstrip("/") == "/mcp" and scope["method"] == "POST":
+            try:
+                request = types.JSONRPCRequest.model_validate_json(
+                    b"".join(message.get("body", b"") for message in messages), strict=True
+                )
+            except ValidationError:
+                request = None
+            # Fall back before the SDK rejects the discovery probe's newer protocol version.
+            if request is not None and request.method == "server/discover":
+                return await JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request.id,
+                        "error": {"code": types.METHOD_NOT_FOUND, "message": "Method not found"},
+                    }
+                )(scope, receive, send)
         buffered = iter(messages)
 
         async def bounded_receive():
@@ -1465,6 +1491,7 @@ class Security:
 
 def create_app(config: ServerConfig):
     service = Service(config)
+    management_auth = ManagementAuth(config)
     mcp = Server(
         "webcodex",
         version=__version__,
@@ -1491,7 +1518,8 @@ def create_app(config: ServerConfig):
             "AGENTS.md and matching skills before changing code. Preserve unrelated edits. Use file hashes for "
             "edits and run relevant tests. Use task_review to show changed files, new untracked files, "
             "per-file diffs and actual execution results before closeout. Reviews remain available after completion. "
-            "Save the current summary/plan with task_update. "
+            "Save the current summary/plan with task_update in the user's language; for Traditional Chinese "
+            "requests use Traditional Chinese, short Markdown paragraphs or bullets, and code spans for paths. "
             "On resume, task_get.progress takes precedence over saved status/summary/plan. A stale waiting "
             "summary is not a current blocker. Read latest_execution: job status succeeded only means the "
             "tool returned; outcome/exit_code can show command failure. "
@@ -1784,6 +1812,7 @@ def create_app(config: ServerConfig):
     app = Starlette(
         lifespan=lifespan,
         routes=[
+            *management_auth.routes(),
             *management_routes(service),
             Route("/healthz", health),
             Route("/api/tools", api_tools),
@@ -1798,7 +1827,8 @@ def create_app(config: ServerConfig):
         ],
     )
     app.state.service = service
-    app.add_middleware(Security, config=config)
+    app.state.management_auth = management_auth
+    app.add_middleware(Security, config=config, management_auth=management_auth)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.allowed_hosts)
     app.add_middleware(RequestDiagnostics, diagnostics=service.diagnostics)
     return app
