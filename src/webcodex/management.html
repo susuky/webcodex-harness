@@ -46,12 +46,35 @@
   function updateClocks() {if(authenticated && !document.hidden)for(const time of document.querySelectorAll('time[data-relative]')){const text=relativeStamp(Number(time.dataset.relative));if(time.textContent!==text)time.textContent=text;}}
   const processStamp = task => Math.max(0,...(task.processes || []).map(p=>p.observed_at || 0));
   const toolStamp = task => {const a=task.liveness?.conversation;return a?.finished_at || a?.started_at;};
+  const workObserved = task => task?.liveness?.observed_at || task?.observed_at || 0;
+  const runnerObserved = task => task?.liveness?.runner_observed_at || workObserved(task);
+  function mergeObserved(current,incoming) {
+    const newer=workObserved(current)>workObserved(incoming)?current:incoming,older=newer===current?incoming:current;
+    const task={...older,...newer,liveness:{...older?.liveness,...newer?.liveness}},runner=runnerObserved(current)>runnerObserved(incoming)?current:incoming;
+    task.liveness.observed_at=workObserved(newer);
+    for(const field of ['runner_online','stale'])if(runner && field in runner)task[field]=runner[field];
+    for(const field of ['runner_last_seen','data_freshness','runner_observed_at'])if(runner?.liveness && field in runner.liveness)task.liveness[field]=runner.liveness[field];
+    task.liveness.runner_observed_at=runnerObserved(runner);
+    return task;
+  }
+  function fromCatalog(source,task) {
+    const cached=detailCache.get(key(task)),merged=syncRunner(source,mergeObserved(cached,task));if(cached)detailCache.set(key(task),merged);return merged;
+  }
+  function loadRunners(source,rows,observedAt) {
+    source.runners=rows.map(row=>{const known=source.runners.find(runner=>runner.id===row.id),knownAt=known?.observed_at || source.observed_at || 0;return known && (knownAt>observedAt || knownAt===observedAt && (known.last_seen || 0)>(row.last_seen || 0))?known:{...row,observed_at:observedAt};});
+  }
+  function syncRunner(source,task) {
+    const runner=source.runners.find(runner=>runner.id===task.runner),observedAt=runnerObserved(task),knownAt=runner?.observed_at || source.observed_at || 0;
+    if(!runner || typeof task.runner_online!=='boolean')return task;
+    if(observedAt<knownAt || observedAt===knownAt && (task.liveness?.runner_last_seen || 0)<(runner.last_seen || 0))return {...task,runner_online:runner.online,stale:!runner.online,liveness:{...task.liveness,runner_last_seen:runner.last_seen,runner_observed_at:knownAt,data_freshness:runner.online?'live':'historical'}};
+    runner.online=task.runner_online;runner.observed_at=observedAt;if(task.liveness && 'runner_last_seen' in task.liveness)runner.last_seen=task.liveness.runner_last_seen;return task;
+  }
   const hasPending = task => task.jobs?.length ? task.jobs.some(job=>['queued','running'].includes(job.status)) : Boolean(task.liveness?.work?.pending_count) && task.state!=='pending_approval';
   const rawRunning = task => (task.processes || []).some(p=>p.status==='running') || Boolean(task.liveness?.work?.running_count);
   const taskSourceStale = task => sources.some(source=>source.id===task.source_id && sourceStale(source));
-  const processState = (process,task) => process.status==='running' && (!task.runner_online || !process.observed_at || Date.now()/1000-process.observed_at>90 || taskSourceStale(task)) ? 'unconfirmed' : process.display_status || process.status;
+  const processState = (process,task) => process.status==='running' ? (!task.runner_online || !process.observed_at || Date.now()/1000-process.observed_at>90 || taskSourceStale(task)?'unconfirmed':'running') : process.display_status || process.status;
   const isActive = task => task.status!=='completed' && (hasPending(task) && !taskSourceStale(task) || (task.processes || []).some(p=>processState(p,task)==='running'));
-  const hasUnconfirmed = task => task.status!=='completed' && (hasPending(task) && taskSourceStale(task) || (task.processes || []).some(p=>processState(p,task)==='unconfirmed') || Boolean(task.liveness?.work?.unconfirmed_count));
+  const hasUnconfirmed = task => task.status!=='completed' && (hasPending(task) && taskSourceStale(task) || (task.processes || []).some(p=>processState(p,task)==='unconfirmed') || Math.max(task.liveness?.work?.running_count || 0,task.liveness?.work?.unconfirmed_count || 0)>(task.processes || []).filter(p=>p.status==='running').length);
   const needsAction = task => task.status!=='completed' && (['waiting_operator','pending_approval','project_changed'].includes(task.state) || (task.jobs || []).some(job=>job.status==='pending_approval'));
   const rank = task => task.status==='completed' ? 3 : isActive(task) ? 0 : needsAction(task) ? 1 : 2;
   function taskState(task) {
@@ -120,8 +143,8 @@
     for(const source of sources){
       const stale=sourceStale(source),initialLoading=source.loading && !source.observed_at;
       for(const [index,group] of environmentGroups(source).entries()){
-        const online=group.runners.some(runner=>runner.online),unknown=!group.runners.length,state=initialLoading?'讀取中…':stale?'連線待更新':unknown?'狀態待確認':online?'已連線':'離線',e=node('div',undefined,'source');
-        e.append(node('span',group.label+' · '+state,'source-status '+(initialLoading || unknown?'muted':stale || !online?'offline':'online')));
+        const online=group.runners.some(runner=>runner.online),partial=online && group.runners.some(runner=>!runner.online),unknown=!group.runners.length,state=initialLoading?'讀取中…':stale?'連線待更新':unknown?'狀態待確認':partial?'部分離線':online?'已連線':'離線',e=node('div',undefined,'source');
+        e.append(node('span',group.label+' · '+state,'source-status '+(initialLoading || unknown?'muted':stale || partial || !online?'offline':'online')));
         if(index===0 && stale && source.observed_at)e.append(node('span','上次讀取 '+stamp(source.observed_at),'muted'));
         if(index===0 && source.error)e.append(node('span',source.error,'offline'));$('sources').append(e);
       }
@@ -294,12 +317,16 @@
     try{return await request;}finally{if(observationRequests.get(source.id)===request)observationRequests.delete(source.id);}
   }
   async function details(version) {
-    if(!selected)return;const identity={...selected},selection=selectionVersion,source=sources.find(s=>s.id===identity.source_id);if(!source)return;
+    if(!selected)return;const identity={...selected},selection=selectionVersion,query=queryVersion,source=sources.find(s=>s.id===identity.source_id);if(!source)return;
     let request=detailRequests.get(key(identity));if(!request){request=api(scope(source)+'tasks/'+encodeURIComponent(identity.id),undefined,version);detailRequests.set(key(identity),request);}
     try{
       const task=await request;checkSession(version);if(selection!==selectionVersion || !selected || key(identity)!==key(selected))return;
-      currentDetail=task;detailCache.set(key(identity),task);
-      const cached=handoffCache.get(key(identity));currentHandoff=cached?.taskUpdated===task.updated?cached:null;renderDetails();
+      currentDetail=syncRunner(source,mergeObserved(mergeObserved(detailCache.get(key(identity)),source.tasks.find(task=>key(task)===key(identity))),task));detailCache.set(key(identity),currentDetail);
+      for(const field of ['detailLoading','detailError','statusError','archiveError','handoffError'])delete currentDetail[field];
+      if(source.tasks.some(task=>key(task)===key(identity)))source.tasks=source.tasks.map(task=>key(task)===key(identity)?currentDetail:task);
+      else if(query===queryVersion)source.tasks.push(currentDetail);
+      source.tasks=source.tasks.map(task=>syncRunner(source,task));
+      const cached=handoffCache.get(key(identity));currentHandoff=cached?.taskUpdated===currentDetail.updated?cached:null;renderSources();renderTasks();renderDetails();
     }catch(error){
       if(error.staleSession || version!==sessionVersion || selection!==selectionVersion || !selected || key(identity)!==key(selected))return;
       taskFailed(source,error,version);
@@ -351,13 +378,17 @@
     return scope(source)+'state?'+params.toString();
   }
   async function loadSource(source,version,query,pages) {
-    source.loading=true;
+    const identity=selected?.source_id===source.id?key(selected):null,detailAtStart=identity?detailCache.get(identity):null;source.loading=true;
     try{
       const data=await api(statePath(source),undefined,version);if(query!==queryVersion)return;
       const loaded=[...data.tasks];let offset=data.next_offset,loadedPages=1;
       while(offset!==null && loadedPages<pages){const page=await api(statePath(source,offset),undefined,version);if(query!==queryVersion)return;loaded.push(...page.tasks);offset=page.next_offset;loadedPages++;}
       checkSession(version);if(query!==queryVersion)return;
-      source.tasks=[...new Map(loaded.map(t=>[key(t),t])).values()];source.runners=data.runners;source.projects=data.projects;source.observed_at=data.observed_at;source.nextOffset=offset;source.online=true;source.error='';source.pages=loadedPages;
+      const latest=identity && detailCache.get(identity);
+      if(latest && selected && key(selected)===identity && !currentDetail?.detailError && !loaded.some(task=>key(task)===identity) && (latest!==detailAtStart || workObserved(latest)>data.observed_at))loaded.push(latest);
+      loadRunners(source,data.runners,data.observed_at);if(currentDetail?.source_id===source.id)currentDetail=syncRunner(source,currentDetail);
+      source.tasks=[...new Map(loaded.map(t=>[key(t),fromCatalog(source,t)])).values()];source.projects=data.projects;source.observed_at=data.observed_at;source.nextOffset=offset;source.online=true;source.error='';source.pages=loadedPages;
+      if(selected?.source_id===source.id && currentDetail){const task=source.tasks.find(task=>task.id===selected.id);if(task){currentDetail=mergeObserved(currentDetail,task);renderDetails();}}
       if(selected?.source_id===source.id && !currentDetail && detailRequests.has(key(selected))){const task=source.tasks.find(task=>task.id===selected.id);if(task)preview(task);}
     }catch(error){if(query===queryVersion)sourceFailed(source,error,version);}
     finally{if(version===sessionVersion && query===queryVersion && authenticated){source.loading=false;renderSources();renderTasks();}}
@@ -441,7 +472,9 @@
       await Promise.all(activeSources().filter(s=>s.nextOffset!==null).map(async source=>{
         try{
           const data=await api(statePath(source,source.nextOffset),undefined,version);if(query!==queryVersion)return;
-          source.tasks=[...new Map([...source.tasks,...data.tasks].map(t=>[key(t),t])).values()];source.nextOffset=data.next_offset;source.pages++;source.observed_at=data.observed_at;source.online=true;source.error='';
+          loadRunners(source,data.runners,data.observed_at);if(currentDetail?.source_id===source.id)currentDetail=syncRunner(source,currentDetail);
+          source.tasks=[...new Map([...source.tasks,...data.tasks].map(t=>[key(t),fromCatalog(source,t)])).values()];source.projects=data.projects;source.nextOffset=data.next_offset;source.pages++;source.observed_at=data.observed_at;source.online=true;source.error='';
+          if(selected?.source_id===source.id && currentDetail){const task=source.tasks.find(task=>task.id===selected.id);if(task){currentDetail=mergeObserved(currentDetail,task);renderDetails();}}
         }catch(error){if(query===queryVersion)sourceFailed(source,error,version);}
       }));checkSession(version);if(query!==queryVersion)return;renderSources();saveView();
     }catch(error){if(!error.staleSession && version===sessionVersion)$('error').textContent=error.message;}

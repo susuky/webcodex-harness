@@ -489,6 +489,80 @@ async def test_remote_catalog_legacy_paging_source_collisions_and_failures(
         await manager.state(scoped_request("windows", owner="other"))
 
 
+@pytest.mark.parametrize("online", [True, False])
+async def test_remote_pages_share_latest_runner_connection_without_refreshing_work(
+    activity_service, monkeypatch, online
+):
+    service, _ = activity_service
+    service.config.clients["owner"].management_sources = {
+        "windows": ManagementSource(url="https://windows.example", token="s" * 40)
+    }
+    manager = Sources(Management(service))
+    now = time.time()
+    seen = []
+    task = {
+        "id": "first-page-task",
+        "title": "Original work",
+        "runner": "local",
+        "project": "project",
+        "status": "active",
+        "state": "observing" if not online else "waiting_runner",
+        "runner_online": not online,
+        "updated": now - 60,
+        "processes": [
+            {"status": "running", "process_id": "old-process", "observed_at": now - 3600}
+        ],
+        "jobs": [{"job_id": "queued-job", "tool": "read_file", "status": "queued"}],
+        "liveness": {"observed_at": now - 5, "work": {"running_count": 1, "pending_count": 1}},
+    }
+
+    async def upstream(request):
+        offset = request.url.params["offset"]
+        seen.append(offset)
+        return httpx.Response(
+            200,
+            json={
+                "tasks": [task]
+                if offset == "0"
+                else [{**task, "id": "other-runner", "runner": "course-hub"}],
+                "runners": [
+                    {
+                        "id": "local",
+                        "online": not online if offset == "0" else online,
+                        "last_seen": now,
+                    },
+                    {"id": "course-hub", "online": not online, "last_seen": now - 30},
+                ],
+                "next_offset": 1 if offset == "0" else None,
+                "observed_at": now - 5 if offset == "0" else now,
+            },
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        manager,
+        "remote_client",
+        lambda *_: original_client(
+            base_url="https://windows.example", transport=httpx.MockTransport(upstream)
+        ),
+    )
+    state = json.loads((await manager.state(scoped_request("windows"))).body)
+    rows = {row["id"]: row for row in state["tasks"]}
+    first = rows["first-page-task"]
+    assert seen == ["0", "1"]
+    assert first["runner_online"] is state["runners"][0]["online"] is online
+    assert first["state"] == ("observing" if online else "waiting_runner")
+    assert first["liveness"]["runner_last_seen"] == now
+    assert first["liveness"]["runner_observed_at"] == now
+    assert first["liveness"]["observed_at"] == now - 5
+    assert first["processes"][0]["observed_at"] == now - 3600
+    assert first["processes"][0]["display_status"] == "unconfirmed"
+    assert first["liveness"]["work"]["unconfirmed_count"] == 1
+    assert rows["other-runner"]["runner_online"] is not online
+    assert rows["other-runner"]["state"] == ("waiting_runner" if online else "observing")
+    assert task["runner_online"] is not online
+
+
 async def test_source_cache_keeps_two_client_grants_separate(activity_service, monkeypatch):
     service, _ = activity_service
     for owner in ("owner", "other"):

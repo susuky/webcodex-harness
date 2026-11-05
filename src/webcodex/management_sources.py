@@ -408,9 +408,34 @@ class Sources:
                     "observed_at": time.time(),
                 }
             )
-            catalog = (
-                [execution_freshness(task) for task in data["tasks"]] if source else data["tasks"]
-            )
+            catalog = data["tasks"]
+            if source:
+                runners = {
+                    runner["id"]: runner
+                    for runner in data["runners"]
+                    if isinstance(runner.get("id"), str)
+                }
+                catalog = []
+                for task in data["tasks"]:
+                    runner_snapshot = runners.get(task["runner"])
+                    # Earlier pages can precede a heartbeat received before the final page.
+                    # Keep each task's work observation, but use the same Runner snapshot
+                    # as the source header for its connection state.
+                    if runner_snapshot is not None and type(runner_snapshot.get("online")) is bool:
+                        task = {
+                            **task,
+                            "runner_online": runner_snapshot["online"],
+                            "stale": not runner_snapshot["online"],
+                            "liveness": {
+                                **task.get("liveness", {}),
+                                "runner_last_seen": runner_snapshot.get("last_seen"),
+                                "runner_observed_at": data["observed_at"],
+                                "data_freshness": "live"
+                                if runner_snapshot["online"]
+                                else "historical",
+                            },
+                        }
+                    catalog.append(execution_freshness(task))
             projects = [
                 {
                     "runner": task_runner,
