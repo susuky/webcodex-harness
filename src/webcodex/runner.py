@@ -49,6 +49,10 @@ class Runner:
             result TEXT, acknowledged INTEGER NOT NULL DEFAULT 0
         )""")
         self.db.execute(
+            "CREATE INDEX IF NOT EXISTS unacknowledged_deliveries ON deliveries(id) "
+            "WHERE acknowledged=0"
+        )
+        self.db.execute(
             "UPDATE deliveries SET status='unknown',result=? WHERE status='running'",
             (
                 json.dumps(

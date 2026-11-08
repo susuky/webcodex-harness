@@ -111,6 +111,8 @@ class Store:
                 UNIQUE(owner, task_id, request_id)
             );
             CREATE INDEX IF NOT EXISTS queue ON jobs(runner, status, created);
+            CREATE INDEX IF NOT EXISTS pending_jobs ON jobs(owner)
+                WHERE status IN ('queued','pending_approval','running');
             CREATE INDEX IF NOT EXISTS task_jobs ON jobs(task_id, updated);
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES tasks(id),
