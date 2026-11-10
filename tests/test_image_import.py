@@ -198,7 +198,7 @@ async def test_mcp_image_import_preserves_animation_and_safe_overwrites(harness,
         )
         assert (harness.repo / args["path"]).read_bytes() == PNG
         assert {
-            str(path.relative_to(harness.repo))
+            path.relative_to(harness.repo).as_posix()
             for path in harness.repo.rglob("*")
             if path.is_file()
         } == {args["path"], gif_args["path"]}
