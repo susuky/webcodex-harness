@@ -159,7 +159,9 @@ def test_retention_logs_artifacts_profiles_and_links(installation, tmp_path):
             ],
         )
     for pid in ("a" * 32, "b" * 32):
-        (logs / (pid + ".log")).write_text("output")
+        log = logs / (pid + ".log")
+        log.write_text("output")
+        os.utime(log, (old, old))
     session = (
         installation
         / "runner"
