@@ -36,11 +36,11 @@ def test_activity_keeps_latest_observation_and_process_start_order(tmp_path):
             store.db.execute("UPDATE jobs SET status='unknown' WHERE request_id='ignored'")
         activity = store.task_activity(task)
         assert [
-            (p["process_id"], p["status"], p["started_at"])
+            (p["process_id"], p["status"], p["started_at"], p["tool"])
             for p in activity["process_observations"]
         ] == [
-            ("newer", "failed", 20),
-            ("older", "completed", 10),
+            ("newer", "failed", 20, "skill_run"),
+            ("older", "completed", 10, "read_process"),
         ]
         assert activity["latest_execution"]["job_id"] == newest
         assert activity["latest_execution"]["result"] == result

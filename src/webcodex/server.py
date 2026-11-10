@@ -77,6 +77,7 @@ TOOL_ACTIVITY = {
     "resize_terminal": "調整終端畫面",
     "list_processes": "查詢執行中命令",
     "view_image": "檢視圖片",
+    "import_image": "匯入圖片",
     "computer_status": "查詢桌面狀態",
     "computer_screenshot": "擷取桌面畫面",
     "computer_move": "移動滑鼠",
@@ -745,7 +746,7 @@ class Service:
         for row in (
             self.store.rows(
                 "SELECT arguments FROM jobs WHERE task_id=? AND status='succeeded' "
-                "AND tool IN ('write_file','edit_file','delete_file','apply_patch') ORDER BY created DESC LIMIT 200",
+                "AND tool IN ('write_file','edit_file','delete_file','apply_patch','import_image') ORDER BY created DESC LIMIT 200",
                 (task["id"],),
             )
             if include_output
@@ -1056,6 +1057,9 @@ class Service:
                 }
             else:
                 spec.meta = {"ui": {"visibility": ["model"]}}
+            if spec.name == "import_image":
+                spec.meta["openai/fileParams"] = ["file"]
+                spec.inputSchema["properties"]["file"] = spec.inputSchema.pop("$defs")["ImageFile"]
             if spec.name != "task_app":
                 label = TOOL_ACTIVITY.get(spec.name, "執行工具")
                 spec.title = label

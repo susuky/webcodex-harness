@@ -11,10 +11,11 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NotRequired
 
 import httpx
 from pydantic import Field
+from typing_extensions import TypedDict
 
 from .catalog import OutcomeUnknown, tool
 from .computer import Computer
@@ -33,6 +34,69 @@ Offset = Annotated[int, Field(ge=0, le=10_000_000)]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Argv = Annotated[list[Annotated[str, Field(max_length=32000)]], Field(min_length=1, max_length=256)]
 MAX_SEARCH_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+class ImageFile(TypedDict):
+    download_url: Annotated[str, Field(min_length=1, max_length=8192)]
+    file_id: Annotated[str, Field(min_length=1, max_length=1024)]
+    mime_type: NotRequired[Annotated[str, Field(max_length=255)]]
+    file_name: NotRequired[Annotated[str, Field(max_length=4096)]]
+
+
+def image_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    raise ValueError("Unsupported image format; use PNG, JPEG, GIF or WebP")
+
+
+async def download_image(url: str) -> bytes:
+    try:
+        async with (
+            asyncio.timeout(60),
+            httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False) as client,
+        ):
+            for _ in range(6):
+                parsed = httpx.URL(url)
+                if parsed.scheme not in {"http", "https"} or not parsed.host or parsed.userinfo:
+                    raise ValueError("Use a credential-free HTTP(S) file download URL")
+                async with client.stream("GET", parsed) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ValueError("Image download redirect has no destination")
+                        target = parsed.join(location)
+                        if parsed.scheme == "https" and target.scheme != "https":
+                            raise ValueError("Image download cannot redirect from HTTPS to HTTP")
+                        url = str(target)
+                        continue
+                    if response.status_code != 200:
+                        raise ValueError(
+                            f"Image download returned HTTP {response.status_code}; "
+                            "request a fresh file reference and retry"
+                        )
+                    length = response.headers.get("content-length")
+                    if length is not None and int(length) > MAX_IMAGE_BYTES:
+                        raise ValueError("Image exceeds the 20 MiB import limit")
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        if len(data) + len(chunk) > MAX_IMAGE_BYTES:
+                            raise ValueError("Image exceeds the 20 MiB import limit")
+                        data.extend(chunk)
+                    return bytes(data)
+            raise ValueError("Image download exceeded 5 redirects")
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError) as error:
+        # HTTP client errors can contain the signed download URL.
+        raise ValueError(
+            f"Image download failed ({type(error).__name__}); "
+            "request a fresh file reference and retry"
+        ) from None
 
 
 class Runtime:
@@ -578,17 +642,7 @@ class Runtime:
     async def view_image(self, path: PathArg) -> dict:
         """Read a PNG, JPEG, GIF or WebP from the project as native MCP image content, with a 1 MiB input limit."""
         data = self.workspace.read(path, 1024 * 1024)
-        mime = None
-        if data.startswith(b"\x89PNG\r\n\x1a\n"):
-            mime = "image/png"
-        elif data.startswith(b"\xff\xd8\xff"):
-            mime = "image/jpeg"
-        elif data.startswith((b"GIF87a", b"GIF89a")):
-            mime = "image/gif"
-        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-            mime = "image/webp"
-        if not mime:
-            raise ValueError("Unsupported image format")
+        mime = image_mime(data)
         return {
             "path": path,
             "sha256": sha256(data),
@@ -598,6 +652,19 @@ class Runtime:
                 ]
             },
         }
+
+    @tool("execute")
+    async def import_image(
+        self, path: PathArg, file: ImageFile, expected_sha256: Digest | None = None
+    ) -> dict:
+        """Save a PNG, JPEG, GIF or WebP file from this conversation into the project (at most 20 MiB). Pass the ChatGPT-provided file reference unchanged, including download_url and file_id; never invent a URL or use a sandbox path. The original bytes and GIF animation are preserved. path is the destination relative to this task's project; file_name never selects it. Existing files require their current whole-file expected_sha256. Requires execute permission because the Runner downloads from the network. Returns path, bytes, sha256, mime_type and file_id. If the URL expires, request a fresh file reference and use a new request_id after confirming the previous job failed."""
+        self.workspace.path(path)
+        data = await download_image(file["download_url"])
+        mime = image_mime(data)
+        result = await asyncio.to_thread(
+            self.workspace.write, path, data, expected_sha256, maximum=MAX_IMAGE_BYTES
+        )
+        return {**result, "mime_type": mime, "file_id": file["file_id"]}
 
     @tool("computer_observe")
     async def computer_status(self) -> dict:

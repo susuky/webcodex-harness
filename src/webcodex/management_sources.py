@@ -173,11 +173,11 @@ class Sources:
                     unconfirmed.add(row["task_id"])
         external = " AND ".join("request_id NOT LIKE ?" for _ in INTERNAL_OBSERVATION_PREFIXES)
         for row in self.service.store.rows(
-            f"SELECT task_id,status,max(updated) AS updated FROM jobs WHERE task_id IN ({slots}) "
-            "AND status IN ('pending_approval','queued','running') "
+            "SELECT task_id,status,max(updated) AS updated FROM jobs INDEXED BY pending_jobs "
+            f"WHERE owner=? AND task_id IN ({slots}) AND status IN ('queued','pending_approval','running') "
             f"AND (request_id IS NULL OR ({external})) "
             "GROUP BY task_id,status",
-            (*by_id, *(prefix + "%" for prefix in INTERNAL_OBSERVATION_PREFIXES)),
+            (owner, *by_id, *(prefix + "%" for prefix in INTERNAL_OBSERVATION_PREFIXES)),
         ):
             if row["status"] in {"queued", "running"}:
                 live.add(row["task_id"])

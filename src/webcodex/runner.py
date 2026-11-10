@@ -151,7 +151,10 @@ class Runner:
                     job_id,
                     self.computer,
                 )
-                if definition.permission in {"write", "git_write", "extensions"}:
+                if (
+                    definition.permission in {"write", "git_write", "extensions"}
+                    or name == "import_image"
+                ):
                     async with self.locks[project]:
                         result = await getattr(runtime, name)(**args)
                 else:

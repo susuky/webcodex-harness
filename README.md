@@ -7,6 +7,7 @@ Let an MCP client work with repositories and desktop applications on your machin
 ## What it does
 
 - Read, search and edit files with hash checks; use Git, commands, tests and interactive terminals.
+- Import image and GIF files supplied by ChatGPT into a project, preserving the original bytes. See [image imports](docs/CHATGPT.md#從-chatgpt-匯入圖片與-gif).
 - Resume saved tasks across conversations using `task_id` and monitor running processes.
 - Create or register projects under explicitly allowed parent directories, even with no existing task.
 - Load project skills and plugins with persistent MCP connections.

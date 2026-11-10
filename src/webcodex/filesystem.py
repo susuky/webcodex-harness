@@ -285,8 +285,15 @@ class Workspace:
                         if not skip_unavailable:
                             raise
 
-    def write(self, path: str, content: bytes, expected_sha256: str | None) -> dict:
-        if len(content) > MAX_FILE:
+    def write(
+        self,
+        path: str,
+        content: bytes,
+        expected_sha256: str | None,
+        *,
+        maximum: int = MAX_FILE,
+    ) -> dict:
+        if len(content) > maximum:
             raise ValueError("File exceeds the write limit")
         with self.parent(path, create=True) as (parent, name):
             windows = os.name == "nt"
@@ -294,7 +301,7 @@ class Workspace:
             target = parent / name if windows else name
             mode = 0o644
             try:
-                previous, info = self._read_version(path)
+                previous, info = self._read_version(path, maximum)
                 mode = stat.S_IMODE(info.st_mode) & 0o777
             except FileNotFoundError:
                 previous, info = None, None

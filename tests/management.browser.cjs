@@ -38,6 +38,46 @@ async function verifySnapshotConsistency(browser,root,output,checks,errors){
     completed=true;detailTime=t3+1;await page.locator("#refresh").click();await ready();assert.equal(await row("windows").count(),0);await filter("all");assert.equal(await page.locator("#tasks .task strong").last().textContent(),base.title);await filter("completed");assert.equal(await page.locator("#tasks .task").count(),1);assert.equal(await status("windows").textContent(),"已完成");checks.push("synchronized detail updates status filtering and completed-task ordering");
   }finally{if(release)release();await context.close();}
 }
+async function verifyHandoffReading(browser,root,output,checks,errors,measurements){
+  measurements.handoffReading=[];
+  for(const width of [1400,390]){
+    const context=await browser.newContext({viewport:{width,height:1000},locale:"zh-TW",timezoneId:"Asia/Taipei"}),page=await context.newPage(),now=Date.now()/1000;
+    let workVersion=0,summaryVersion=0,handoffRequests=0;
+    const summary=id=>(id==="reading-a"?"甲任務摘要版本 "+summaryVersion:"乙任務摘要")+"\n\n"+Array.from({length:90},(_,i)=>`第 ${i+1} 段：保留交接摘要的閱讀位置與選取文字。`).join("\n");
+    const task=id=>({id,source_id:"local",source_label:"ll1",title:id==="reading-a"?"交接摘要閱讀":"另一個任務",runner:"local",project:"webcodex",status:"active",state:"ready",runner_online:true,updated:now+summaryVersion,created_at:now-7200,started_at:now-7000,summary:summary(id),processes:[],liveness:{observed_at:now+workVersion,conversation:{finished_at:now},work:{running_count:0,pending_count:0}}});
+    page.on("pageerror",error=>errors.push(error.message));
+    await page.clock.install();
+    await page.route("http://reading.test/**",route=>{
+      const url=new URL(route.request().url());let data;
+      if(url.pathname==="/manage")return route.fulfill({contentType:"text/html; charset=utf-8",body:fs.readFileSync(path.join(root,"src/webcodex/management.html"))});
+      if(url.pathname.endsWith("/session"))data={authenticated:true,password_enabled:true};
+      else if(url.pathname.endsWith("/sources"))data={sources:[{id:"local",label:"ll1",runner_labels:{}}]};
+      else if(url.pathname.endsWith("/state"))data={tasks:[task("reading-a"),task("reading-b")],runners:[{id:"local",online:true,last_seen:now+workVersion}],observed_at:now+workVersion,next_offset:null,projects:[]};
+      else if(url.pathname.endsWith("/refresh"))data={updates:[]};
+      else{
+        const id=url.pathname.split("/")[6];
+        if(url.pathname.endsWith("/handoff")){handoffRequests++;data={source_id:"local",task_id:id,handoff:{updated_at:now+summaryVersion,summary:summary(id)},continuation_prompt:Array.from({length:70},()=>"請接手原任務 "+id).join("\n")};}
+        else data={...task(id),observed_at:now+workVersion,outputs:[],errors:[]};
+      }
+      return route.fulfill({json:data});
+    });
+    const ready=()=>page.waitForFunction(()=>!document.getElementById("refresh").disabled),select=async id=>{const response=page.waitForResponse(r=>new URL(r.url()).pathname==="/api/manage/sources/local/tasks/"+id);await page.locator(`.task[data-task="${id}"]`).click();await (await response).finished();await page.waitForFunction(()=>!document.getElementById("detail-loading"));};
+    const reading=()=>page.evaluate(()=>{const pre=document.getElementById("handoff-summary");return{scroll:pre.scrollTop,sameNode:pre===window.reading.pre,sameText:pre.firstChild===window.reading.text,samePrompt:document.getElementById("handoff-prompt")===window.reading.prompt,sameSummary:document.getElementById("task-summary")===window.reading.summary,sameHandoff:document.getElementById("handoff")===window.reading.handoff,selection:getSelection().toString(),mutations:window.reading.mutations};});
+    try{
+      await page.goto("http://reading.test/manage");await page.locator(".task").first().waitFor();await ready();assert.equal(await page.title(),"WebCodex 任務中心");await select("reading-a");await page.locator("#handoff>summary").click();await page.locator("#handoff-summary").waitFor();
+      await page.locator("#handoff-summary").hover();await page.mouse.wheel(0,600);await page.waitForFunction(()=>document.getElementById("handoff-summary").scrollTop>0);
+      const before=await page.evaluate(()=>{const pre=document.getElementById("handoff-summary"),range=document.createRange();range.setStart(pre.firstChild,80);range.setEnd(pre.firstChild,105);getSelection().removeAllRanges();getSelection().addRange(range);window.reading={pre,text:pre.firstChild,prompt:document.getElementById("handoff-prompt"),summary:document.getElementById("task-summary"),handoff:document.getElementById("handoff"),mutations:0};new MutationObserver(records=>{window.reading.mutations+=records.length;}).observe(pre,{childList:true,characterData:true,subtree:true});return{scroll:pre.scrollTop,selection:getSelection().toString()};});
+      const response=page.waitForResponse(r=>new URL(r.url()).pathname==="/api/manage/sources/local/tasks/reading-a");await page.clock.fastForward(10000);await (await response).finished();await ready();const same=await reading();
+      for(const field of ["sameNode","sameText","samePrompt","sameSummary","sameHandoff"])assert.equal(same[field],true,field);assert.equal(same.scroll,before.scroll);assert.equal(same.selection,before.selection);assert.equal(same.mutations,0);assert.equal(handoffRequests,1);
+      workVersion++;await page.locator("#refresh").click();await ready();const changedWork=await reading();assert.equal(changedWork.scroll,before.scroll);assert.equal(changedWork.selection,before.selection);assert.equal(changedWork.sameText,true);assert.equal(changedWork.sameSummary,true);assert.equal(changedWork.mutations,0);assert.equal(handoffRequests,1);
+      summaryVersion++;workVersion++;await page.locator("#refresh").click();await ready();await page.locator("#handoff-summary").filter({hasText:"甲任務摘要版本 1"}).waitFor();const changedSummary=await reading();assert.equal(changedSummary.sameNode,true);assert.equal(changedSummary.samePrompt,true);assert.equal(changedSummary.sameHandoff,true);assert.equal(changedSummary.scroll,before.scroll);assert.equal(handoffRequests,2);assert.match(await page.locator("#task-summary").textContent(),/甲任務摘要版本 1/);
+      assert.equal(await page.locator("body").evaluate(el=>el.scrollWidth>document.documentElement.clientWidth),false);await page.locator("#handoff-summary").hover();await page.screenshot({path:path.join(output,"handoff-reading-"+width+".png"),fullPage:width===390});
+      await select("reading-b");assert.match(await page.locator("#task-summary").textContent(),/乙任務摘要/);assert.equal(await page.locator("#handoff-summary").count(),0);await page.locator("#handoff>summary").click();await page.locator("#handoff-summary").filter({hasText:"乙任務摘要"}).waitFor();assert.doesNotMatch(await page.locator("#handoff-summary").textContent(),/甲任務摘要/);assert.equal(await page.locator("#handoff-summary").evaluate(el=>el.scrollTop),0);assert.equal(handoffRequests,3);
+      await select("reading-a");await page.locator("#handoff>summary").click();assert.match(await page.locator("#handoff-summary").textContent(),/甲任務摘要版本 1/);assert.doesNotMatch(await page.locator("#handoff-summary").textContent(),/乙任務摘要/);assert.equal(handoffRequests,3);
+      measurements.handoffReading.push({width,before,same,changedWork,changedSummary,handoffRequests});checks.push(width+"px reading keeps live nodes, selection and scroll across automatic refresh, changed work, updated summary and task switches");
+    }finally{await context.close();}
+  }
+}
 (async()=>{
   const root=path.resolve(__dirname,".."),output=process.env.WEBCODEX_UI_EVIDENCE || fs.mkdtempSync(path.join(os.tmpdir(),"webcodex-management-"));
   fs.mkdirSync(output,{recursive:true});
@@ -189,6 +229,7 @@ async function verifySnapshotConsistency(browser,root,output,checks,errors){
     await login();await context.clearCookies();await page.locator("#refresh").click();await page.locator("#auth").waitFor();await page.locator("#auth-error").filter({hasText:"登入已失效"}).waitFor();assert.equal(await page.locator("#tasks .task").count(),0);checks.push("expired cookie returns to login without restoring late task data");
     passwordEnabled=false;await page.reload();await page.locator("#auth").waitFor();assert.equal(await page.locator("#credential-label").textContent(),"用戶端 Token");await login("fixture-token");assert.ok(calls.some(c=>c.auth==="Bearer fixture-token"));assert.equal(await page.locator("#credential").inputValue(),"");assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);checks.push("legacy token mode remains memory-only");
     await verifySnapshotConsistency(browser,root,output,checks,errors);
+    await verifyHandoffReading(browser,root,output,checks,errors,measurements);
     assert.deepEqual(errors,[]);assert.ok(calls.filter(c=>c.method==="POST").every(c=>["/api/manage/login","/api/manage/logout"].includes(c.path) || /^\/api\/manage\/sources\/[^/]+\/(refresh|tasks\/[^/]+\/(archive|status))$/.test(c.path)));assert.ok(calls.filter(c=>c.path.endsWith("/refresh")).every(c=>(JSON.parse(c.body).task_ids || []).length<=100));checks.push("bounded observation and explicit archive/status requests, no takeover or page errors");
     const result={passed:checks.length,checks,pageErrors:errors,measurements,evidence:output};fs.writeFileSync(path.join(output,"result.json"),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
   }finally{if(releaseState)releaseState();if(releaseDetail)releaseDetail();if(releaseArchive)releaseArchive();if(releaseTaskDetail)releaseTaskDetail();if(releaseObservation)releaseObservation();if(releaseStatus)releaseStatus();if(browser)await browser.close();}

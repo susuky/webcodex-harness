@@ -42,6 +42,70 @@ async def test_management_public_shell_authenticated_data_and_owner_boundary(har
         ).status_code == 400
 
 
+async def test_management_pending_queries_stay_bounded_as_completed_history_grows(harness):
+    # Keep the persisted queue stable while exercising the real management HTTP endpoints.
+    harness.runner.stop.set()
+    await harness.runner_task
+    store = harness.app.state.service.store
+    current = store.create_task("owner", "local/project", "Large history")
+    other = store.create_task("owner", "local/project", "Other task")
+    internal = store.create_task("owner", "local/project", "Observations only")
+    private = store.create_task("reviewer", "local/project", "Other owner")
+    with store.db:
+        store.db.executemany(
+            "INSERT INTO jobs(id,task_id,owner,runner,project,binding,tool,arguments,status,"
+            "created,updated,result) "
+            "VALUES (?,?,'owner','local','project',?,'read_file','{}','succeeded',1,1,'{}')",
+            ((f"{index:032x}", current["id"], current["binding"]) for index in range(20000)),
+        )
+    visible = {}
+    statuses = ("queued", "running", "pending_approval")
+    for item, requests in (
+        (current, (None, "client-progress", "confirmation")),
+        (current, ("card-observe:one", "manage-observe:two", "watch:three")),
+        (internal, ("card-observe:one", "manage-observe:two", "watch:three")),
+        (other, (None, "client-progress", "confirmation")),
+        (private, (None, "client-progress", "confirmation")),
+    ):
+        for status, request_id in zip(statuses, requests, strict=True):
+            job = store.enqueue(item, "read_file", {}, request_id, 100)
+            with store.db:
+                store.db.execute("UPDATE jobs SET status=? WHERE id=?", (status, job["job_id"]))
+            if item is current and requests[0] is None:
+                visible[job["job_id"]] = status
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    try:
+        async with harness.http() as client:
+            response = await client.get("/api/manage/state")
+            assert response.status_code == 200
+            tasks = {item["id"]: item for item in response.json()["tasks"]}
+            assert set(tasks) == {current["id"], other["id"], internal["id"]}
+            assert {job["job_id"]: job["status"] for job in tasks[current["id"]]["jobs"]} == visible
+            assert tasks[current["id"]]["liveness"]["work"]["pending_count"] == 3
+            assert tasks[internal["id"]]["jobs"] == []
+            assert tasks[internal["id"]]["liveness"]["work"]["pending_count"] == 0
+            active = await client.get("/api/manage/sources/local/state?state=active")
+            assert active.status_code == 200
+            assert {item["id"] for item in active.json()["tasks"]} == {
+                current["id"],
+                other["id"],
+            }
+    finally:
+        store.db.set_trace_callback(None)
+    # Budget only pending lookups: historical counts and process summaries have different work.
+    pending_queries = {
+        sql for sql in statements if sql.startswith("SELECT") and "'pending_approval'" in sql
+    }
+    assert pending_queries
+    store.db.set_progress_handler(lambda: 1, 5000)
+    try:
+        for sql in pending_queries:
+            store.db.execute(sql).fetchall()
+    finally:
+        store.db.set_progress_handler(None, 0)
+
+
 async def test_management_refresh_observes_completion_without_restarting_command(harness):
     async with harness.http() as client:
         task_id = await task(client)

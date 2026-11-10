@@ -2,6 +2,7 @@
 <html lang="zh-Hant">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WebCodex 任務中心</title>
+<link rel="icon" type="image/svg+xml" sizes="any" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23096c77'/%3E%3Cpath d='m8 10 6 6-6 6m10 0h6' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 :root{color-scheme:light dark;--bg:#f4f6f8;--panel:#fff;--text:#18212c;--muted:#59697a;--line:#dce2e8;--accent:#096c77;--on-accent:#fff;--bad:#b12b36;--selected:#e5f0f1}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}header,main{max-width:1320px;margin:auto;padding:16px 24px}header{display:flex;gap:16px;align-items:center;border-bottom:1px solid var(--line)}h1{font-size:21px;margin:0;letter-spacing:-.02em}h2{font-size:19px;line-height:1.5;margin:0;overflow-wrap:anywhere}h3{font-size:14px;margin:22px 0 10px}button,input,select{font:inherit}button,input,select,summary{min-height:44px}button{cursor:pointer;background:var(--panel);color:var(--text);border:1px solid var(--line);padding:8px 12px;border-radius:7px;touch-action:manipulation}button:hover,button[aria-pressed=true]{border-color:var(--accent)}button:active{background:var(--selected)}button:disabled{opacity:.5;cursor:default}.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}.primary:hover,.primary:active{background:var(--accent);filter:brightness(.94)}button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}input,select{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:9px 11px;max-width:100%;width:100%}#auth{max-width:400px;margin:10vh auto;padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:12px}#auth h2{margin-bottom:20px}#auth label{display:block;margin-bottom:8px}#username,#credential{margin-bottom:16px}#auth .primary{width:100%}#toolbar{margin-left:auto;display:flex;gap:8px;align-items:center}.muted{color:var(--muted);font-size:13px}#error,#auth-error{color:var(--bad);white-space:pre-wrap}#error:empty,#auth-error:empty{display:none}#sources{display:flex;gap:20px;flex-wrap:wrap;min-height:24px;margin-bottom:12px}.source{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}.source-status{font-weight:600}.source-status::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:7px;vertical-align:2px}.online{color:var(--accent)}.offline{color:var(--bad)}#filters{display:grid;grid-template-columns:minmax(220px,1fr) minmax(160px,220px) minmax(130px,180px) minmax(130px,180px);gap:12px;align-items:end;margin-bottom:12px}#filters label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}#filters input,#filters select{color:var(--text)}#results{margin:0 0 10px;font-size:13px;min-height:20px}#work{display:grid;grid-template-columns:minmax(370px,.9fr) minmax(0,1.1fr);gap:16px;height:calc(100dvh - 226px);min-height:420px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:auto;scrollbar-color:var(--line) transparent}#tasks{display:flex;flex-direction:column}.task{width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;text-align:left;padding:13px 16px;overflow-wrap:anywhere}.task:focus-visible{outline-offset:-3px}.task-head,.taskmeta{display:flex;gap:12px;justify-content:space-between;align-items:baseline}.task strong{font-size:14px;font-weight:600;min-width:0}.taskmeta{margin-top:6px;color:var(--muted);font-size:12px;flex-wrap:wrap;gap:4px 12px}.tasktime{white-space:nowrap;font-variant-numeric:tabular-nums}.task.selected{background:var(--selected)}.task.selected .taskmeta{color:var(--accent)}.status{font-size:12px;font-weight:600;white-space:nowrap;color:var(--muted)}.status.active{color:var(--accent)}.status.attention{color:var(--bad)}#detail{padding:20px 24px}.detail-heading{display:flex;gap:16px;justify-content:space-between;align-items:baseline}.detail-heading h2{flex:1}.overview{display:grid;grid-template-columns:1fr 1fr;gap:12px 20px;margin:18px 0 20px}.overview>div{min-width:0}.overview dt{font-size:12px;color:var(--muted);margin-bottom:3px}.overview dd{margin:0;font-size:13px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.detail-actions{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.prose{font-size:15px;line-height:1.8;overflow-wrap:anywhere;max-width:72ch}.prose p{margin:10px 0;white-space:pre-line}.prose h3,.prose h4{font:600 14px/1.6 system-ui,sans-serif;margin:18px 0 6px}.prose ul,.prose ol{padding-left:22px;margin:10px 0}.prose li{margin:4px 0}code{font:13px/1.5 ui-monospace,monospace;overflow-wrap:anywhere;background:var(--bg);padding:2px 4px;border-radius:3px}pre{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:12px;font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}details{border-top:1px solid var(--line);margin-top:16px;padding-top:4px}summary{cursor:pointer;display:list-item;padding:10px 0;font-size:14px;overflow-wrap:anywhere}summary .muted{margin-left:8px}.process{margin-top:4px;border-top:1px solid var(--line)}.process summary{font-size:13px}.process summary .muted{display:block;margin:3px 0 0 17px;font-size:12px}.badge{font-size:12px;border:1px solid var(--line);border-radius:4px;padding:2px 5px;margin-left:8px}.kv{display:grid;grid-template-columns:100px minmax(0,1fr);gap:6px;font-size:13px}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}#steps{padding-left:22px;margin:8px 0;font-size:14px}#steps li{margin:8px 0}#steps .done{color:var(--muted)}#steps .current{font-weight:600}.step-state{font-size:12px;color:var(--muted);margin-left:8px}.empty{padding:20px;margin:0;color:var(--muted)}#more{width:100%;border:0;border-radius:0}.hidden,[hidden]{display:none!important}::selection{background:var(--accent);color:var(--on-accent)}
@@ -172,7 +173,7 @@
     $('more').hidden=!pending;$('more').disabled=paging || busy!==null;
   }
   function handoffText(task,data) {
-    const h=data.handoff || {},lines=[task.title,task.source_label+' / '+task.runner+' / '+task.project,'task_id: '+task.id,'摘要時間：'+stamp(h.updated_at || task.updated)];
+    const h=data.handoff || {},lines=[task.title,task.source_label+' / '+task.runner+' / '+task.project,'task_id: '+task.id,'摘要時間：'+stamp(h.updated_at || data.taskUpdated || task.updated)];
     if(h.summary)lines.push('',h.summary);
     for(const [heading,value] of [['工作步驟',h.plan],['已改檔案',h.changed_files],['驗證結果',h.validation],['待處理問題',h.issues],['下一步',h.next_steps]]){
       if(!value?.length)continue;lines.push('',heading);
@@ -220,14 +221,28 @@
   }
   function renderSummary(text,expanded=false) {
     const container=node('div',undefined,'prose'),blocks=summaryBlocks(text);container.id='task-summary';
+    container.summaryText=text;
     let length=0,index=0;
     while(index<blocks.length && index<3 && (index<2 || length<240)){length+=blocks[index].textContent.length;container.append(blocks[index++]);}
     if(index<blocks.length){const more=node('details');more.id='summary-more';more.open=expanded;more.append(node('summary','展開其餘摘要'),...blocks.slice(index));container.append(more);}
     return container;
   }
+  function replaceReadingChildren(parent,next,preserved) {
+    let cursor=parent.firstChild;
+    for(const child of [...next.childNodes]){
+      const existing=preserved.find(element=>element.id===child.id);
+      if(existing){
+        while(cursor && cursor!==existing){const following=cursor.nextSibling;cursor.remove();cursor=following;}
+        cursor=existing.nextSibling;
+      }else parent.insertBefore(child,cursor);
+    }
+    while(cursor){const following=cursor.nextSibling;cursor.remove();cursor=following;}
+  }
   function renderDetails() {
     const task=currentDetail;if(!task || !selected || key(task)!==key(selected))return;
-    const d=$('detail'),sameTask=d.dataset.task===key(task),scroll=sameTask?d.scrollTop:0,openStates=new Map([...d.querySelectorAll('details')].map(e=>[e.dataset.key || e.id,e.open]));d.dataset.task=key(task);d.replaceChildren();
+    const panel=$('detail'),sameTask=panel.dataset.task===key(task),scroll=sameTask?panel.scrollTop:0,pageScroll=window.scrollY,openStates=new Map([...panel.querySelectorAll('details')].map(e=>[e.dataset.key || e.id,e.open])),preserved=[],d=document.createDocumentFragment();panel.dataset.task=key(task);
+    const previousSummary=sameTask && $('task-summary'),previousHandoff=sameTask && $('handoff'),unchangedSummary=previousSummary && previousSummary.summaryText===task.summary;
+    if(unchangedSummary)preserved.push(previousSummary);
     const heading=node('div',undefined,'detail-heading');heading.append(node('h2',task.title),node('span',statusText(task),statusClass(task)));d.append(heading);
     const source=sources.find(s=>s.id===task.source_id);
     if(sourceStale(source))d.append(node('p','來源連線待更新 · 上次讀取 '+stamp(source.observed_at),'offline'));
@@ -242,7 +257,7 @@
     for(const [id,text] of [['copy-prompt','複製接手指令'],['copy-summary','複製摘要']]){const b=node('button',text,id==='copy-prompt'?'primary':'');b.id=id;b.dataset.label=text;b.addEventListener('click',()=>copyHandoff(task,id));actions.append(b);}
     if(source.can_update_tasks){const group=node('div',undefined,'status-action'),button=node('button',statusBusy.has(key(task))?'儲存中…':task.status==='completed'?'重新開啟':'標記完成');button.id='task-status';button.disabled=statusBusy.has(key(task));button.addEventListener('click',()=>updateTaskStatus(task));group.append(button);if(task.statusError){const error=node('span',task.statusError,'offline');error.setAttribute('role','alert');group.append(error);}actions.append(group);}
     const archive=node('button',task.archived?'還原':'封存');archive.id='archive-task';archive.disabled=archiveBusy.has(key(task));archive.addEventListener('click',()=>archiveTask(task));actions.append(archive);d.append(actions);
-    if(task.summary){d.append(node('h3','工作摘要'),renderSummary(task.summary,sameTask && Boolean(openStates.get('summary-more'))));}
+    if(task.summary){const summary=unchangedSummary?node('div'):renderSummary(task.summary,sameTask && Boolean(openStates.get('summary-more')));summary.id='task-summary';d.append(node('h3','工作摘要'),summary);}
     const plan=task.plan || currentHandoff?.handoff?.plan || [];
     if(plan.length){
       d.append(node('h3','工作步驟'));const steps=node('ol');steps.id='steps';
@@ -250,9 +265,20 @@
     }
     const handoff=node('details');handoff.id='handoff';handoff.open=sameTask && Boolean(openStates.get('handoff'));handoff.append(node('summary','交接資料'));
     const identity=node('dl',undefined,'kv'),activity=node('dd'),observed=node('dd');activity.append(timeNode(toolStamp(task),true));observed.append(timeNode(processStamp(task),true));identity.append(node('dt','任務 ID'),node('dd',task.id),node('dt','工具活動'),activity,node('dt','執行狀態確認'),observed);handoff.append(identity);
-    if(currentHandoff){const summaryPre=node('pre',handoffText(task,currentHandoff)),promptPre=node('pre',currentHandoff.continuation_prompt || '');summaryPre.id='handoff-summary';promptPre.id='handoff-prompt';handoff.append(node('h3','交接摘要'),summaryPre,node('h3','貼到新的 ChatGPT 對話'),promptPre);}
+    const reading=[];
+    function readingPre(id,text) {
+      const previous=previousHandoff && previousHandoff.querySelector('#'+id),pre=node('pre');pre.id=id;
+      if(previous){if(previous.textContent!==text){const scroll=previous.scrollTop;previous.textContent=text;previous.scrollTop=scroll;}reading.push(previous);}
+      else pre.textContent=text;
+      return pre;
+    }
+    const handoffData=currentHandoff || handoffCache.get(key(task));
+    if(handoffData)handoff.append(node('h3','交接摘要'),readingPre('handoff-summary',handoffText(task,handoffData)),node('h3','貼到新的 ChatGPT 對話'),readingPre('handoff-prompt',handoffData.continuation_prompt || ''));
     else handoff.append(node('p',task.handoffError?'交接資料尚未取得。':'讀取中…','muted'));
-    handoff.addEventListener('toggle',()=>{if(handoff.open && handoff.isConnected && !currentHandoff && !task.handoffError)loadHandoff(task).catch(()=>{});});d.append(handoff);
+    handoff.addEventListener('toggle',()=>{if(handoff.open && handoff.isConnected && currentDetail && !currentDetail.handoffError)loadHandoff(currentDetail).catch(()=>{});});d.append(handoff);
+    if(previousHandoff){
+      replaceReadingChildren(previousHandoff,handoff,reading);preserved.push(previousHandoff);
+    }
     if(task.handoffError)d.append(node('p','交接資料讀取失敗：'+task.handoffError,'offline'));
     if(task.detailLoading){const loading=node('p','正在讀取執行紀錄…','muted');loading.id='detail-loading';loading.setAttribute('role','status');d.append(loading);}
     const outputs=task.outputs || [],errors=task.errors || [];
@@ -271,7 +297,9 @@
       }
       d.append(executions);
     }
-    d.scrollTop=scroll;
+    replaceReadingChildren(panel,d,preserved);panel.scrollTop=scroll;
+    if(sameTask && window.scrollY!==pageScroll)window.scrollTo(window.scrollX,pageScroll);
+    if($('handoff').open && !task.handoffError)loadHandoff(task).catch(()=>{});
   }
   function sourceFailed(source,error,version) {
     if(error.staleSession || version!==sessionVersion || !authenticated)return;

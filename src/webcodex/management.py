@@ -127,9 +127,14 @@ class Management:
         external = " AND ".join("request_id NOT LIKE ?" for _ in INTERNAL_OBSERVATION_PREFIXES)
         pending = self.service.store.rows(
             "SELECT id AS job_id,tool,status,updated,count(*) OVER () AS pending_count "
-            "FROM jobs WHERE task_id=? AND status IN ('pending_approval','queued','running') "
+            "FROM jobs INDEXED BY pending_jobs WHERE owner=? AND task_id=? "
+            "AND status IN ('queued','pending_approval','running') "
             f"AND (request_id IS NULL OR ({external})) ORDER BY created LIMIT 100",
-            (task["id"], *(prefix + "%" for prefix in INTERNAL_OBSERVATION_PREFIXES)),
+            (
+                task["owner"],
+                task["id"],
+                *(prefix + "%" for prefix in INTERNAL_OBSERVATION_PREFIXES),
+            ),
         )
         work = progress["liveness"]["work"]
         had_pending = bool(work["pending_count"])
@@ -408,7 +413,7 @@ def management_routes(service) -> list[Route]:
                 "Referrer-Policy": "no-referrer",
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": (
-                    "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; "
+                    "default-src 'none'; img-src data:; connect-src 'self'; style-src 'unsafe-inline'; "
                     f"script-src 'sha256-{script_hash}'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
                 ),
             },

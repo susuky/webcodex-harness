@@ -587,16 +587,18 @@ class Store:
             )
         }
         last = self.one("SELECT max(updated) AS updated FROM jobs WHERE task_id=?", (task_id,))
+        # Keep the partial-index IN order and index hint; task_jobs scans completed history.
         pending = [
             self.job(row["id"], task["owner"])
             for row in self.rows(
-                "SELECT id FROM jobs WHERE task_id=? AND status IN ('pending_approval','queued','running') "
+                "SELECT id FROM jobs INDEXED BY pending_jobs WHERE owner=? AND task_id=? "
+                "AND status IN ('queued','pending_approval','running') "
                 "ORDER BY status='pending_approval' DESC,created LIMIT 100",
-                (task_id,),
+                (task["owner"], task_id),
             )
         ]
         processes = self.rows(
-            "WITH observations AS (SELECT id AS job_id,tool,updated AS observed_at,"
+            "WITH observations AS (SELECT id AS job_id,updated AS observed_at,"
             "process_id,process_status AS status,process_exit_code AS exit_code,"
             "min(created) OVER (PARTITION BY process_id) AS started_at,"
             "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
@@ -604,9 +606,13 @@ class Store:
             "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
             "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
             "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id) "
-            "AND process_id IS NOT NULL) "
-            "SELECT job_id,tool,observed_at,started_at,process_id,status,exit_code FROM observations "
-            "WHERE rank=1 ORDER BY started_at DESC,process_id LIMIT 100",
+            "AND process_id IS NOT NULL), "
+            "recent AS (SELECT * FROM observations WHERE rank=1 "
+            "ORDER BY started_at DESC,process_id LIMIT 100) "
+            "SELECT recent.job_id,jobs.tool,recent.observed_at,recent.started_at,"
+            "recent.process_id,recent.status,recent.exit_code "
+            "FROM recent JOIN jobs ON jobs.id=recent.job_id "
+            "ORDER BY recent.started_at DESC,recent.process_id",
             (task_id,),
         )
         processes.extend(

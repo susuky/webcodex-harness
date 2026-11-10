@@ -77,6 +77,34 @@ Server 的 Bearer 驗證由 bridge 處理，接入後仍保持啟用。
 
 本機 `tunnel-client` 主動建立對外連線，讓 ChatGPT 的工具請求經 tunnel → stdio bridge → Server → Runner 到達專案工具。檔案操作由本機 Runner 執行，範圍由專案與父目錄設定決定。[Secure MCP Tunnel 運作方式](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 
+## 從 ChatGPT 匯入圖片與 GIF
+
+`import_image` 接收對話提供的檔案參照，讓任務所屬的 Runner 下載並保存到指定專案。支援 PNG、JPEG、GIF、WebP，每檔最多 20 MiB；原始位元組不轉檔，GIF 的影格、播放時間與循環設定均保留。格式依檔案內容判斷。
+
+更新 Server 與 Runner 後，在 ChatGPT 連線設定重新整理工具，確認出現 `import_image`，再開啟對話測試。工具使用官方 `_meta["openai/fileParams"]: ["file"]`，由 ChatGPT 提供 `download_url`、`file_id`，以及可省略的 `mime_type`、`file_name`。[OpenAI 檔案輸入規格](https://developers.openai.com/plugins/reference#define-file-inputs)
+
+在已選定專案的對話中，可要求「把這張圖片存到 `assets/hero.png`」或「把這個 GIF 原檔存到 `assets/animation.gif`」。模型需將 ChatGPT 提供的檔案參照原樣交給 `import_image`；ChatGPT 是否提供生成圖片／GIF 的檔案參照，需以該對話實際可用的檔案為準。`sandbox:/...` 路徑不是 Runner 可下載的網址。
+
+工具參數形狀如下；`TASK_ID` 與檔案參照必須使用實際值：
+
+```json
+{
+  "task_id": "TASK_ID",
+  "path": "assets/animation.gif",
+  "file": {
+    "download_url": "CHATGPT_PROVIDED_DOWNLOAD_URL",
+    "file_id": "CHATGPT_PROVIDED_FILE_ID"
+  },
+  "request_id": "import-animation-1"
+}
+```
+
+成功回傳 `path`、`bytes`、`sha256`、`mime_type` 與 `file_id`。`path` 必須位於授權專案，`file_name` 不會決定儲存位置；覆寫既有檔案需提供其目前的 `expected_sha256`。`view_image` 仍維持原有的 1 MiB 預覽上限；較大原檔可在專案中直接使用。
+
+此工具沿用 `execute` 權限，因為下載會存取 Runner 的網路。接受無帳密的 HTTP(S) URL，最多追蹤五次重新導向，拒絕 HTTPS 降級；下載總期限為 60 秒。逾期、斷線、超量或不支援的格式均不寫入目的檔案。臨時下載網址保留於私有工作紀錄，成功回傳與下載錯誤不顯示網址。
+
+連線中斷時沿用同一 `request_id` 查原工作，成功的匯入不會再次下載；確認原工作失敗且下載網址已過期後，重新取得檔案參照並用新 `request_id` 匯入。完成驗證應比對原檔與落盤檔案的大小、SHA-256；動畫 GIF 另確認影格與播放設定。
+
 ## 換帳號與換電腦
 
 ### 連線名稱與執行位置
