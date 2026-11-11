@@ -397,10 +397,9 @@ class Management:
         return execution_freshness(result)
 
 
-def management_routes(service) -> list[Route]:
+def management_routes(management: Management, sources) -> list[Route]:
     from .management_sources import source_routes
 
-    management = Management(service)
     html = (Path(__file__).parent / "management.html").read_text(encoding="utf-8")
     script = html.split("<script>", 1)[1].split("</script>", 1)[0]
     script_hash = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
@@ -425,5 +424,5 @@ def management_routes(service) -> list[Route]:
         Route("/api/manage/refresh", management.refresh, methods=["POST"]),
         Route("/api/manage/tasks/{task_id}", management.detail, methods=["GET"]),
         Route("/api/manage/tasks/{task_id}/status", management.set_status, methods=["POST"]),
-        *source_routes(management),
+        *source_routes(sources),
     ]

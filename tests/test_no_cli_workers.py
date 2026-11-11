@@ -1,6 +1,8 @@
 import asyncio
 import json
+import subprocess
 import sys
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -230,3 +232,38 @@ async def test_mcp_exposes_host_tools_without_a_cli_worker_backend(tmp_path):
             assert result["exit_code"] == 0 and "host-tools-ok work" in result["output"]
     finally:
         await harness.close()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["python", "-c", r"path = '\q'"],
+        ["python", "-c", "value = 1is 2"],
+        ["node", "-e", r"const cp=require('child_process'); cp.spawn('echo',['\q'])"],
+    ],
+)
+def test_inspection_does_not_copy_parser_warnings_to_runner_log(argv):
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        check_worker_command(argv)
+        assert not emitted
+        warnings.warn("outside inspection", SyntaxWarning, stacklevel=1)
+    assert [str(item.message) for item in emitted] == ["outside inspection"]
+
+
+def test_parser_warning_as_error_does_not_hide_denied_worker():
+    source = r"path = '\q'; import subprocess; subprocess.run(['codex', 'exec', 'test'])"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        warnings.simplefilter("error", DeprecationWarning)
+        with pytest.raises(ValueError, match="External Codex/Work workers are disabled"):
+            check_worker_command(["python", "-c", source])
+
+
+def test_actual_child_keeps_its_own_python_warnings():
+    source = r"path = '\q'; print(path)"
+    argv = [sys.executable, "-Walways", "-c", source]
+    check_worker_command(argv)
+    result = subprocess.run(argv, capture_output=True, text=True, check=True)
+    assert "invalid escape sequence" in result.stderr
+    assert result.stdout.strip() == r"\q"

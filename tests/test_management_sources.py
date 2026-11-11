@@ -210,6 +210,7 @@ async def test_portal_observes_real_legacy_server_and_handoff_is_read_only(harne
                 )
             ).status_code == 400
     finally:
+        await app.state.management_sources.close()
         app.state.service.store.close()
         app.state.service.diagnostics.close()
 
@@ -272,6 +273,7 @@ async def test_mark_complete_and_reopen_updates_source_and_preserves_notes(harne
                 await portal.post(base + "/status", json={"status": "completed"})
             ).status_code == 403
     finally:
+        await app.state.management_sources.close()
         app.state.service.store.close()
         app.state.service.diagnostics.close()
 
@@ -973,6 +975,7 @@ async def test_archive_is_persistent_viewer_preference_while_source_is_offline(t
                 await client.post(base.replace("windows", "missing"), json={"archived": True})
             ).status_code == 400
     finally:
+        await app.state.management_sources.close()
         app.state.service.store.close()
         app.state.service.diagnostics.close()
     reopened = create_app(config)
@@ -984,6 +987,7 @@ async def test_archive_is_persistent_viewer_preference_while_source_is_offline(t
         assert reopened.state.service.store.rows("SELECT * FROM tasks") == []
         assert reopened.state.service.store.rows("SELECT * FROM jobs") == []
     finally:
+        await reopened.state.management_sources.close()
         reopened.state.service.store.close()
         reopened.state.service.diagnostics.close()
 

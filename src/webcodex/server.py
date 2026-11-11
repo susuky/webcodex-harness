@@ -29,8 +29,9 @@ from .config import MAX_PROJECTS, ServerConfig, identifier
 from .continuation import ACTIVE as ACTIVE_WAIT_STATES
 from .continuation import APP_MIME, APP_URI, Continuations, fingerprint
 from .diagnostics import Diagnostics, hash_id
-from .management import management_routes
+from .management import Management, management_routes
 from .management_auth import PUBLIC_ROUTES, ManagementAuth
+from .management_sources import Sources
 from .projects import PROJECT_OPERATIONS
 from .runtime import Runtime
 from .store import RunnerCompletion, Store, new_id
@@ -1496,6 +1497,8 @@ class Security:
 def create_app(config: ServerConfig):
     service = Service(config)
     management_auth = ManagementAuth(config)
+    management = Management(service)
+    sources = Sources(management)
     mcp = Server(
         "webcodex",
         version=__version__,
@@ -1684,9 +1687,12 @@ def create_app(config: ServerConfig):
                 yield
         finally:
             try:
-                service.store.close()
+                await sources.close()
             finally:
-                service.diagnostics.close()
+                try:
+                    service.store.close()
+                finally:
+                    service.diagnostics.close()
 
     async def health(request):
         return JSONResponse(
@@ -1817,7 +1823,7 @@ def create_app(config: ServerConfig):
         lifespan=lifespan,
         routes=[
             *management_auth.routes(),
-            *management_routes(service),
+            *management_routes(management, sources),
             Route("/healthz", health),
             Route("/api/tools", api_tools),
             Route("/api/call", api_call, methods=["POST"]),
@@ -1832,6 +1838,7 @@ def create_app(config: ServerConfig):
     )
     app.state.service = service
     app.state.management_auth = management_auth
+    app.state.management_sources = sources
     app.add_middleware(Security, config=config, management_auth=management_auth)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.allowed_hosts)
     app.add_middleware(RequestDiagnostics, diagnostics=service.diagnostics)

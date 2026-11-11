@@ -6,6 +6,7 @@ import ast
 import base64
 import re
 import shlex
+import warnings
 from pathlib import Path
 
 WORKERS = {"codex", "codex-cli", "work", "chatgpt-work", "work-agent"}
@@ -148,6 +149,14 @@ def _powershell_here_strings(source: str, cwd: Path | None, depth: int) -> str:
     )
 
 
+def _parse_python(source: str, *, mode: str = "exec") -> ast.AST:
+    # Inspection must not emit user-code warnings into the Runner service log.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return ast.parse(source, mode=mode)
+
+
 def check_worker_script(
     source: str, interpreter: str, *, cwd: Path | None = None, _depth: int = 0
 ) -> None:
@@ -160,7 +169,7 @@ def check_worker_script(
         _shell(source, cwd, _depth)
     elif language.startswith("python"):
         try:
-            tree = ast.parse(source)
+            tree = _parse_python(source)
         except SyntaxError:
             return
         aliases = {"subprocess": "subprocess", "os": "os", "asyncio": "asyncio"}
@@ -219,7 +228,9 @@ def check_worker_script(
                 _shell(command, cwd, _depth + 1)
             else:
                 try:
-                    args = ast.literal_eval(arguments) if arguments else []
+                    args = (
+                        ast.literal_eval(_parse_python(arguments, mode="eval")) if arguments else []
+                    )
                 except (ValueError, SyntaxError):
                     args = []
                 if isinstance(args, list) and all(isinstance(arg, str) for arg in args):

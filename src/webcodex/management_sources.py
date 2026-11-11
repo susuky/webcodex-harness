@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 from starlette.responses import JSONResponse
@@ -58,6 +59,7 @@ class Sources:
         self.locks: dict[tuple[str, str], asyncio.Lock] = {}
         self.creation_times: dict[tuple[str, str, str], float | None] = {}
         self.creation_lock = asyncio.Lock()
+        self.clients: dict[tuple[str, str, str, str], httpx.AsyncClient] = {}
         # Archiving is a client-scoped view preference, including for remote tasks.
         with self.service.store.db:
             self.service.store.db.execute(
@@ -227,20 +229,38 @@ class Sources:
             if not isinstance(result, dict):
                 raise ValueError("Expected an object")
             return result
+        except httpx.ConnectTimeout:
+            raise SourceUnavailable("連線至來源逾時") from None
+        except httpx.ReadTimeout:
+            raise SourceUnavailable("來源回應逾時") from None
+        except httpx.TimeoutException:
+            raise SourceUnavailable("來源通訊逾時") from None
         except httpx.HTTPError:
             raise SourceUnavailable("無法連線至來源") from None
         except ValueError:
             raise SourceUnavailable("來源回傳了無效資料") from None
 
-    def remote_client(self, owner: str, source_id: str):
+    @asynccontextmanager
+    async def remote_client(self, owner: str, source_id: str):
         source = self.source(owner, source_id)
-        return httpx.AsyncClient(
-            base_url=source.url,
-            headers={"Authorization": "Bearer " + source.token},
-            timeout=15,
-            follow_redirects=False,
-            trust_env=False,
-        )
+        key = (owner, source_id, source.url, source.token)
+        client = self.clients.get(key)
+        if client is None:
+            client = self.clients[key] = httpx.AsyncClient(
+                base_url=source.url,
+                headers={"Authorization": "Bearer " + source.token},
+                timeout=15,
+                limits=httpx.Limits(
+                    max_connections=20, max_keepalive_connections=5, keepalive_expiry=30
+                ),
+                follow_redirects=False,
+                trust_env=False,
+            )
+        yield client
+
+    async def close(self):
+        clients, self.clients = self.clients, {}
+        await asyncio.gather(*(client.aclose() for client in clients.values()))
 
     async def remote_creation_time(self, owner: str, source_id: str, task_id: str) -> float | None:
         key = (owner, source_id, task_id)
@@ -274,6 +294,8 @@ class Sources:
                         created = event.get("created")
                         if type(created) not in {int, float} or not math.isfinite(created):
                             raise SourceUnavailable("來源回傳了無效的任務日期")
+            except httpx.TimeoutException:
+                raise SourceUnavailable("讀取任務日期逾時") from None
             except httpx.HTTPError:
                 raise SourceUnavailable("讀取任務日期時無法連線至來源") from None
             except ValueError:
@@ -722,8 +744,7 @@ class Sources:
             return self.response({"source_id": source_id, "error": str(error)}, 502)
 
 
-def source_routes(management) -> list[Route]:
-    sources = Sources(management)
+def source_routes(sources: Sources) -> list[Route]:
     return [
         Route("/api/manage/sources", sources.listing, methods=["GET"]),
         Route("/api/manage/sources/{source_id}/state", sources.state, methods=["GET"]),

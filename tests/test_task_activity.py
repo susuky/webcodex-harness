@@ -49,7 +49,7 @@ def test_activity_keeps_latest_observation_and_process_start_order(tmp_path):
         store.db.set_trace_callback(statements.append)
         store.task_activity(task)
         store.db.set_trace_callback(None)
-        observation_query = next(s for s in statements if "WITH observations" in s)
+        observation_query = next(s for s in statements if "WITH recent AS" in s)
         assert "json_extract" not in observation_query and "json_type" not in observation_query
         plan = store.db.execute("EXPLAIN QUERY PLAN " + observation_query).fetchall()
         assert any("process_observations" in row[3] for row in plan)

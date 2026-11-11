@@ -74,6 +74,7 @@ class Runner:
         self.active: dict[str, asyncio.Task] = {}
         self.stop = asyncio.Event()
         self.delivery_lock = asyncio.Lock()
+        self.delivery_ready = asyncio.Event()
         self.project_lock = asyncio.Lock()
 
     def inventory(self) -> dict:
@@ -198,14 +199,15 @@ class Runner:
 
     async def flush(self, client: httpx.AsyncClient):
         async with self.delivery_lock:
-            await self._flush(client)
+            return await self._flush(client)
 
     async def _flush(self, client: httpx.AsyncClient):
-        for row in list(
+        rows = list(
             self.db.execute(
                 "SELECT * FROM deliveries WHERE acknowledged=0 AND status!='running' LIMIT 100"
             )
-        ):
+        )
+        for row in rows:
             result = json.loads(row["result"])
             if row["status"] == "succeeded" and result.get("registered") is True:
                 # Publish the durable project inventory before acknowledging creation to the client.
@@ -222,16 +224,34 @@ class Runner:
             response.raise_for_status()
             self.db.execute("UPDATE deliveries SET acknowledged=1 WHERE id=?", (row["id"],))
             self.db.commit()
+        return len(rows)
 
-    async def execute_and_deliver(self, job: dict, client: httpx.AsyncClient):
+    async def execute_and_notify(self, job: dict):
         await self.execute(job)
-        try:
-            await self.flush(client)
-        except (httpx.HTTPError, ValueError, OSError):
-            logger.info("Result delivery deferred until the connection recovers")
+        self.delivery_ready.set()
+
+    async def deliver_pending(self, client: httpx.AsyncClient):
+        # A slow result upload must not hold execution slots or the polling heartbeat.
+        while not self.stop.is_set():
+            self.delivery_ready.clear()
+            try:
+                if await self.flush(client) == 100:
+                    continue
+            except (httpx.HTTPError, ValueError, OSError) as error:
+                logger.info(
+                    "Result delivery deferred (%s); retrying saved results",
+                    type(error).__name__,
+                )
+                try:
+                    await asyncio.wait_for(self.stop.wait(), 2)
+                except TimeoutError:
+                    pass
+                continue
+            await self.delivery_ready.wait()
 
     async def run(self):
         registered = False
+        delivery_task = None
         async with httpx.AsyncClient(
             base_url=self.config.server_url,
             headers={"Authorization": "Bearer " + self.config.token},
@@ -245,7 +265,9 @@ class Runner:
                             await self.register(client)
                             registered = True
                             logger.info("Runner %s connected", self.config.runner_id)
-                        await self.flush(client)
+                            if delivery_task is None:
+                                delivery_task = asyncio.create_task(self.deliver_pending(client))
+                            self.delivery_ready.set()
                         self.active = {
                             key: task for key, task in self.active.items() if not task.done()
                         }
@@ -261,7 +283,7 @@ class Runner:
                         for job in response.json()["jobs"]:
                             if job["id"] not in self.active:
                                 self.active[job["id"]] = asyncio.create_task(
-                                    self.execute_and_deliver(job, client)
+                                    self.execute_and_notify(job)
                                 )
                         if not free:
                             await asyncio.sleep(0.2)
@@ -276,6 +298,9 @@ class Runner:
                         except TimeoutError:
                             pass
             finally:
+                if delivery_task is not None:
+                    delivery_task.cancel()
+                    await asyncio.gather(delivery_task, return_exceptions=True)
                 for task in self.active.values():
                     task.cancel()
                 await asyncio.gather(*self.active.values(), return_exceptions=True)
@@ -285,7 +310,7 @@ class Runner:
                     return_exceptions=True,
                 )
                 try:
-                    await self.flush(client)
+                    await asyncio.wait_for(self.flush(client), 10)
                 except (httpx.HTTPError, ValueError, OSError):
                     logger.info("Unacknowledged results are preserved for the next Runner start")
                 self.db.close()

@@ -345,6 +345,12 @@ Get-ScheduledTaskInfo -TaskName 'WebCodex Windows Keepalive' |
 
 需要手動維護時，先停用這個排程，避免下一個檢查週期補啟動。手動視窗方案則先在 Runner 視窗按 `Ctrl+C`，再停止 Server。
 
+常駐啟動會先確認 Windows Server、Runner 與主 Tunnel，再啟動任務中心 SSH 與 WSL。任一選配元件失敗時，其他元件仍會接受啟動檢查；`windows-startup.json` 會列出失敗的元件。WSL 的 `systemctl start` 與位址查詢各自最多等待 15 秒，逾時只結束該次前景控制程序，既有 WSL 服務與工作繼續執行。
+
+任務中心的 [SSH helper](../examples/windows/task-center/ssh-heartbeat-client.py) 在連線結束後等 5 秒就重連，重連期間持有同一個程序鎖，避免每分鐘排程另開連線。SSH 的 `ServerAliveInterval=10`、`ServerAliveCountMax=3` 讓失去回應的連線更快退出。[SSH 啟動範例](../examples/windows/task-center/start-task-center-ssh.ps1) 可傳入 `-SshTarget` 或設定 `WEBCODEX_TASK_CENTER_SSH_TARGET`；[WSL 啟動範例](../examples/windows/wsl/start-wsl-runner.ps1) 可傳入 `-WslUser` 或設定 `WEBCODEX_WSL_USER`。未配置時會回報缺少的設定，供常駐啟動顯示失敗元件。更新既有安裝時，沿用原腳本的目標、使用者與金鑰位置。
+
+SSH 啟動範例的 `-SshExecutable` 可指定本機已安裝的 SSH，例如 `C:\Program Files\Git\usr\bin\ssh.exe`；預設使用 Windows 內建 OpenSSH。它會把完整路徑以 helper 的 `--ssh-executable` 參數傳入，其他 SSH 參數保持原值。常駐排程無參數呼叫此腳本時，請將安裝副本的 `$SshExecutable` 預設值設為選定路徑。切換在 helper 下一次啟動時生效；既有 helper 只重連 SSH，不會重新載入自身程式。
+
 ### 手動啟動已安裝的服務
 
 執行 [`examples/windows/Start-WebCodex.ps1`](../examples/windows/Start-WebCodex.ps1) 會啟用既有排程並立即啟動檢查，補啟動停止的 Server、Runner 與 Tunnel。它沿用已保存的金鑰；PowerShell 視窗關閉後，服務仍由工作排程器管理。需要先完成上方的常駐安裝。

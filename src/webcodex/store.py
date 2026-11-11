@@ -597,21 +597,24 @@ class Store:
                 (task["owner"], task_id),
             )
         ]
+        # Group starts through the covering index, then fetch the latest row only
+        # for the processes displayed. Window ranking every observation is much costlier.
         processes = self.rows(
-            "WITH observations AS (SELECT id AS job_id,updated AS observed_at,"
-            "process_id,process_status AS status,process_exit_code AS exit_code,"
-            "min(created) OVER (PARTITION BY process_id) AS started_at,"
-            "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
-            "FROM jobs WHERE task_id=? AND status='succeeded' "
+            "WITH recent AS (SELECT task_id,process_id,min(created) AS started_at "
+            "FROM jobs INDEXED BY process_observations "
+            "WHERE task_id=? AND status='succeeded' "
             "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
             "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
             "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id) "
-            "AND process_id IS NOT NULL), "
-            "recent AS (SELECT * FROM observations WHERE rank=1 "
-            "ORDER BY started_at DESC,process_id LIMIT 100) "
-            "SELECT recent.job_id,jobs.tool,recent.observed_at,recent.started_at,"
-            "recent.process_id,recent.status,recent.exit_code "
-            "FROM recent JOIN jobs ON jobs.id=recent.job_id "
+            "AND process_id IS NOT NULL "
+            "GROUP BY process_id ORDER BY started_at DESC,process_id LIMIT 100) "
+            "SELECT jobs.id AS job_id,jobs.tool,jobs.updated AS observed_at,recent.started_at,"
+            "jobs.process_id,jobs.process_status AS status,jobs.process_exit_code AS exit_code "
+            "FROM recent JOIN jobs ON jobs.id=(SELECT latest.id FROM jobs AS latest "
+            "WHERE latest.task_id=recent.task_id AND latest.process_id=recent.process_id "
+            "AND latest.status='succeeded' "
+            "AND latest.tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
+            "ORDER BY latest.updated DESC,latest.id DESC LIMIT 1) "
             "ORDER BY recent.started_at DESC,recent.process_id",
             (task_id,),
         )
@@ -662,8 +665,11 @@ class Store:
         if not runner or runner["instance"] != instance:
             raise ValueError("Runner must register this instance before polling")
         result = []
+        now = time.time()
         with self.db:
-            self.db.execute("UPDATE runners SET seen=? WHERE id=?", (time.time(), runner_id))
+            # Long-poll checks run every 100 ms; persist only the five-second heartbeat.
+            if now - runner["seen"] >= 5:
+                self.db.execute("UPDATE runners SET seen=? WHERE id=?", (now, runner_id))
             for row in self.rows(
                 "SELECT id FROM jobs WHERE runner=? AND status='queued' ORDER BY created LIMIT ?",
                 (runner_id, limit),
