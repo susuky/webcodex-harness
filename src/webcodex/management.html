@@ -395,22 +395,35 @@
   function visibleTasks() {
     const q=$('query').value.trim().toLowerCase(),choice=$('state-filter').value,state=choice==='archived'?'all':choice,source=tuple($('source-filter').value,2),project=tuple($('project-filter').value,3),archived=archivedView();
     return activeSources().flatMap(s=>s.tasks).filter(t=>(!source || environment(t)===source[1]) && (!project || t.source_id===project[0] && t.runner===project[1] && t.project===project[2]) && (archived==='all' || Boolean(t.archived)===(archived==='archived')) && (!q || [t.title,t.project,t.id,t.runner,t.summary].join(' ').toLowerCase().includes(q)) && (state==='all' || state==='unfinished' && t.status!=='completed' || state==='active' && isActive(t) || state==='attention' && needsAction(t) || state==='unconfirmed' && hasUnconfirmed(t) || state==='completed' && t.status==='completed'))
-      .sort((a,b)=>rank(a)-rank(b) || b.updated-a.updated || key(a).localeCompare(key(b)));
+      .sort((a,b)=>rank(a)-rank(b) || (toolStamp(b) || b.updated)-(toolStamp(a) || a.updated) || b.updated-a.updated || key(a).localeCompare(key(b)));
   }
   function renderTasks() {
-    const focused=document.activeElement?.closest('.task'),focusedKey=focused ? JSON.stringify([focused.dataset.source,focused.dataset.task]) : null;
-    const tasks=visibleTasks();$('tasks').replaceChildren();
-    if(!tasks.length)$('tasks').append(node('p',activeSources().some(s=>s.loading)?'讀取任務中…':activeSources().some(s=>!s.online)?'目前無法讀取任務。請重新整理。':'沒有符合的任務','empty muted'));
+    const panel=$('task-list'),list=$('tasks'),scroll=panel.scrollTop,focused=document.activeElement?.closest('.task');
+    const heading=panel.querySelector('.list-heading'),top=heading.getBoundingClientRect().bottom,bottom=panel.getBoundingClientRect().bottom,previous=[...list.querySelectorAll('.task')];
+    const anchors=scroll>0?previous.map(row=>({row,rect:row.getBoundingClientRect()})).filter(({rect})=>rect.bottom>top && rect.top<bottom).map(({row,rect})=>({row,offset:rect.top-top})):[];
+    const existing=new Map(previous.map(row=>[JSON.stringify([row.dataset.source,row.dataset.task]),row])),tasks=visibleTasks(),rows=[];
     for(const task of tasks){
-      const b=node('button',undefined,'task'+(selected && key(selected)===key(task)?' selected':''));
+      const b=existing.get(key(task)) || node('button');b.className='task'+(selected && key(selected)===key(task)?' selected':'');
       b.dataset.source=task.source_id;b.dataset.task=task.id;b.setAttribute('aria-pressed',String(Boolean(selected && key(selected)===key(task))));b.setAttribute('aria-controls','detail');
       const heading=node('div',undefined,'task-head');heading.append(node('strong',task.title),node('span',statusText(task),statusClass(task)));
-      const meta=node('div',undefined,'taskmeta'),started=node('span',task.started_at?'開始 ':'建立 ','tasktime'),activity=node('span','最近操作 ','taskactivity');started.append(timeNode(task.started_at || task.created_at));activity.append(timeNode(toolStamp(task),true));meta.append(node('span',environment(task)+' · '+task.project),started,activity);b.append(heading,meta);
-      b.addEventListener('click',()=>select(task));$('tasks').append(b);if(focusedKey===key(task))b.focus({preventScroll:true});
+      const meta=node('div',undefined,'taskmeta'),started=node('span',task.started_at?'開始 ':'建立 ','tasktime'),activity=node('span','最近操作 ','taskactivity');started.append(timeNode(task.started_at || task.created_at));activity.append(timeNode(toolStamp(task),true));meta.append(node('span',environment(task)+' · '+task.project),started,activity);b.replaceChildren(heading,meta);
+      b.onclick=()=>select(task);rows.push(b);
     }
+    let cursor=list.firstChild;
+    for(const row of rows){
+      if(row===cursor)cursor=cursor.nextSibling;
+      else if(row.isConnected && list.moveBefore)list.moveBefore(row,cursor);
+      else list.insertBefore(row,cursor);
+    }
+    while(cursor){const next=cursor.nextSibling;cursor.remove();cursor=next;}
+    if(!tasks.length)list.append(node('p',activeSources().some(s=>s.loading)?'讀取任務中…':activeSources().some(s=>!s.online)?'目前無法讀取任務。請重新整理。':'沒有符合的任務','empty muted'));
     const pending=activeSources().some(s=>s.nextOffset!==null);
     $('results').textContent=tasks.length+' 個任務'+(pending?' · 尚有更多':'');
     $('more').hidden=!pending;$('more').disabled=paging || busy!==null;
+    if(focused?.isConnected && document.activeElement!==focused)focused.focus({preventScroll:true});
+    panel.scrollTop=scroll;
+    const anchor=anchors.find(({row})=>row.isConnected);
+    if(anchor)panel.scrollTop+=anchor.row.getBoundingClientRect().top-heading.getBoundingClientRect().bottom-anchor.offset;
   }
   function handoffText(task,data) {
     const h=data.handoff || {},lines=[task.title,task.source_label+' / '+task.runner+' / '+task.project,'task_id: '+task.id,'摘要時間：'+stamp(h.updated_at || data.taskUpdated || task.updated)];
@@ -742,7 +755,7 @@
     }catch(error){showAuth();$('auth-error').textContent=error.message;}
   }
   function filtersChanged() {
-    queryVersion++;restoredPages=1;for(const source of sources){source.pages=1;source.nextOffset=null;}saveView();renderTasks();clearTimeout(queryTimer);queryTimer=setTimeout(()=>refresh(true),200);
+    queryVersion++;restoredPages=1;for(const source of sources){source.pages=1;source.nextOffset=null;}$('task-list').scrollTop=0;saveView();renderTasks();clearTimeout(queryTimer);queryTimer=setTimeout(()=>refresh(true),200);
   }
   $('auth').addEventListener('submit',login);
   $('refresh').addEventListener('click',()=>refresh());$('logout').addEventListener('click',logout);

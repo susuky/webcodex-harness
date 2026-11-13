@@ -383,6 +383,102 @@ async def test_local_catalog_prioritizes_old_work_searches_before_paging_and_kee
     assert store.one("SELECT count(*) AS n FROM jobs")["n"] == before
 
 
+@pytest.mark.parametrize("source", ["local", "windows"])
+async def test_source_pages_follow_displayed_external_activity(
+    activity_service, monkeypatch, source
+):
+    service, old = activity_service
+    store = service.store
+    tracked = store.create_task("owner", "local/project", "Recent tracked operation")
+    external = store.create_task("owner", "local/project", "Recent external job")
+    untouched = store.create_task("owner", "local/project", "No tool activity")
+    now = time.time()
+
+    def finished_job(task, request_id, age):
+        job = store.enqueue(task, "read_file", {}, request_id, 100)
+        with store.db:
+            store.db.execute(
+                "UPDATE jobs SET status='succeeded',created=?,updated=? WHERE id=?",
+                (now - age - 1, now - age, job["job_id"]),
+            )
+
+    finished_job(old, "old-external", 60)
+    for prefix in INTERNAL_OBSERVATION_PREFIXES:
+        finished_job(old, prefix + "new-observation", 0)
+    finished_job(tracked, "earlier-job", 50)
+    finished_job(external, "recent-job", 5)
+    for task, started, window in (
+        (old, now - 90, "old-chat"),
+        (tracked, now - 80, "finished-chat"),
+        (tracked, now - 20, "running-chat"),
+        (external, now - 70, "external-chat"),
+    ):
+        store.start_tool_activity(task["id"], window, "read_file", started, window=window)
+    with store.db:
+        store.db.execute(
+            "UPDATE task_tool_activity SET finished_at=?,outcome='returned' "
+            "WHERE task_id=? AND window_hash='finished-chat'",
+            (now - 10, tracked["id"]),
+        )
+        store.db.executemany(
+            "UPDATE tasks SET updated=? WHERE id=?",
+            (
+                (now - age, task["id"])
+                for task, age in ((old, 1), (tracked, 200), (external, 300), (untouched, 30))
+            ),
+        )
+    management = Management(service)
+    manager = Sources(management)
+    if source == "windows":
+        service.config.clients["owner"].management_sources = {
+            source: ManagementSource(url="https://windows.example", token="w" * 40)
+        }
+        legacy_order = [
+            management.describe(store.task(task["id"], "owner"))
+            for task in (old, untouched, tracked, external)
+        ]
+
+        async def upstream(request):
+            offset = int(request.url.params["offset"])
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": legacy_order[offset : offset + 2],
+                    "runners": management.runners("owner"),
+                    "next_offset": offset + 2 if offset == 0 else None,
+                    "observed_at": now,
+                },
+            )
+
+        monkeypatch.setattr(
+            manager,
+            "remote_client",
+            lambda owner, source_id: httpx.AsyncClient(
+                base_url="https://windows.example", transport=httpx.MockTransport(upstream)
+            ),
+        )
+    described = []
+    original_describe = management.describe
+
+    def describe(task):
+        described.append(task["id"])
+        return original_describe(task)
+
+    monkeypatch.setattr(management, "describe", describe)
+    pages = [
+        json.loads((await manager.state(scoped_request(source, f"limit=1&offset={offset}"))).body)
+        for offset in range(4)
+    ]
+    expected = [external["id"], tracked["id"], untouched["id"], old["id"]]
+    assert [page["tasks"][0]["id"] for page in pages] == expected
+    assert [page["next_offset"] for page in pages] == [1, 2, 3, None]
+    assert all(page["total_count"] == 4 for page in pages)
+    assert described == (expected if source == "local" else [])
+    assert [
+        (page["tasks"][0]["liveness"]["conversation"] or {}).get("finished_at") for page in pages
+    ] == [now - 5, now - 10, None, now - 60]
+
+
 async def test_remote_catalog_legacy_paging_source_collisions_and_failures(
     activity_service, monkeypatch
 ):
@@ -713,6 +809,13 @@ async def test_local_catalog_reads_projection_with_large_history(activity_servic
         catalog[0]["_priority"] == 0 and store.job(queued["job_id"], "owner")["status"] == "queued"
     )
     assert not any("result" in query.casefold() for query in queries)
+    activity_query = next(query for query in queries if " AS _activity FROM tasks" in query)
+    store.db.set_progress_handler(lambda: 1, 5000)
+    try:
+        activity = store.db.execute(activity_query).fetchone()["_activity"]
+    finally:
+        store.db.set_progress_handler(None, 0)
+    assert activity == store.job(queued["job_id"], "owner")["updated"]
 
 
 def test_stale_running_is_unconfirmed_without_rewriting_saved_status():
@@ -790,6 +893,9 @@ def test_finished_legacy_agent_is_not_resurrected_as_an_unconfirmed_process(acti
     [
         {"processes": [{"status": "running", "observed_at": "yesterday"}]},
         {"liveness": {"work": {"running_count": None}}},
+        {"liveness": {"conversation": []}},
+        {"liveness": {"conversation": {"finished_at": "yesterday"}}},
+        {"liveness": {"conversation": {"started_at": True}}},
         {"created_at": "2026/11/5"},
     ],
 )

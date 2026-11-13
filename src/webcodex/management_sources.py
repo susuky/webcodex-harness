@@ -142,11 +142,20 @@ class Sources:
         roots = self.service.config.clients[owner].project_roots
         project_slots = ",".join("?" for _ in allowed) or "NULL"
         root_slots = ",".join("?" for _ in roots) or "NULL"
+        external = " AND ".join("request_id NOT LIKE ?" for _ in INTERNAL_OBSERVATION_PREFIXES)
+        activity = (
+            "SELECT max(coalesce(finished_at,started_at)) FROM task_tool_activity "
+            "WHERE task_id=tasks.id"
+        )
         tasks = self.service.store.rows(
-            "SELECT id,title,runner,project,kind,binding,status,summary,updated,created AS created_at FROM tasks WHERE owner=? "
+            "SELECT id,title,runner,project,kind,binding,status,summary,updated,created AS created_at,"
+            # Seek from the newest job and stop at the tracked activity, without reading old output.
+            "coalesce((SELECT updated FROM jobs INDEXED BY task_jobs WHERE task_id=tasks.id "
+            f"AND updated>coalesce(({activity}),0) AND (request_id IS NULL OR ({external})) "
+            f"ORDER BY updated DESC LIMIT 1),({activity})) AS _activity FROM tasks WHERE owner=? "
             f"AND ((kind='coding' AND runner||'/'||project IN ({project_slots})) "
             f"OR (kind='project' AND runner||'/'||project IN ({root_slots})))",
-            (owner, *allowed, *roots),
+            (*(prefix + "%" for prefix in INTERNAL_OBSERVATION_PREFIXES), owner, *allowed, *roots),
         )
         if not tasks:
             return tasks
@@ -173,7 +182,6 @@ class Sources:
                     live.add(row["task_id"])
                 else:
                     unconfirmed.add(row["task_id"])
-        external = " AND ".join("request_id NOT LIKE ?" for _ in INTERNAL_OBSERVATION_PREFIXES)
         for row in self.service.store.rows(
             "SELECT task_id,status,max(updated) AS updated FROM jobs INDEXED BY pending_jobs "
             f"WHERE owner=? AND task_id IN ({slots}) AND status IN ('queued','pending_approval','running') "
@@ -342,6 +350,13 @@ class Sources:
             for field in ("running_count", "pending_count")
         ):
             raise SourceUnavailable("來源回傳了無效的工作狀態")
+        activity = liveness.get("conversation")
+        if activity is not None:
+            if not isinstance(activity, dict) or any(
+                value is not None and (type(value) not in {int, float} or not math.isfinite(value))
+                for value in (activity.get("started_at"), activity.get("finished_at"))
+            ):
+                raise SourceUnavailable("來源回傳了無效的任務時間")
 
     async def remote_catalog(self, owner: str, source_id: str) -> dict:
         key = (owner, source_id)
@@ -515,7 +530,18 @@ class Sources:
                     )
                 )
             ]
-            tasks.sort(key=lambda task: (priority(task), -task.get("updated", 0), task["id"]))
+
+            def sort_key(task):
+                activity = (task.get("liveness") or {}).get("conversation") or {}
+                latest = (
+                    task.get("_activity")
+                    if source is None
+                    else activity.get("finished_at") or activity.get("started_at")
+                )
+                updated = task.get("updated", 0)
+                return priority(task), -(latest or updated), -updated, task["id"]
+
+            tasks.sort(key=sort_key)
             selected = tasks[offset : offset + limit]
             if source is None:
                 selected = [

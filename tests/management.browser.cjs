@@ -1,6 +1,48 @@
 "use strict";
 const assert=require("node:assert/strict"),fs=require("node:fs"),os=require("node:os"),path=require("node:path");
 const {chromium}=require("playwright");
+async function verifyTaskListReading(browser,root,output,checks,errors,measurements){
+  measurements.taskListReading=[];
+  for(const [width,legacy] of [[1400,false],[390,false],[1400,true]]){
+    const name=width+(legacy?"-legacy":""),context=await browser.newContext({viewport:{width,height:900},locale:"zh-TW",timezoneId:"Asia/Taipei"}),page=await context.newPage(),now=Date.now()/1000;
+    const makeTask=(id,updated)=>({id,source_id:"local",source_label:"ll1",title:"列表任務 "+id,runner:"local",project:"webcodex",status:"active",state:"ready",runner_online:true,updated,created_at:now-7200,started_at:now-7000,summary:"任務內容 "+id,processes:[],liveness:{observed_at:now,conversation:{finished_at:updated},work:{running_count:0,pending_count:0}}});
+    const tasks=Array.from({length:18},(_,i)=>makeTask("task-"+i,now-i*60));
+    page.on("pageerror",error=>errors.push(error.message));
+    await page.clock.install();
+    if(legacy)await page.addInitScript(()=>{Element.prototype.moveBefore=undefined;});
+    await page.route("http://list-reading.test/**",route=>{
+      const url=new URL(route.request().url());let data;
+      if(url.pathname==="/manage")return route.fulfill({contentType:"text/html; charset=utf-8",body:fs.readFileSync(path.join(root,"src/webcodex/management.html"))});
+      if(url.pathname.endsWith("/session"))data={authenticated:true,password_enabled:true};
+      else if(url.pathname.endsWith("/sources"))data={sources:[{id:"local",label:"ll1",runner_labels:{}}]};
+      else if(url.pathname.endsWith("/state"))data={tasks:tasks.filter(t=>t.status!=="completed" && t.title.includes(url.searchParams.get("q") || "")),runners:[{id:"local",online:true,last_seen:now}],observed_at:now,next_offset:null,projects:[]};
+      else if(url.pathname.endsWith("/refresh"))data={updates:[]};
+      else data={...tasks.find(t=>t.id===url.pathname.split("/").at(-1)),observed_at:now,outputs:[],errors:[]};
+      return route.fulfill({json:data});
+    });
+    const ready=()=>page.waitForFunction(()=>!document.getElementById("refresh").disabled);
+    const poll=async()=>{const response=page.waitForResponse(r=>new URL(r.url()).pathname.endsWith("/state"));await page.clock.fastForward(10000);await (await response).finished();await ready();await page.evaluate(()=>new Promise(requestAnimationFrame));};
+    const reading=()=>page.evaluate(()=>{const panel=document.getElementById("task-list"),top=panel.querySelector(".list-heading").getBoundingClientRect().bottom,bottom=panel.getBoundingClientRect().bottom;return{scroll:panel.scrollTop,pageScroll:window.scrollY,focused:document.activeElement?.dataset.task,visible:[...panel.querySelectorAll(".task")].map(e=>({id:e.dataset.task,top:e.getBoundingClientRect().top-top,bottom:e.getBoundingClientRect().bottom})).filter(e=>e.bottom>top && e.top+top<bottom)};});
+    const assertReading=(before,after,removed)=>{const anchor=before.visible.find(row=>row.id!==removed),same=after.visible.find(row=>row.id===anchor.id);assert.ok(same,"visible task remains in view after polling: "+JSON.stringify({before,after}));assert.ok(Math.abs(same.top-anchor.top)<=1,"visible task keeps its offset");assert.equal(after.focused,before.focused);assert.equal(after.pageScroll,before.pageScroll);};
+    try{
+      await page.goto("http://list-reading.test/manage");await page.locator(".task").first().waitFor();await ready();
+      await page.locator('.task[data-task="task-0"]').click();await page.locator("#task-summary").waitFor();await page.waitForFunction(()=>!document.getElementById("detail-loading"));
+      await page.locator("#task-list").hover();await page.mouse.wheel(0,650);await page.waitForFunction(()=>document.getElementById("task-list").scrollTop>500);
+      const before=await reading();await page.screenshot({path:path.join(output,"list-reading-before-"+name+".png")});
+      await poll();const same=await reading();await page.screenshot({path:path.join(output,"list-reading-after-"+name+".png")});assertReading(before,same);
+      const latest=tasks.at(-1),savedUpdate=latest.updated;latest.liveness.conversation.finished_at=now+1;
+      await poll();const activity=await reading();assertReading(same,activity);assert.equal(latest.updated,savedUpdate);assert.equal(await page.locator(".task").first().getAttribute("data-task"),latest.id,"a new operation reorders the task even when its summary timestamp is unchanged");
+      tasks[1].title+="：更新較長的任務名稱，確認上方內容變高時仍保留正在閱讀的任務位置。".repeat(3);tasks.at(-1).updated=now+2;tasks.unshift(makeTask("new-task",now+3));
+      await poll();const reordered=await reading();assertReading(activity,reordered);assert.deepEqual(await page.locator(".task").evaluateAll(rows=>rows.slice(0,2).map(row=>row.dataset.task)),["new-task",latest.id]);assert.match(await page.locator('.task[data-task="task-1"] strong').textContent(),/更新較長/);
+      const removed=reordered.visible[0].id;tasks.find(t=>t.id===removed).status="completed";await poll();const removedAnchor=await reading();assertReading(reordered,removedAnchor,removed);assert.equal(await page.locator(`.task[data-task="${removed}"]`).count(),0);
+      await page.locator("#task-list").evaluate(e=>e.scrollTop=0);await poll();assert.equal((await reading()).scroll,0);
+      await page.locator("#task-list").hover();await page.mouse.wheel(0,650);await page.waitForFunction(()=>document.getElementById("task-list").scrollTop>500);await page.locator("#query").fill("列表");await page.clock.fastForward(250);await ready();assert.equal((await reading()).scroll,0);
+      await page.locator("#query").fill("沒有符合的搜尋");await page.clock.fastForward(250);await ready();await page.getByText("沒有符合的任務",{exact:true}).waitFor();await page.locator("#query").fill("");await page.clock.fastForward(250);await ready();assert.equal((await reading()).scroll,0);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false);
+      measurements.taskListReading.push({width,legacy,before,same,activity,reordered,removedAnchor});checks.push(name+"px task list sorts by displayed operation time without waiting for idle and retains visible rows and focus across polling, insertion, reordering, resized rows and removal; explicit filters reset to the top");
+    }finally{await context.close();}
+  }
+}
 async function verifySnapshotConsistency(browser,root,output,checks,errors){
   const context=await browser.newContext({viewport:{width:1400,height:1000},locale:"zh-TW",timezoneId:"Asia/Taipei"}),page=await context.newPage(),t0=Date.now()/1000-20,t1=t0+13,t2=t0+16,t3=t0+19;
   const base={id:"shared-snapshot",title:"Windows 工作",source_id:"windows",source_label:"Windows",environment_label:"Windows",runner:"local",project:"test",status:"active",state:"waiting_runner",runner_online:false,stale:true,updated:t0,created_at:t0-7200,started_at:t0-7000,jobs:[{tool:"exec_command",status:"queued"}],processes:[{process_id:"snapshot-process",status:"running",display_status:"unconfirmed",observed_at:t1}],liveness:{observed_at:t0,runner_observed_at:t0,runner_last_seen:t0-30,data_freshness:"historical",conversation:{finished_at:t0},work:{running_count:1,pending_count:1,unconfirmed_count:1}}};
@@ -107,6 +149,7 @@ async function verifyHandoffReading(browser,root,output,checks,errors,measuremen
   const projects=source=>[...new Map(allTasks[source].map(task=>[task.runner+"/"+task.project,{runner:task.runner,project:task.project,environment_label:environment(task)}])).values()];
   try{
     browser=await chromium.launch({headless:true,...(process.env.WEBCODEX_CHROMIUM?{executablePath:process.env.WEBCODEX_CHROMIUM}:{}),args:["--no-sandbox"]});
+    await verifyTaskListReading(browser,root,output,checks,errors,measurements);
     const context=await browser.newContext({viewport:{width:1400,height:1000},locale:"zh-TW",timezoneId:"Asia/Taipei"}),page=await context.newPage();
     await page.addInitScript(()=>{window.copied=[];Object.defineProperty(navigator,"clipboard",{value:{writeText:async text=>{window.copied.push(text);}}});});
     page.on("pageerror",error=>errors.push(error.message));
