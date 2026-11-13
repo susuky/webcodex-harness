@@ -49,7 +49,7 @@
 
 @layer base {
   :where(html, body, main, section, div, header, form, search, label, button, input, select, dialog, p, dl, ol, li, pre, a) { box-sizing: border-box; }
-  html { block-size: 100%; accent-color: var(--accent); }
+  html { block-size: 100%; font-size: 90%; accent-color: var(--accent); }
   body { margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.6 var(--font); }
   :where(h1, h2, h3, h4, p) { margin: 0; }
   h1 { font-size: 1.125rem; font-weight: 600; }
@@ -222,7 +222,10 @@
 
 @layer preferences {
   :where(.hidden, [hidden], #error:empty, #auth-error:empty) { display: none !important; }
-  @media (pointer: coarse) { :where(button, input, select, summary) { min-block-size: 3rem; } }
+  @media (pointer: coarse) {
+    :where(button, input, select, summary, .detail-back) { min-block-size: max(3rem, 44px); }
+    :where(input, select) { font-size: max(1rem, 16px); }
+  }
   @media (prefers-reduced-motion: reduce) { button { transition: none; } }
   @media (forced-colors: active) {
     .task.selected { outline: 2px solid Highlight; outline-offset: -3px; }

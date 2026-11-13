@@ -6,13 +6,13 @@
   <meta name="color-scheme" content="light dark">
   <title>任務與修改內容</title>
   <style>
-    @layer base, layout, components;
+    @layer base, layout, components, preferences;
 
     @layer base {
       :root {
         color-scheme: light dark;
         font-family: "IBM Plex Sans", "Noto Sans TC", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
-        font-size: 100%;
+        font-size: 90%;
         line-height: 1.6;
         --mono: "IBM Plex Mono", ui-monospace, "Noto Sans Mono", monospace;
         --ink: var(--color-text-primary, light-dark(#202b31, #e4eef0));
@@ -241,6 +241,12 @@
       .run summary code { font: .75rem/1.7 var(--mono); }
       .run-count-failed { color: var(--bad); font-weight: 600; }
       .updated { color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
+    }
+    @layer preferences {
+      @media (pointer: coarse) {
+        :where(button, summary, .toggle, .message-settings input) { min-block-size: max(3rem, 44px); }
+        .message-settings input { font-size: max(1rem, 16px); }
+      }
     }
   </style>
 </head>
