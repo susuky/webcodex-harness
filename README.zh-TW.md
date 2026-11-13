@@ -2,65 +2,16 @@
 
 [English](README.md) | 繁體中文
 
-讓 MCP 用戶端操作你電腦上的 repo 與桌面應用程式。Server 管理驗證與任務；Runner 主動連線，在本機執行工具。
+讓 MCP 用戶端操作你電腦上的 repo 與桌面應用程式。自行架設的 Server 管理驗證與任務紀錄；Runner 主動連線，在你登記的電腦上執行工具。
 
 ## 功能
 
-- 讀取、搜尋及以雜湊檢查修改檔案；使用 Git、命令、測試與互動終端。
-- 接收 ChatGPT 傳入的圖片與 GIF 原檔，保存至指定專案路徑；[匯入方式](docs/CHATGPT.md#從-chatgpt-匯入圖片與-gif)。
-- 以 `task_id` 跨對話延續已儲存的任務，監看執行中的程序。
-- 在明確允許的父目錄建立或登記專案，不需要已有任務。
+- 讀取、搜尋與修改專案檔案；使用 Git、命令、測試與互動終端。
+- 接收 ChatGPT 傳入的圖片與 GIF 原檔，保存至專案。
+- 以 `task_id` 跨對話接續任務，包含執行中的命令與輸出。
+- 在明確允許的父目錄建立或登記專案。
 - 載入專案 skills 與 plugins，保留 MCP 連線狀態。
-- 選擇啟用桌面截圖與控制，包含 Unicode 文字輸入。
-- 透過選用的 Playwright MCP plugin 操作網頁、填表、切換分頁及擷取資料。
-
-## ChatGPT 任務卡片
-
-WebCodex 透過 MCP Apps 提供互動式任務卡片。在 ChatGPT 等支援的用戶端呼叫 `task_present(task_id)` 即可開啟。
-
-![ChatGPT 中的 WebCodex 任務卡片，顯示任務進度、修改內容與執行結果](docs/images/chatgpt-task-card.png)
-
-操作示範（測試資料）。
-
-- 查看任務狀態、工作步驟與連線狀態。
-- 檢視專案目前尚未提交的變更，點選檔案查看差異。
-- 查看此任務最近命令的執行結果、結束碼與輸出。
-- 長命令在原回合使用 `job_get`／`read_process` 取得結果後繼續。
-- 使用「接續工作」手動接回，或明確開啟「完成後自動傳訊」，設定本任務次數與間隔；重連與接手後回到關閉。
-- 新對話按「在此接手」，讀取修改檔案、驗證、未讀輸出與下一步。
-
-用戶端需求與續接流程見 [任務卡片與跨回合續接](docs/CHATGPT.md#任務卡片與跨回合續接)。
-
-### ChatGPT 平台已知限制：再次詢問工具授權
-
-長時間對話可能再次出現「允許一次／一律允許」的工具確認。已觀察到外掛設定為 `Allow all actions`、WebCodex 服務持續在線時仍發生此情況，列為 ChatGPT 平台端的已知限制。WebCodex 沒有數小時後撤銷工具授權的設定。
-
-遇到提示時，在原對話確認工具操作；已送到 Runner 的工作仍可繼續執行。服務正常時，無需為此重啟 Server、bridge 或 Runner。官方說明對話內記住的允許可在重新整理後再次詢問；每個外掛的允許設定仍重問的觸發原因尚未確認，也未查到固定到期時間。詳見[平台授權限制與排查](docs/CHATGPT.md#chatgpt-平台已知限制再次詢問工具授權)。
-
-## 用 task_id 跨對話接續工作
-
-`task_id` 對應 Server 保存的工作目標、進度、job、process 與結果，換 ChatGPT 對話後仍可接續。新工作建立新的任務 ID；兩個對話即使操作同一個 repo，也只有明確沿用同一個 `task_id` 才共用任務紀錄。
-
-在新對話接續原工作：
-
-1. 用 `task_list` 找到原任務，再以 `task_get(task_id)` 確認目前進度。
-2. 呼叫 `task_takeover(task_id)`，或在任務卡片按「在此接手」。
-3. 用 `work_on_project(task_id=...)` 接續，沿用原 job 與 process ID，以 `job_get`／`read_process` 取得結果。保留原命令執行，不另建替代任務或重跑原命令。
-
-續接需使用相同的 WebCodex 用戶端身分（owner），並保有原專案授權。同一任務只有一個有效的卡片控制者；接手會將卡片發訊權移交新對話。詳細流程見[跨對話接棒](docs/CHATGPT.md#跨對話接棒)。
-
-## 換帳號與換電腦
-
-`WebCodex ll1` 等名稱是 ChatGPT 連線的標籤。任務所選的專案與 Runner 決定工具實際在哪台電腦執行。
-
-| 情境 | 設定方式 |
-| --- | --- |
-| 同一 ChatGPT 帳號與工作區，換電腦開啟 ChatGPT 網頁 | 選用已安裝的原外掛 |
-| 換 ChatGPT 帳號 | 在新帳號安裝或建立連線，確認可使用原 Server／tunnel；Server 與 Runner 可共用 |
-| 希望工具在 Windows 執行 | 將 Windows Runner 與專案登記到原 Server，授權用戶端使用該專案，可沿用同一外掛 |
-| 另一台電腦獨立架設另一個 Server | 新增指向該 Server 入口的連線，可用不同名稱區分 |
-
-換帳號時需確認 tunnel 的工作區關聯與使用權限。接續原任務還需保留相同的 WebCodex 用戶端身分，再用 `task_list`／`task_get` 讀取紀錄。詳見 [換帳號與換電腦的連線設定](docs/CHATGPT.md#換帳號與換電腦)。
+- 安裝選用依賴後，使用桌面截圖與控制、語意控制項選取或瀏覽器自動化。
 
 ## 快速啟動
 
@@ -71,9 +22,9 @@ uv sync --locked
 uv run webcodex init --project /absolute/path/to/your/repo
 ```
 
-Windows 請改用 `'C:\src\my-repo'` 等專案路徑。設定放在專案外的 `~/.config/webcodex-harness/` 或 `%LOCALAPPDATA%\webcodex-harness\`，保留既有設定。
+Windows 請使用 `'C:\src\my-repo'` 等專案路徑。設定放在專案外的 `~/.config/webcodex-harness/` 或 `%LOCALAPPDATA%\webcodex-harness\`；`init` 不會覆寫既有設定。
 
-還沒有專案時，改用 `init --project-root /absolute/path/to/projects` 指定既有父目錄。既有安裝可用 `uv run webcodex allow-root /absolute/path/to/projects` 登記父目錄，保留原憑證並自動備份設定。完成後重啟 Server 與 Runner，詳見 [建立專案](docs/PROJECTS.md)。
+還沒有專案時，改用 `init --project-root /absolute/path/to/projects` 指定既有父目錄。既有安裝可用 `uv run webcodex allow-root /absolute/path/to/projects` 加入父目錄，再重啟 Server 與 Runner。詳見[專案設定](docs/PROJECTS.md)。
 
 在不同終端機分別執行：
 
@@ -82,73 +33,88 @@ uv run webcodex serve
 uv run webcodex runner
 ```
 
-使用產生的 `client.json` 內 Bearer 憑證連線至 `http://127.0.0.1:8765/mcp`，或以 `uv run webcodex bridge` 使用 stdio。用戶端與 ChatGPT 設定見 [連線指南](docs/CHATGPT.md)，建立第一個任務見 [操作教學](docs/OPERATIONS.md)。
+使用產生的 `client.json` 內 Bearer 憑證，將 MCP 用戶端連線至 `http://127.0.0.1:8765/mcp`，或以 `uv run webcodex bridge` 使用 stdio。ChatGPT 與其他用戶端設定見[連線指南](docs/CHATGPT.md)，建立第一個任務見[操作教學](docs/OPERATIONS.md)。
 
-桌面工具需安裝選用的 `computer` 依賴並明確授予權限。[桌面操作指南](docs/COMPUTER_USE.md) 涵蓋安裝、既有設定啟用，以及「截圖 → 輸入 → 確認結果」流程。
+要從同一安裝環境試用命令流程，可執行：
 
-**Computer use 操作 Runner 所在電腦的桌面。** Server 負責轉送請求與結果；操作目標由任務所屬的 Runner 決定，與開啟 ChatGPT 網頁的電腦無關。要控制 Windows，就在該 Windows 的互動桌面啟動原生 Runner，並選用它登記的專案。
-
-Windows 可獨立執行 Server 與 Runner。可貼上的 PowerShell 安裝、啟動與多螢幕測試指令見 [Windows 安裝指南](docs/WINDOWS_RUNNER.md)。Windows 桌面工具可列出螢幕並擷取指定螢幕，支援位於主螢幕左方或上方的副螢幕。
-
-已安裝 Windows 常駐排程時，可執行 [`Start-WebCodex.ps1`](examples/windows/Start-WebCodex.ps1)，沿用現有設定與金鑰啟動服務。
-
-子代理由 ChatGPT／MCP 用戶端原生協調；WebCodex 提供檔案、命令與桌面工具。所有對話都禁止經由 WebCodex 啟動 Codex／Work worker，沒有可重新開啟的設定。[子代理分工](docs/SUBAGENTS.md)說明工具使用、啟動拒絕規則與舊版遷移。
-
-瀏覽器工具使用另外安裝的 Node.js／Chrome provider，各任務使用獨立連線與瀏覽器狀態。設定與選用的登入保存見 [瀏覽器操作指南](docs/BROWSER_USE.md)。
-
-## 完整成功案例
-
-Server 與 Runner 啟動後，在同一安裝環境執行：
-
-```text
+```sh
 uv run webcodex call projects_list
 uv run python examples/same_turn_demo.py --project local/project
 ```
 
-示範會建立任務、執行一次四秒命令，持續讀取原程序，取得結果後保存完成狀態。輸出包含 task ID、`demo started`、`demo finished` 與 `exit_code: 0`。在 `/manage` 可直接看到同一任務；[操作展示](docs/DEMO.md)包含 ChatGPT 使用方式與跨對話接手。
+範例會建立任務、執行命令、讀取輸出並保存結果。完成後可在 `/manage` 開啟該任務，詳見[操作展示](docs/DEMO.md)。
 
-## 管理與維護
+### 桌面與瀏覽器工具
 
-開啟 `http://127.0.0.1:8765/manage`，使用設定的帳號與密碼登入；未設定帳密的安裝沿用 `client.json` 的 Token。同一頁可查看 Windows、WSL 與 Ubuntu 任務，依來源、專案、狀態或關鍵字篩選，查看開始時間、精確到秒的最近操作時間、分段摘要及收合的命令輸出，並複製交接摘要及接手指令。具寫入權限時可標記完成或重新開啟；舊任務可封存或還原，歷史錯誤不會持續標為待辦。過期的執行觀察顯示「待確認」，沿用原程序讀取結果。設定方式見[統一任務中心](docs/INSTALLATION.md#統一任務中心)。
+桌面控制需安裝選用的 `computer` 依賴並明確授予權限，操作對象是任務所屬 Runner 的桌面。要控制 Windows，就在該 Windows 的互動桌面啟動原生 Runner，並選用它登記的專案。設定見[桌面操作](docs/COMPUTER_USE.md)、[語意桌面控制](docs/SEMANTIC_DESKTOP.md)與 [Windows 安裝指南](docs/WINDOWS_RUNNER.md)。
 
-狀態選單預設為「未完成」：
+Windows 可獨立執行 Server 與 Runner。已使用 Windows 常駐排程時，[`Start-WebCodex.ps1`](examples/windows/Start-WebCodex.ps1) 可沿用現有設定與金鑰啟動服務。
 
-| 選項 | 顯示內容 |
-| --- | --- |
-| 未完成 | 排除已完成、已封存 |
-| 執行／排隊中 | 有工具或背景工作正在執行、排隊 |
-| 需要處理 | 等待回覆、核准或處理專案異動 |
-| 執行狀態待確認 | 背景工作的狀態已過期或無法確認 |
-| 已完成 | 已完成且未封存 |
-| 已封存 | 所有已封存任務 |
-| 全部任務 | 包含已完成與已封存 |
+瀏覽器自動化使用另外安裝的 Node.js／Chrome provider；各任務使用獨立連線與瀏覽器狀態，也可選擇保存登入。詳見[瀏覽器操作](docs/BROWSER_USE.md)。
 
-前五項都排除已封存任務；已完成任務不會因舊程序紀錄混入執行中、需要處理或待確認。
+## 任務中心
 
-```text
+開啟 `http://127.0.0.1:8765/manage`，使用設定的帳號與密碼登入；未設定管理頁帳密時，沿用 `client.json` 的 Token。
+
+![WebCodex 任務中心，以範例任務展示來源篩選與任務詳情](docs/images/management.png)
+
+同一頁可查看 Windows、WSL 與 Ubuntu 任務，以名稱、專案或任務 ID 搜尋，依來源、專案與狀態篩選。選取任務後可讀取摘要、開始與最近操作時間、工作步驟及命令輸出，也能複製在另一個對話接續工作的指令。
+
+預設顯示「未完成」任務，也可篩選執行或排隊中、需要處理、執行狀態待確認、已完成及已封存的任務。具寫入權限時可標記完成或重新開啟。封存會將任務移出你的預設檢視，之後可還原；任務紀錄與執行中的程序都會保留。
+
+設定來源後，可在同一個任務中心查看多個 Server。詳見[任務中心設定](docs/INSTALLATION.md#統一任務中心)。任務中心與任務卡片介面使用繁體中文。
+
+## ChatGPT 任務卡片
+
+在支援 MCP Apps 的用戶端呼叫 `task_present(task_id)`，即可開啟互動式任務卡片。
+
+![WebCodex 任務卡片，以範例任務展示工作步驟與檔案修改](docs/images/chatgpt-task-card.png)
+
+- 查看任務進度、工作步驟與連線狀態。
+- 檢視專案目前尚未提交的變更與個別檔案差異。
+- 讀取此任務最近命令的執行結果、結束碼與輸出。
+- 手動接續工作，或開啟完成後自動傳訊，設定本任務的次數與間隔；自動傳訊預設關閉，重連或接手後也會回到關閉。
+
+執行長命令時，在原回合持續使用 `job_get` 與 `read_process` 讀取原命令，直到結束。用戶端需求見[任務卡片與跨回合續接](docs/CHATGPT.md#任務卡片與跨回合續接)，從 ChatGPT 傳入檔案的方法見[圖片匯入](docs/CHATGPT.md#從-chatgpt-匯入圖片與-gif)。
+
+## 跨對話接續任務
+
+`task_id` 對應 Server 保存的工作目標、進度、job、process 與結果，換對話後仍會保留。新工作建立新的任務 ID；接續既有工作時沿用原 ID。
+
+1. 用 `task_list` 找到任務，再以 `task_get(task_id)` 讀取目前進度。
+2. 呼叫 `task_takeover(task_id)`，或在任務卡片按「在此接手」。
+3. 用 `work_on_project(task_id=...)` 接續，保留原 job 與 process ID。以 `job_get` 和 `read_process` 讀取已在執行的命令。
+
+續接需使用相同的 WebCodex 用戶端身分（owner），並保有原專案授權。每個任務只有一個有效的卡片控制者；接手會將卡片發訊權移交新對話。詳見[跨對話接棒](docs/CHATGPT.md#跨對話接棒)。
+
+連線名稱用來辨識 MCP 連線；所選專案與 Runner 決定工具在哪台電腦執行。另一個 ChatGPT 帳號需建立獲該 Server 授權的連線；另一個獨立 Server 則需自己的連線。詳見[換帳號與換電腦](docs/CHATGPT.md#換帳號與換電腦)。
+
+## 維護
+
+```sh
 uv run webcodex doctor --share --output diagnostics.json
 uv run webcodex backup
 uv run webcodex update-check
 uv run webcodex retention --days 30 --max-mib 1024 --save-policy
 ```
 
-診斷會遮蔽私人路徑與憑證；`update-check` 在 Runner 重啟前列出仍執行的 process／delivery ID。保留期限預設只預覽，加入 `--apply` 才清理已結束的輸出與附件。[安裝與維護](docs/INSTALLATION.md)把 Windows／Ubuntu 首次連線、更新與回復串成完整流程。
+`doctor --share` 會遮蔽私人路徑並排除憑證；`backup` 備份設定與狀態；`update-check` 列出仍執行的 process 與 delivery ID，供重啟 Runner 前確認。保留期限預設只預覽已結束輸出與附件的清理範圍，加入 `--apply` 才執行。詳見[安裝與維護](docs/INSTALLATION.md)。
 
-桌面操作新增 Windows UI Automation 與 Ubuntu AT-SPI，可按視窗、控制項名稱、角色或 automation ID 尋找按鈕與輸入框。每次動作重新解析控制項，視窗移動或縮放後仍沿用語意選擇器。設定與原生驗收指令見[語意桌面控制](docs/SEMANTIC_DESKTOP.md)。
+## 權限與相容性
 
-## 權限與限制
-
-- 已授權的專案建立、命令、Git、擴充與桌面操作會直接執行，不需逐筆核准或信任設定。設定與舊版升級方式見[授權與執行](docs/EXECUTION.md)。
-- Shell、plugin 與桌面輸入使用 Runner 帳號權限，**沒有 OS sandbox**。桌面存取涵蓋共用畫面，可能包含專案外內容。設定與狀態應保持私有；`webcodex retention` 可設定輸出與附件的容量、天數，先預覽再清理。
-- Ubuntu X11 控制已在虛擬桌面測試；Windows 已在三個實體螢幕驗證截圖與輸入，包含左側副螢幕和 150%／100% 混合縮放。macOS 互動桌面仍待實機驗收。Wayland／WSLg 與鎖定桌面尚不支援。
+- 已授權的專案建立、命令、Git、plugins 與桌面操作會直接執行。可操作的專案與工具由用戶端和 Runner 設定控制，詳見[授權與執行](docs/EXECUTION.md)。
+- Shell、plugins 與桌面輸入使用 Runner 帳號權限，**沒有 OS sandbox**。桌面存取涵蓋共用畫面，包含專案外的內容；設定與狀態應保持私有。
+- 桌面控制支援 Windows 互動桌面與 Ubuntu X11。Windows 支援多螢幕與混合縮放；macOS 桌面控制屬實驗功能，使用主螢幕，結構化 Git 與 patch helper 尚不可用。Wayland／WSLg 與鎖定桌面不支援。
+- 子代理由 MCP 用戶端協調；禁止透過 WebCodex 啟動 Codex 或 Work worker。詳見[子代理使用方式](docs/SUBAGENTS.md)。
+- ChatGPT 若再次詢問工具授權，請在原對話確認。已送到 Runner 的工作會獨立執行，詳見[用戶端授權提示](docs/CHATGPT.md#chatgpt-平台已知限制再次詢問工具授權)。
 
 ## 文件
 
 詳細指南使用繁體中文：
 
 - 使用：[安裝與管理](docs/INSTALLATION.md) · [操作展示](docs/DEMO.md) · [操作教學](docs/OPERATIONS.md) · [桌面操作](docs/COMPUTER_USE.md) · [瀏覽器操作](docs/BROWSER_USE.md) · [連線設定](docs/CHATGPT.md) · [擴充套件](docs/EXTENSIONS.md)
-- 專案：[架構](docs/ARCHITECTURE.md) · [平台驗證](docs/PLATFORMS.md) · [功能規劃](docs/ROADMAP.md)
-- 開發：[參與開發與測試](CONTRIBUTING.md) · [安全回報](.github/SECURITY.md) · [發布準備](docs/RELEASING.md)
+- 專案：[架構](docs/ARCHITECTURE.md) · [平台支援](docs/PLATFORMS.md) · [功能規劃](docs/ROADMAP.md)
+- 開發：[參與開發](CONTRIBUTING.md) · [安全回報](.github/SECURITY.md) · [發布](docs/RELEASING.md)
 
 這是參考 [yyjeqhc/webcodex](https://github.com/yyjeqhc/webcodex) 的獨立 Python 實作。推理與對話由 MCP 用戶端負責。
 
