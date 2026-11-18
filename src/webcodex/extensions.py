@@ -433,7 +433,7 @@ class Extensions:
         identifier(plugin)
         identifier(server)
         root = self.root / "plugin" / plugin
-        manifest = plugin_manifest(root)
+        manifest = await asyncio.to_thread(plugin_manifest, root)
         if server not in manifest["servers"]:
             raise ValueError("MCP provider not found in installed plugin")
         key = (task, plugin, server)
@@ -467,7 +467,7 @@ class Extensions:
         for key in list(self.providers):
             if kind == "plugin" and key[1] == name:
                 await self.disconnect(*key)
-        shutil.rmtree(root)
+        await asyncio.to_thread(shutil.rmtree, root)
 
     async def close(self):
         await asyncio.gather(*(p.close() for p in self.providers.values()), return_exceptions=True)

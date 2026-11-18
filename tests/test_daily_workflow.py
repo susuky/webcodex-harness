@@ -168,6 +168,7 @@ def test_root_setup_preserves_credentials_and_project_authorization(tmp_path):
     }
     original = json.loads(before["server.json"])
     configured = allow_project_root(config_dir, root)
+    assert not (config_dir / "backups").exists()
     server = load_config(config_dir / "server.json", ServerConfig)
     runner = load_config(config_dir / "runner.json", RunnerConfig)
     policy = server.clients["owner"]

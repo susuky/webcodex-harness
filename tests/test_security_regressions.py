@@ -279,7 +279,7 @@ def test_helper_symlink_into_a_project_is_rejected(runner, tmp_path):
 
 
 @pytest.mark.parametrize("replacement", ["directory", "link"])
-async def test_runner_rejects_root_replacement_after_inventory(
+async def test_runner_rejects_root_replacement_after_binding_check(
     runner, monkeypatch, tmp_path, replacement
 ):
     root = runner.config.projects["project"]
@@ -287,10 +287,9 @@ async def test_runner_rejects_root_replacement_after_inventory(
     outside.mkdir()
     (outside / "sentinel.txt").write_text("must-not-return")
     request = job(runner, "read_file", {"path": "sentinel.txt"})
-    inventory = runner.inventory
 
-    def replace_after_check():
-        result = inventory()
+    def replace_after_check(path):
+        result = project_binding(path)
         root.rename(tmp_path / "original")
         if replacement == "link":
             directory_link(root, outside)
@@ -299,7 +298,7 @@ async def test_runner_rejects_root_replacement_after_inventory(
             (root / "sentinel.txt").write_text("must-not-return")
         return result
 
-    monkeypatch.setattr(runner, "inventory", replace_after_check)
+    monkeypatch.setattr("webcodex.runner.project_binding", replace_after_check)
     await runner.execute(request)
     status, result = delivery(runner)
     assert status == "failed" and "must-not-return" not in json.dumps(result)
@@ -317,7 +316,9 @@ def test_workspace_rejects_replaced_ancestor_and_root(tmp_path):
         workspace.read("file.txt")
 
 
-async def test_search_rejects_ancestor_replacement_after_enumeration(runner, monkeypatch, tmp_path):
+async def test_search_excludes_ancestor_replacement_after_enumeration(
+    runner, monkeypatch, tmp_path
+):
     root = runner.config.projects["project"]
     (root / "public").mkdir()
     (root / "public/file.txt").write_text("safe")
@@ -335,8 +336,45 @@ async def test_search_rejects_ancestor_replacement_after_enumeration(runner, mon
     monkeypatch.setattr(Workspace, "files", replace_after_enumeration)
     await runner.execute(job(runner, "search_files", {"query": "must-not-return"}))
     status, result = delivery(runner)
-    assert status == "failed" and "must-not-return" not in json.dumps(result)
+    assert status == "succeeded" and "must-not-return" not in result["output"]
     assert not list(runner.processes.directory.glob("search-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix file symlink fixture")
+async def test_search_excludes_leaf_link_replacement_after_enumeration(
+    runner, monkeypatch, tmp_path
+):
+    root = runner.config.projects["project"]
+    target = root / "public.txt"
+    target.write_text("safe")
+    outside = tmp_path / "private.txt"
+    outside.write_text("must-not-return")
+    original = Workspace.files
+
+    def replace_after_enumeration(workspace, *args, **kwargs):
+        page = original(workspace, *args, **kwargs)
+        target.unlink()
+        target.symlink_to(outside)
+        return page
+
+    monkeypatch.setattr(Workspace, "files", replace_after_enumeration)
+    await runner.execute(job(runner, "search_files", {"query": "must-not-return"}))
+    status, result = delivery(runner)
+    assert status == "succeeded" and "must-not-return" not in result["output"]
+
+
+async def test_search_treats_selected_names_as_literal_globs(runner):
+    root = runner.config.projects["project"]
+    names = ["[a].txt", "{a,b}.txt", "! selected file.txt"]
+    for name in names:
+        (root / name).write_text("literal-name-result")
+    (root / "a.txt").write_text("must-not-return")
+    await runner.execute(
+        job(runner, "search_files", {"query": "result|must-not-return", "regex": True})
+    )
+    status, result = delivery(runner)
+    assert status == "succeeded"
+    assert all(name + ":1:literal-name-result" in result["output"] for name in names)
 
 
 async def test_search_preserves_regex_large_files_and_original_names(runner):
@@ -350,17 +388,19 @@ async def test_search_preserves_regex_large_files_and_original_names(runner):
     assert not list(runner.processes.directory.glob("search-*"))
 
 
-async def test_search_rejects_oversized_pages_without_leaving_snapshots(runner):
+async def test_search_reads_pages_larger_than_twenty_megabytes_without_copying(runner):
     root = runner.config.projects["project"]
     with (root / "large.txt").open("wb") as stream:
-        stream.truncate(20 * 1024 * 1024 + 1)
-    await runner.execute(job(runner, "search_files", {"query": "anything"}))
+        stream.write(b"filler\n" * (3 * 1024 * 1024))
+        stream.write(b"past-the-old-limit\n")
+    await runner.execute(job(runner, "search_files", {"query": "past-the-old-limit"}))
     status, result = delivery(runner)
-    assert status == "failed" and "20 MiB" in result["error"]
+    assert status == "succeeded"
+    assert "large.txt:3145729:past-the-old-limit" in result["output"]
     assert not list(runner.processes.directory.glob("search-*"))
 
 
-async def test_search_cleans_readonly_snapshots_and_preserves_file_pagination(runner):
+async def test_search_reads_readonly_files_and_preserves_file_pagination(runner):
     root = runner.config.projects["project"]
     readonly = root / "a.txt"
     readonly.write_text("readonly-result")
@@ -378,24 +418,24 @@ async def test_search_cleans_readonly_snapshots_and_preserves_file_pagination(ru
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix delayed ripgrep fixture")
-async def test_search_snapshot_survives_until_process_completion(runner, tmp_path):
+async def test_search_process_retains_output_cursor_without_copying(runner, tmp_path):
     tools = tmp_path / "tools"
     tools.mkdir()
     rg = tools / "rg"
     rg.write_text(
         f"#!{sys.executable}\nimport sys,time\nfrom pathlib import Path\n"
-        "time.sleep(1.5)\nprint(Path(sys.argv[-1]).read_text())\n"
+        "time.sleep(1.5)\nprint(Path('file.txt').read_text())\n"
     )
     rg.chmod(0o755)
     runner.config.environment["PATH"] = str(tools)
-    (runner.config.projects["project"] / "file.txt").write_text("snapshot-result")
-    await runner.execute(job(runner, "search_files", {"query": "snapshot-result"}))
+    (runner.config.projects["project"] / "file.txt").write_text("source-result")
+    await runner.execute(job(runner, "search_files", {"query": "source-result"}))
     status, result = delivery(runner)
     assert status == "succeeded" and result["status"] == "running"
-    assert list(runner.processes.directory.glob("search-*"))
+    assert not list(runner.processes.directory.glob("search-*"))
     await runner.processes.wait(result["process_id"], "security-task", 5)
     observed = runner.processes.read(result["process_id"], "security-task")
-    assert "snapshot-result" in observed["output"]
+    assert "source-result" in observed["output"]
     assert not list(runner.processes.directory.glob("search-*"))
 
 

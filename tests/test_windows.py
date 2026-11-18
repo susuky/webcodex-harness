@@ -17,6 +17,32 @@ from webcodex.processes import Processes
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Requires native Windows")
 
 
+def test_windows_private_directory_keeps_existing_acl_without_reapplying_it(tmp_path, monkeypatch):
+    import win32security
+
+    from webcodex.config import private_dir
+
+    directory = tmp_path / "private"
+    calls = []
+    apply_acl = win32security.SetNamedSecurityInfo
+
+    def observed(*args):
+        calls.append(args[0])
+        return apply_acl(*args)
+
+    monkeypatch.setattr(win32security, "SetNamedSecurityInfo", observed)
+    private_dir(directory)
+    child = directory / "process.log"
+    child.write_text("existing output", encoding="utf-8")
+    private_dir(directory)
+    assert calls == [str(directory)]
+    assert child.read_text(encoding="utf-8") == "existing output"
+    descriptor = win32security.GetNamedSecurityInfo(
+        str(child), win32security.SE_FILE_OBJECT, win32security.DACL_SECURITY_INFORMATION
+    )
+    assert descriptor.GetSecurityDescriptorDacl().GetAceCount() == 2
+
+
 def test_windows_paths_acl_and_utf8_configuration(tmp_path):
     import win32api
     import win32con
@@ -55,10 +81,10 @@ def test_windows_paths_acl_and_utf8_configuration(tmp_path):
         "bad?name",
     ]:
         with pytest.raises(ValueError):
-            workspace.write(path, b"blocked", None)
-    record = workspace.write("資料/說明.txt", "繁體中文\n".encode(), None)
+            workspace.write(path, b"blocked")
+    workspace.write("資料/說明.txt", "繁體中文\n".encode())
     assert workspace.read("資料/說明.txt").decode() == "繁體中文\n"
-    workspace.delete("資料/說明.txt", record["sha256"])
+    workspace.delete("資料/說明.txt")
     assert not (root / "資料/說明.txt").exists()
 
 

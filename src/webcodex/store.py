@@ -123,12 +123,6 @@ class Store:
                 id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
                 question TEXT NOT NULL, answer TEXT, created REAL NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS agent_observations (
-                task_id TEXT NOT NULL REFERENCES tasks(id), agent_id TEXT NOT NULL,
-                job_id TEXT NOT NULL REFERENCES jobs(id), status TEXT NOT NULL,
-                exit_code INTEGER, created REAL NOT NULL, updated REAL NOT NULL,
-                PRIMARY KEY(task_id,agent_id)
-            );
         """)
         # Keep added columns and their backfill atomic across interrupted startup.
         self.db.execute("BEGIN IMMEDIATE")
@@ -191,6 +185,52 @@ class Store:
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS task_job_history ON jobs "
             "(task_id,created DESC,id,tool,status,updated)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS latest_task_activity ON task_tool_activity "
+            "(task_id,coalesce(finished_at,started_at) DESC)"
+        )
+        if not self.one(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='process_states'"
+        ):
+            self.db.execute(
+                "CREATE TABLE process_states ("
+                "task_id TEXT NOT NULL REFERENCES tasks(id), process_id TEXT NOT NULL,"
+                "job_id TEXT NOT NULL REFERENCES jobs(id), tool TEXT NOT NULL, status TEXT NOT NULL,"
+                "exit_code INTEGER, started_at REAL NOT NULL, observed_at REAL NOT NULL,"
+                "PRIMARY KEY(task_id,process_id))"
+            )
+            # Backfill the existing small metadata index once. Saved command/image payloads stay put.
+            self.db.execute(
+                "INSERT INTO process_states "
+                "SELECT first.task_id,first.process_id,latest.id,latest.tool,latest.process_status,"
+                "latest.process_exit_code,first.started_at,latest.updated "
+                "FROM (SELECT task_id,process_id,min(created) AS started_at "
+                "FROM jobs INDEXED BY process_observations "
+                "WHERE status='succeeded' AND process_id IS NOT NULL "
+                "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
+                "GROUP BY task_id,process_id) first JOIN jobs latest ON latest.id=("
+                "SELECT id FROM jobs WHERE task_id=first.task_id AND process_id=first.process_id "
+                "AND status='succeeded' "
+                "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
+                "ORDER BY updated DESC,id DESC LIMIT 1)"
+            )
+            if self.one(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_observations'"
+            ):
+                self.db.execute(
+                    "INSERT OR REPLACE INTO process_states "
+                    "SELECT task_id,agent_id,job_id,'subagent_get',status,exit_code,created,updated "
+                    "FROM agent_observations"
+                )
+                self.db.execute("DROP TABLE agent_observations")
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS recent_process_states ON process_states "
+            "(task_id,started_at DESC,process_id)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS running_process_states ON process_states "
+            "(task_id,observed_at) WHERE status='running'"
         )
         self.db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS task_requests ON tasks(owner,request_id) "
@@ -476,13 +516,13 @@ class Store:
         )
 
     def job(self, job_id: str, owner: str) -> dict:
-        row = self.one("SELECT * FROM jobs WHERE id=? AND owner=?", (job_id, owner))
+        row = self.one(
+            "SELECT id,task_id,owner,runner,project,tool,status,result,approved,request_id,created,"
+            "updated FROM jobs WHERE id=? AND owner=?",
+            (job_id, owner),
+        )
         if row is None:
             raise ValueError("Job not found")
-        for key in ["arguments", "instance", "binding"]:
-            row.pop(key)
-        for key in ["process_id", "process_status", "process_exit_code"]:
-            row.pop(key)
         row["job_id"] = row.pop("id")
         row["service"] = self.service
         row["outcome"] = row["status"]
@@ -579,15 +619,13 @@ class Store:
     def task_activity(self, task: dict, *, include_output: bool = True) -> dict:
         """Describe durable observations without treating the saved handoff as live state."""
         task_id = task["id"]
-        counts = {
-            row["status"]: row["count"]
-            for row in self.rows(
-                "SELECT status,count(*) AS count FROM jobs WHERE task_id=? GROUP BY status",
-                (task_id,),
-            )
-        }
         last = self.one("SELECT max(updated) AS updated FROM jobs WHERE task_id=?", (task_id,))
         # Keep the partial-index IN order and index hint; task_jobs scans completed history.
+        pending_count = self.one(
+            "SELECT count(*) AS count FROM jobs INDEXED BY pending_jobs WHERE owner=? AND task_id=? "
+            "AND status IN ('queued','pending_approval','running')",
+            (task["owner"], task_id),
+        )["count"]
         pending = [
             self.job(row["id"], task["owner"])
             for row in self.rows(
@@ -597,68 +635,51 @@ class Store:
                 (task["owner"], task_id),
             )
         ]
-        # Group starts through the covering index, then fetch the latest row only
-        # for the processes displayed. Window ranking every observation is much costlier.
         processes = self.rows(
-            "WITH recent AS (SELECT task_id,process_id,min(created) AS started_at "
-            "FROM jobs INDEXED BY process_observations "
-            "WHERE task_id=? AND status='succeeded' "
-            "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
-            "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
-            "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id) "
-            "AND process_id IS NOT NULL "
-            "GROUP BY process_id ORDER BY started_at DESC,process_id LIMIT 100) "
-            "SELECT jobs.id AS job_id,jobs.tool,jobs.updated AS observed_at,recent.started_at,"
-            "jobs.process_id,jobs.process_status AS status,jobs.process_exit_code AS exit_code "
-            "FROM recent JOIN jobs ON jobs.id=(SELECT latest.id FROM jobs AS latest "
-            "WHERE latest.task_id=recent.task_id AND latest.process_id=recent.process_id "
-            "AND latest.status='succeeded' "
-            "AND latest.tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
-            "ORDER BY latest.updated DESC,latest.id DESC LIMIT 1) "
-            "ORDER BY recent.started_at DESC,recent.process_id",
+            "SELECT job_id,tool,observed_at,started_at,process_id,status,exit_code "
+            "FROM process_states WHERE task_id=? ORDER BY started_at DESC,process_id LIMIT 100",
             (task_id,),
         )
-        processes.extend(
-            self.rows(
-                "SELECT job_id,'subagent_get' AS tool,updated AS observed_at,created AS started_at,"
-                "agent_id AS process_id,status,exit_code FROM agent_observations "
-                "WHERE task_id=? ORDER BY created DESC,agent_id LIMIT 100",
-                (task_id,),
-            )
-        )
-        processes.sort(key=lambda process: (-process["started_at"], process["process_id"]))
-        processes = processes[:100]
         work = self.one(
-            "WITH observations AS (SELECT process_status AS status,updated AS observed_at,"
-            "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
-            "FROM jobs WHERE task_id=? AND status='succeeded' AND process_id IS NOT NULL "
-            "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
-            "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
-            "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id)), "
-            "running AS (SELECT observed_at FROM observations WHERE rank=1 AND status='running' "
-            "UNION ALL SELECT updated AS observed_at FROM agent_observations "
-            "WHERE task_id=? AND status='running') "
-            "SELECT count(*) AS running_count,min(observed_at) AS observed_at FROM running",
-            (task_id, task_id),
+            "SELECT count(*) AS running_count,min(observed_at) AS observed_at "
+            "FROM process_states WHERE task_id=? AND status='running'",
+            (task_id,),
         )
-        work["pending_count"] = sum(
-            counts.get(s, 0) for s in ("pending_approval", "queued", "running")
-        )
+        work["pending_count"] = pending_count
         return {
             "summary_stale": bool(last["updated"] and last["updated"] > task["updated"]),
             "last_job_update": last["updated"],
-            "job_counts": counts,
             "pending_jobs": pending,
-            "pending_jobs_truncated": sum(
-                counts.get(s, 0) for s in ("pending_approval", "queued", "running")
-            )
-            > len(pending),
+            "pending_jobs_truncated": pending_count > len(pending),
             "process_observations": processes,
             "latest_execution": self.job(processes[0]["job_id"], task["owner"])
             if include_output and processes
             else None,
             "work": work,
         }
+
+    def running_processes(self, task_id: str) -> list[dict]:
+        """Read live processes directly, including those outside the recent detail page."""
+        return self.rows(
+            "SELECT job_id,tool,observed_at,started_at,process_id,status,exit_code "
+            "FROM process_states WHERE task_id=? AND status='running'",
+            (task_id,),
+        )
+
+    def observe_process(
+        self, task_id, process_id, job_id, tool, status, exit_code, started_at, observed_at
+    ):
+        self.db.execute(
+            "INSERT INTO process_states VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(task_id,process_id) DO UPDATE SET job_id=excluded.job_id,"
+            "tool=CASE WHEN process_states.tool='subagent_get' THEN process_states.tool "
+            "ELSE excluded.tool END,status=excluded.status,exit_code=excluded.exit_code,"
+            "started_at=min(process_states.started_at,excluded.started_at),"
+            "observed_at=excluded.observed_at "
+            "WHERE process_states.tool!='subagent_get' OR process_states.status='running' "
+            "OR (excluded.tool='subagent_get' AND excluded.status!='running')",
+            (task_id, process_id, job_id, tool, status, exit_code, started_at, observed_at),
+        )
 
     def claim(self, runner_id: str, instance: str, limit: int) -> list[dict]:
         runner = self.one("SELECT * FROM runners WHERE id=?", (runner_id,))
@@ -709,14 +730,22 @@ class Store:
                 {"job_id": job_id, "instance": instance, "status": status, "result": result},
                 strict=True,
             )
-            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
         except (ValueError, TypeError):
             raise ValueError("Invalid Runner completion result or envelope") from None
-        job = self.one("SELECT * FROM jobs WHERE id=? AND runner=?", (job_id, runner))
+        # Do not select the saved payload or later columns for acknowledgement retries.
+        job = self.one(
+            "SELECT instance,status FROM jobs WHERE id=? AND runner=?",
+            (job_id, runner),
+        )
         if not job or job["instance"] != instance:
             raise ValueError("Job does not belong to this Runner instance")
         if job["status"] in {"succeeded", "failed", "cancelled"}:
             return  # Acknowledgement retry; never rewrite an accepted result.
+        try:
+            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
+        except (ValueError, TypeError):
+            raise ValueError("Invalid Runner completion result or envelope") from None
+        job = self.one("SELECT tool,task_id,created FROM jobs WHERE id=?", (job_id,))
         projection = completion.result
         observation = bool(projection.process_id and projection.status)
         observed = time.time()
@@ -739,34 +768,31 @@ class Store:
                 if projection.agent_id:
                     agents = [SubagentObservation.model_validate(result, strict=True)]
                 for agent in agents:
-                    self.db.execute(
-                        "INSERT INTO agent_observations VALUES (?,?,?,?,?,?,?) "
-                        "ON CONFLICT(task_id,agent_id) DO UPDATE SET job_id=excluded.job_id,"
-                        "status=excluded.status,exit_code=excluded.exit_code,updated=excluded.updated "
-                        "WHERE agent_observations.status='running' OR excluded.status!='running'",
-                        (
-                            job["task_id"],
-                            agent.agent_id,
-                            job_id,
-                            agent.status,
-                            agent.exit_code,
-                            job["created"],
-                            observed,
-                        ),
-                    )
-            elif status == "succeeded" and job["tool"] == "read_process" and observation:
-                # Finish historical worker observations through the remaining process tools.
-                self.db.execute(
-                    "UPDATE agent_observations SET job_id=?,status=?,exit_code=?,updated=? "
-                    "WHERE task_id=? AND agent_id=? AND status='running'",
-                    (
-                        job_id,
-                        projection.status,
-                        projection.exit_code,
-                        observed,
+                    self.observe_process(
                         job["task_id"],
-                        projection.process_id,
-                    ),
+                        agent.agent_id,
+                        job_id,
+                        "subagent_get",
+                        agent.status,
+                        agent.exit_code,
+                        job["created"],
+                        observed,
+                    )
+            elif (
+                status == "succeeded"
+                and observation
+                and job["tool"]
+                in {"exec_command", "read_process", "cancel_process", "skill_run", "search_files"}
+            ):
+                self.observe_process(
+                    job["task_id"],
+                    projection.process_id,
+                    job_id,
+                    job["tool"],
+                    projection.status,
+                    projection.exit_code,
+                    job["created"],
+                    observed,
                 )
             self.event(job["task_id"], "job." + status, {"job_id": job_id})
 

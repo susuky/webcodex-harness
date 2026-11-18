@@ -15,7 +15,7 @@ import pytest_asyncio
 import webcodex.processes as process_module
 from webcodex.catalog import OutcomeUnknown
 from webcodex.config import RunnerConfig
-from webcodex.filesystem import Workspace, sha256
+from webcodex.filesystem import Workspace
 from webcodex.processes import Processes
 
 
@@ -448,62 +448,28 @@ async def test_truncated_running_tail_is_final_and_mid_character_cursor_is_suppo
     assert result["output"] == "�"
 
 
-def test_write_compares_the_version_that_was_read(tmp_path, monkeypatch):
+def test_failed_replace_leaves_original_and_removes_temporary_file(tmp_path, monkeypatch):
     path = tmp_path / "file.txt"
     path.write_bytes(b"original")
     workspace = Workspace(tmp_path)
-    original_stat = os.stat
-    changed = False
 
-    def replace_before_stat(target, *args, **kwargs):
-        nonlocal changed
-        if not changed and str(target).endswith("file.txt"):
-            changed = True
-            path.write_bytes(b"external edit")
-        return original_stat(target, *args, **kwargs)
+    def fail_replace(*args, **kwargs):
+        raise PermissionError("replace unavailable")
 
-    monkeypatch.setattr(os, "stat", replace_before_stat)
-    windows = os.name == "nt"
-    # A pinned Windows read rejects the injected write before it can change the file.
-    with pytest.raises(
-        PermissionError if windows else ValueError, match=None if windows else "changed"
-    ):
-        workspace.write("file.txt", b"our edit", sha256(b"original"))
-    assert path.read_bytes() == (b"original" if windows else b"external edit")
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(PermissionError, match="replace unavailable"):
+        workspace.write("file.txt", b"our edit")
+    assert path.read_bytes() == b"original"
     assert not list(tmp_path.glob(".webcodex-write-*"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows pinned reads deny concurrent writes")
-def test_read_rejects_changes_during_the_same_fd_read(tmp_path, monkeypatch):
-    path = tmp_path / "file.txt"
-    path.write_bytes(b"original")
+def test_file_replacement_preserves_existing_mode(tmp_path):
     workspace = Workspace(tmp_path)
-    original_fstat = os.fstat
-    changed = False
-
-    def change_after_first_snapshot(fd):
-        nonlocal changed
-        info = original_fstat(fd)
-        if not changed and info.st_ino == path.stat().st_ino:
-            changed = True
-            path.write_bytes(b"external edit")
-        return info
-
-    monkeypatch.setattr(os, "fstat", change_after_first_snapshot)
-    with pytest.raises(ValueError, match="changed while reading"):
-        workspace.read("file.txt")
-    assert path.read_bytes() == b"external edit"
-
-
-def test_versioned_reads_preserve_create_hash_and_mode_guards(tmp_path):
-    workspace = Workspace(tmp_path)
-    created = workspace.write("nested/file.txt", b"original", None)
+    workspace.write("nested/file.txt", b"original")
     path = tmp_path / "nested/file.txt"
     if os.name != "nt":
         path.chmod(0o600)
-    with pytest.raises(ValueError, match="changed"):
-        workspace.write("nested/file.txt", b"wrong hash", None)
-    workspace.write("nested/file.txt", b"updated", created["sha256"])
+    workspace.write("nested/file.txt", b"updated")
     assert workspace.read("nested/file.txt") == b"updated"
     if os.name != "nt":
         assert path.stat().st_mode & 0o777 == 0o600

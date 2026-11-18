@@ -97,35 +97,25 @@ class Management:
         return task
 
     def describe(self, task: dict) -> dict:
-        progress = self.service.task_progress(task, include_output=False)
-        processes = progress["process_observations"]
-        if progress["liveness"]["work"]["running_count"] > sum(
-            p["status"] == "running" for p in processes
-        ):
-            older = self.service.store.rows(
-                "WITH latest AS (SELECT id AS job_id,tool,updated AS observed_at,"
-                "process_id,process_status AS status,process_exit_code AS exit_code,"
-                "min(created) OVER (PARTITION BY process_id) AS started_at,"
-                "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
-                "FROM jobs WHERE task_id=? AND status='succeeded' AND process_id IS NOT NULL "
-                "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
-                "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id) "
-                "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files')) "
-                "SELECT job_id,tool,observed_at,started_at,process_id,status,exit_code FROM latest "
-                "WHERE rank=1 AND status='running'",
-                (task["id"],),
-            )
-            visible = {p["process_id"] for p in processes}
-            processes.extend(p for p in older if p["process_id"] not in visible)
+        store = self.service.store
+        runner = store.one("SELECT * FROM runners WHERE id=?", (task["runner"],))
+        online = bool(runner and time.time() - runner["seen"] < 15)
+        processes = store.rows(
+            "SELECT job_id,tool,observed_at,started_at,process_id,status,exit_code "
+            "FROM process_states WHERE task_id=? ORDER BY started_at DESC,process_id LIMIT 100",
+            (task["id"],),
+        )
+        running = store.running_processes(task["id"])
+        visible = {process["process_id"] for process in processes}
+        processes.extend(process for process in running if process["process_id"] not in visible)
         processes.sort(key=lambda p: (p["status"] != "running", -p["started_at"], p["process_id"]))
-        # The standalone page covers the whole task, not one ChatGPT window.
-        activity = self.service.store.one(
+        activity = store.one(
             "SELECT tool,started_at,finished_at,outcome FROM task_tool_activity WHERE task_id=? "
             "ORDER BY coalesce(finished_at,started_at) DESC LIMIT 1",
             (task["id"],),
         )
         external = " AND ".join("request_id NOT LIKE ?" for _ in INTERNAL_OBSERVATION_PREFIXES)
-        pending = self.service.store.rows(
+        pending = store.rows(
             "SELECT id AS job_id,tool,status,updated,count(*) OVER () AS pending_count "
             "FROM jobs INDEXED BY pending_jobs WHERE owner=? AND task_id=? "
             "AND status IN ('queued','pending_approval','running') "
@@ -136,19 +126,37 @@ class Management:
                 *(prefix + "%" for prefix in INTERNAL_OBSERVATION_PREFIXES),
             ),
         )
-        work = progress["liveness"]["work"]
-        had_pending = bool(work["pending_count"])
-        work["pending_count"] = pending[0]["pending_count"] if pending else 0
-        # Looking at a task must not make an idle task appear to be doing new work.
-        if (
-            progress["state"] in {"observing", "waiting_runner"}
-            and had_pending
-            and not pending
-            and not work["running_count"]
-        ):
-            progress["state"] = (
-                "waiting_operator" if progress["unanswered_operator_questions"] else "ready"
-            )
+        work = {
+            "running_count": len(running),
+            "observed_at": min((process["observed_at"] for process in running), default=None),
+            "pending_count": pending[0]["pending_count"] if pending else 0,
+        }
+        binding = (
+            runner["project_roots"].get(task["project"], {}).get("binding")
+            if runner and task["kind"] == "project"
+            else runner["projects"].get(task["project"])
+            if runner
+            else None
+        )
+        unanswered = store.one(
+            "SELECT count(*) AS count FROM questions WHERE task_id=? AND answer IS NULL",
+            (task["id"],),
+        )["count"]
+        state = (
+            "project_changed"
+            if binding != task["binding"]
+            else "waiting_runner"
+            if not online and (pending or running)
+            else "waiting_operator"
+            if unanswered
+            else "ready"
+        )
+        issues = store.rows(
+            "SELECT id AS job_id,tool,status FROM jobs INDEXED BY task_jobs "
+            "WHERE task_id=? AND updated>? AND status IN ('failed','unknown') "
+            "ORDER BY updated DESC LIMIT 30",
+            (task["id"], task["updated"]),
+        )
         started = self.service.store.one(
             "SELECT created AS started_at FROM jobs WHERE task_id=? "
             f"AND (request_id IS NULL OR ({external})) ORDER BY created LIMIT 1",
@@ -165,24 +173,31 @@ class Management:
             or job_activity["finished_at"] > (activity["finished_at"] or activity["started_at"])
         ):
             activity = job_activity
-        progress["liveness"]["conversation"] = activity
         return execution_freshness(
             {
                 **{
                     k: task[k]
                     for k in ("id", "title", "runner", "project", "status", "summary", "updated")
                 },
-                "runner_online": progress["runner_online"],
+                "runner_online": online,
                 "created_at": task["created"],
                 "started_at": started["started_at"] if started else None,
-                "state": progress["state"],
+                "state": state,
                 "processes": processes,
                 "jobs": [
                     {k: j.get(k) for k in ("job_id", "tool", "status", "updated")} for j in pending
                 ],
-                "issues": progress["recent_issues"],
-                "liveness": progress["liveness"],
-                "stale": not progress["runner_online"],
+                "issues": issues,
+                "liveness": {
+                    "observed_at": time.time(),
+                    "runner_last_seen": runner["seen"] if runner else None,
+                    "host_turn_state": "unknown",
+                    "data_freshness": "live" if online else "historical",
+                    "conversation": activity,
+                    "operation": None,
+                    "work": work,
+                },
+                "stale": not online,
             }
         )
 
@@ -387,7 +402,8 @@ class Management:
                 }
             )
         result["errors"] = self.service.store.rows(
-            "SELECT id AS job_id,tool,status,result,updated FROM jobs WHERE task_id=? "
+            "SELECT id AS job_id,tool,status,result,updated FROM jobs INDEXED BY task_job_history "
+            "WHERE task_id=? "
             "AND status IN ('failed','unknown') ORDER BY updated DESC LIMIT 10",
             (task["id"],),
         )

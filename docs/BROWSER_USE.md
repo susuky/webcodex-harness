@@ -143,7 +143,7 @@ Playwright 的 `allowed-origins` 會阻擋不符合設定的直接請求，但�
 | Console 錯誤 | `browser_console_messages` | 以 `level` 選擇嚴重度，回傳較嚴重等級的訊息 |
 | Network 請求 | `browser_network_requests` | `static: false` 聚焦一般請求，可加 `filter` 篩 URL |
 | 上傳 | `browser_file_upload` | 開啟檔案選擇器後傳入指定檔案的絕對路徑；省略 `paths` 取消 |
-| 下載與匯入 repo | 使用 task artifact 目錄 | 下載完成後核對檔名、大小與 hash，再匯入指定位置 |
+| 下載與匯入 repo | 使用 task artifact 目錄 | 下載完成後確認檔案可用，再匯入指定位置 |
 
 Console、network 與上傳沿用 [Microsoft Playwright MCP 的工具](https://github.com/microsoft/playwright-mcp#tools)，0.0.80 的原生 schema 已核實。既有安裝副本需同步上述三個工具的 allowlist，再呼叫 `plugin_tools` 更新探索結果。要接上使用者已開啟的日常瀏覽器、沿用該瀏覽器的登入時，再評估 CDP／擴充連接。
 

@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import hashlib
 import json
 import threading
 import zlib
@@ -107,11 +106,12 @@ async def image_source():
         thread.join(timeout=5)
 
 
-async def test_mcp_image_import_preserves_animation_and_safe_overwrites(harness, image_source):
+async def test_mcp_image_import_preserves_animation_and_file_replacement(harness, image_source):
     async with harness.mcp() as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
         spec = tools["import_image"]
         assert spec.meta["openai/fileParams"] == ["file"]
+        assert "expected_sha256" not in spec.inputSchema["properties"]
         file_schema = spec.inputSchema["properties"]["file"]
         if "$ref" in file_schema:
             file_schema = spec.inputSchema["$defs"][file_schema["$ref"].rsplit("/", 1)[-1]]
@@ -143,7 +143,6 @@ async def test_mcp_image_import_preserves_animation_and_safe_overwrites(harness,
         assert first["result"] == {
             "path": args["path"],
             "bytes": len(PNG),
-            "sha256": hashlib.sha256(PNG).hexdigest(),
             "mime_type": "image/png",
             "file_id": "file-generated-png",
         }
@@ -163,20 +162,18 @@ async def test_mcp_image_import_preserves_animation_and_safe_overwrites(harness,
         }
         animation = (await call(client, "import_image", gif_args))["result"]
         assert animation["mime_type"] == "image/gif"
-        assert animation["sha256"] == hashlib.sha256(GIF).hexdigest()
         assert animation["bytes"] == len(GIF)
         assert (harness.repo / gif_args["path"]).read_bytes() == GIF
         handoff = (await call(client, "task_get", {"task_id": task}))["handoff"]
         assert set(handoff["changed_files"]) == {args["path"], gif_args["path"]}
 
-        for digest in (None, "0" * 64):
-            await call(
-                client,
-                "import_image",
-                {**gif_args, "path": args["path"], "expected_sha256": digest},
-                error=True,
-            )
-            assert (harness.repo / args["path"]).read_bytes() == PNG
+        await call(
+            client,
+            "import_image",
+            {**gif_args, "path": args["path"], "expected_sha256": "0" * 64},
+            error=True,
+        )
+        assert (harness.repo / args["path"]).read_bytes() == PNG
 
         large_args = {
             **args,
@@ -184,17 +181,15 @@ async def test_mcp_image_import_preserves_animation_and_safe_overwrites(harness,
                 "download_url": image_source.url + "/large.png",
                 "file_id": "file-large-png",
             },
-            "expected_sha256": first["result"]["sha256"],
             "request_id": "replace-large",
         }
         large = (await call(client, "import_image", large_args))["result"]
         assert (harness.repo / args["path"]).read_bytes() == LARGE_PNG
-        assert large["sha256"] == hashlib.sha256(LARGE_PNG).hexdigest()
         assert large["bytes"] == len(LARGE_PNG)
         await call(
             client,
             "import_image",
-            {**args, "expected_sha256": large["sha256"], "request_id": "replace-small"},
+            {**args, "request_id": "replace-small"},
         )
         assert (harness.repo / args["path"]).read_bytes() == PNG
         assert {
@@ -211,7 +206,6 @@ async def test_mcp_image_import_preserves_animation_and_safe_overwrites(harness,
                     {
                         **replacement,
                         "path": args["path"],
-                        "expected_sha256": first["result"]["sha256"],
                         "request_id": "concurrent-" + str(index),
                     },
                 )
@@ -219,14 +213,8 @@ async def test_mcp_image_import_preserves_animation_and_safe_overwrites(harness,
             ),
             return_exceptions=True,
         )
-        succeeded = [outcome for outcome in outcomes if isinstance(outcome, dict)]
-        failed = [outcome for outcome in outcomes if isinstance(outcome, AssertionError)]
-        assert len(succeeded) == len(failed) == 1, outcomes
-        assert "expected_sha256" in str(failed[0])
-        assert (
-            hashlib.sha256((harness.repo / args["path"]).read_bytes()).hexdigest()
-            == (succeeded[0]["result"]["sha256"])
-        )
+        assert all(isinstance(outcome, dict) for outcome in outcomes), outcomes
+        assert (harness.repo / args["path"]).read_bytes() in {GIF, LARGE_PNG}
 
 
 async def test_mcp_image_import_download_failures_leave_no_file_or_signed_url(
@@ -237,7 +225,7 @@ async def test_mcp_image_import_download_failures_leave_no_file_or_signed_url(
             await call(client, "task_create", {"project": "local/project", "title": "驗證下載"})
         )["id"]
         base = {"task_id": task, "path": "download.png"}
-        redirected = await call(
+        await call(
             client,
             "import_image",
             {
@@ -304,7 +292,6 @@ async def test_mcp_image_import_download_failures_leave_no_file_or_signed_url(
             "import_image",
             {
                 **base,
-                "expected_sha256": redirected["result"]["sha256"],
                 "file": {"download_url": image_source.url + "/not-an-image", "file_id": "bad"},
             },
             error=True,

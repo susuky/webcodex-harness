@@ -43,6 +43,19 @@ def private_acl(path: Path):
         acl.AddAccessAllowedAceEx(
             win32security.ACL_REVISION, inherit, ntsecuritycon.FILE_ALL_ACCESS, sid
         )
+    current = win32security.GetNamedSecurityInfo(
+        str(path), win32security.SE_FILE_OBJECT, win32security.DACL_SECURITY_INFORMATION
+    )
+    current_acl = current.GetSecurityDescriptorDacl()
+    protected = current.GetSecurityDescriptorControl()[0] & win32security.SE_DACL_PROTECTED
+    if (
+        protected
+        and current_acl is not None
+        and current_acl.GetAceCount() == acl.GetAceCount()
+        and all(current_acl.GetAce(i) == acl.GetAce(i) for i in range(acl.GetAceCount()))
+    ):
+        return
+    # Reapplying inheritable ACEs walks existing children, including all process logs.
     win32security.SetNamedSecurityInfo(
         str(path),
         win32security.SE_FILE_OBJECT,

@@ -277,7 +277,7 @@ def allow_project_root(
     name: str | None = None,
     trusted: bool = False,
 ) -> dict:
-    """Operator-only setup; preserve credentials and unrelated clients, with private backups."""
+    """Grant a project root while preserving credentials and unrelated settings."""
     directory = directory.expanduser().resolve(strict=True)
     path = path.expanduser().resolve(strict=True)
     if not path.is_dir() or directory.is_relative_to(path):
@@ -309,15 +309,10 @@ def allow_project_root(
     data["runner"]["permissions"] = sorted(runner.permissions | permissions)
     data["server"] = ServerConfig.model_validate(data["server"]).model_dump(mode="json")
     RunnerConfig.model_validate(data["runner"])
-    backup = private_dir(directory / "backups" / ("access-" + secrets.token_hex(8)))
     encoded = {
         key: (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode()
         for key, value in data.items()
     }
-    for key, content in originals.items():
-        with (backup / (key + ".json")).open("xb") as stream:
-            stream.write(content)
-        (backup / (key + ".json")).chmod(0o600)
 
     def replace(key: str, content: bytes, expected: bytes):
         fd, temporary = tempfile.mkstemp(prefix=".access-", dir=directory)
@@ -345,7 +340,6 @@ def allow_project_root(
         "project_root": root_id,
         "path": str(path),
         "client": client_id,
-        "backup": str(backup),
         "restart_required": ["server", "runner"],
     }
 

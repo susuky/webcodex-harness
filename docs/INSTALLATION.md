@@ -164,24 +164,23 @@ uv run webcodex doctor --share --output diagnostics.json
 
 ## 更新與回復
 
-更新前保留設定及 SQLite 快照：
+程式修改與服務換版分開處理。準備新版、執行測試時，現有 Server、Runner 與背景命令繼續運作。需要換版時，先查看 Runner 現在有哪些工作：
 
 ```text
-uv run webcodex backup
 uv run webcodex update-check
 ```
 
-`update-check` 只讀 Runner 的 process／delivery journal。`runner_restart_ready: false` 或退出碼 2 時，結果會列出仍在執行的 process ID、task ID 與 delivery ID；等這些工作完成後再更新 Runner。
+update-check 讀取現有 process／delivery journal，列出仍在執行的 process ID、task ID 與 delivery ID。Runner 重新啟動會結束它管理的程序，因此有工作時保留原 Runner；在使用者允許的維護時段完成換版。
 
-1. 保存目前來源版本或安裝套件，準備新版本並先執行測試。
-2. 保留 `backup` 產生的目錄；其中設定檔與 SQLite 快照採私有權限。
-3. Server 與 bridge 可分開更新。Runner 仍有工作時，讓原 Runner 繼續連線。
-4. `update-check` 通過後，停止 Runner、更新套件並啟動，再執行 `doctor` 與 `projects_list`。
-5. ChatGPT 重新整理連線 metadata，開啟新卡片。
+使用相同設定與 state 啟動新版後，以 doctor、projects_list 及一次實際工具呼叫確認服務。ChatGPT 工具定義有更動時，重新整理外掛工具清單並開啟新卡片。
 
-若需回復，停止受影響的 Server／Runner，重新安裝先前套件或切回保存的來源版本，再還原備份中對應的設定與 SQLite 檔案。回復前另做一次當前備份。process log 與 browser profile 留在原 state 目錄；`backup` 的 manifest 列出實際保存的資料庫。SQLite 的 `-wal`／`-shm` 必須在程序停止後隨舊資料庫一起移出，讓回復的資料庫重新建立。
+需要保存資料庫或設定副本時，手動執行：
 
-Linux systemd user service 可依部署名稱執行 `systemctl --user restart webcodex-server.service`；Runner 通過檢查後再重啟 `webcodex-runner.service`。Windows 依原本終端機或[常駐啟動腳本](../examples/windows/Start-WebCodex.ps1)重新啟動。
+```text
+uv run webcodex backup
+```
+
+backup 依要求複製設定與 SQLite 資料庫。日常工具、專案授權與程式更新不會自動備份整份工作歷史。回復程式版本時依該版本的 state schema 處理，服務停止後再進行資料結構轉換或資料還原。本次 `process_states` 換版只允許一個 Server 寫入同一 state；往返舊版本所需的 legacy 狀態轉換見 [2026-11-17 修整紀錄](reviews/2026-11-17-simplification.md#換版與回復)。
 
 ## 容量與保留期限
 

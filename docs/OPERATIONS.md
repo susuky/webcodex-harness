@@ -70,23 +70,23 @@ uv run webcodex init --project "$HOME/src/my-repo"
 uv run webcodex call work_on_project --arguments '@args.json'
 ```
 
-保存回傳的 `task.id` 作為 `task_id`，並查看同時回傳的 `workspace`，確認規則、Git 狀態及工具鏈。若仍在執行，依 `workspace.next_action` 取得原工作結果。接續已有任務時，將參數改為 `{"task_id":"TASK_ID"}` 呼叫相同工具。所有範例的 `TASK_ID`、`JOB_ID`、`PROCESS_ID`、`SHA256` 都必須換成實際值。
+保存回傳的 `task.id` 作為 `task_id`，並查看同時回傳的 `workspace`，確認規則、Git 狀態及工具鏈。若仍在執行，依 `workspace.next_action` 取得原工作結果。接續已有任務時，將參數改為 `{"task_id":"TASK_ID"}` 呼叫相同工具。所有範例的 `TASK_ID`、`JOB_ID`、`PROCESS_ID` 都必須換成實際值。
 
 `workspace_info.is_git_repository` 指登記的專案根目錄是否為可用的 Git 工作樹根。新目錄沒有 `.git` 時回傳 `false`，不產生逾時錯誤，也不自行初始化 Git；一般讀寫仍可繼續。有 Git 中繼資料但查詢失敗時回傳 `null` 與 `git_error`，保留實際結束碼；只有成功取得狀態才回傳 `true`。位於另一個 repository 內的子目錄，不會因此取得操作父 repository 的授權。
 
 | 工具 | `args.json` 範例 |
 | --- | --- |
 | `read_file` | `{"task_id":"TASK_ID","path":"src/main.py"}` |
-| `edit_file` | `{"task_id":"TASK_ID","path":"src/main.py","old_text":"return a - b","new_text":"return a + b","expected_sha256":"SHA256","request_id":"fix-1"}` |
+| `edit_file` | `{"task_id":"TASK_ID","path":"src/main.py","old_text":"return a - b","new_text":"return a + b","request_id":"fix-1"}` |
 | `git_status`／`git_diff` | `{"task_id":"TASK_ID"}` |
 | `exec_command` | `{"task_id":"TASK_ID","argv":["uv","run","pytest","-q"],"request_id":"pytest-1"}` |
 | `exec_command`（Rust） | `{"task_id":"TASK_ID","argv":["cargo","test"],"request_id":"cargo-1"}` |
 
 對應呼叫為 `uv run webcodex call TOOL_NAME --arguments '@args.json'`。命令使用工作 repo 的環境；也可在 `argv` 指定其 Python 絕對路徑。Rust 需安裝相應工具鏈，Windows 原生另外需要 MSVC C++ 工具與 Windows SDK。
 
-`read_file` 提供整份檔案 SHA-256。覆寫、編輯或刪除必須帶入 hash；過期時重新讀取，不強制覆蓋。`task_review` 提供包含新檔案的變更清單、逐檔差異與實際命令結果；`git_diff` 本身仍不包含 untracked 新檔。`apply_patch` 接受標準 unified Git diff，不接受 `*** Begin Patch` 格式。完整 schema 由 `webcodex tools` 提供。
+`read_file` 回傳文字與行號。`edit_file` 以 `old_text` 定位，預設必須剛好匹配一次；`write_file` 建立或替換檔案，`delete_file` 刪除指定的一般檔案。`task_review` 提供包含新檔案的變更清單、逐檔差異與實際命令結果；`git_diff` 本身仍不包含 untracked 新檔。`apply_patch` 接受標準 unified Git diff，由 Git 比對原文後套用。完整 schema 由 `webcodex tools` 提供。
 
-`search_files` 每頁搜尋最多 500 個檔案、20 MiB 內容；超過時縮小 `path` 或 `glob`。搜尋使用受保護的私有快照，結果仍顯示原始相對檔名。Git 與 ripgrep 必須安裝在專案／授權父目錄以外的絕對 PATH 目錄；相對 PATH 與專案內同名程式不會用於這些結構化工具。Windows 必須提供原生 `.exe`／`.com`，不使用 `.bat`／`.cmd` wrapper。
+`search_files` 每頁直接搜尋最多 500 個檔案，保留相對檔名與行號；以 `next_file_offset` 取得下一頁。Git 與 ripgrep 必須安裝在專案／授權父目錄以外的絕對 PATH 目錄；相對 PATH 與專案內同名程式不會用於這些結構化工具。Windows 必須提供原生 `.exe`／`.com`，不使用 `.bat`／`.cmd` wrapper。
 
 結構化 Git 操作不會自動補取 partial clone 的缺失物件；遇到此類錯誤時，先由操作員在可信終端機明確下載所需物件，再重新查詢。HTTPS 擴充安裝的明確 clone／fetch 不受此限制。
 

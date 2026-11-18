@@ -141,6 +141,10 @@ async def test_management_refresh_observes_completion_without_restarting_command
             harness.app.state.service.store.db.execute(
                 "UPDATE jobs SET updated=? WHERE id=?", (time.time() - 300, initial["job_id"])
             )
+            harness.app.state.service.store.db.execute(
+                "UPDATE process_states SET observed_at=? WHERE job_id=?",
+                (time.time() - 300, initial["job_id"]),
+            )
         before = (await client.get("/api/manage/tasks/" + task_id)).json()
         assert before["processes"][0]["status"] == "running"
         assert before["processes"][0]["display_status"] == "unconfirmed"
@@ -456,3 +460,17 @@ def test_management_legacy_attention_state_uses_current_work(observed_at, jobs, 
     assert view["issues"] == legacy["issues"]
     assert legacy["state"] == "needs_attention"
     assert "display_status" not in legacy["processes"][0]
+
+
+def test_management_prioritizes_offline_runner_for_pending_work(activity_service):
+    service, task = activity_service
+    store = service.store
+    store.enqueue(task, "read_file", {}, "pending-offline", 100)
+    with store.db:
+        store.db.execute(
+            "INSERT INTO questions(id,task_id,question,created) VALUES (?,?,?,?)",
+            ("offline-question", task["id"], "Which file?", time.time()),
+        )
+        store.db.execute("UPDATE runners SET seen=?", (time.time() - 30,))
+    assert service.task_progress(task, include_output=False)["state"] == "waiting_runner"
+    assert Management(service).describe(task)["state"] == "waiting_runner"

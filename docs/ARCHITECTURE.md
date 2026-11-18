@@ -44,6 +44,10 @@ SQLite 的 `UNIQUE(owner, task_id, request_id)` 讓相同請求取得原工作�
 
 Runner 的 process lock 防止同一 state directory 同時啟動兩個實例；Server 的 15 秒實例租期避免另一台機器用同一 Runner 身分搶走工作。短暫網路斷線不會終止現有子程序。
 
+目前程序狀態保存在 `process_states`，每個任務／程序只有一列；接受程序結果時，在同一個 SQLite transaction 更新這列。`jobs` 保留完整操作歷史。任務清單、活動計數與卡片觀察先讀目前狀態，再依需要取出被選中的輸出，不再反覆分組整份歷史。首次載入新版時，從既有 metadata 索引回填目前狀態並合入 legacy agent 狀態。
+
+Runner 登記時一次取得專案清單與父目錄清單；每次工具執行只核對該任務綁定的專案。目錄盤點、worker policy 掃描與擴充檔案操作放到背景執行緒，讓心跳與結果回報繼續處理。
+
 ## 任務續接
 
 既有 task 可保存一筆尚未消費的等待，記錄原 job 與後續程序觀察 job。觀察採既有工作去重機制，不建立第二次命令執行。任務卡片透過 App 專用 `task_app` 呼叫更新進度；卡片協調仍受任務擁有者、專案及工具權限檢查，不提供核准或任意執行能力。
@@ -54,13 +58,13 @@ SQLite 保存控制者、世代、120 秒租期與已退役卡片，避免舊卡
 
 ## 檔案與 Git
 
-結構化檔案工具透過 directory fd 和 `O_NOFOLLOW` 開啟檔案；只接受一般且無 hardlink 的檔案，寫入先建立暫存檔，再替換。新檔案採 create-if-absent，既有檔案需要雜湊相符。
+結構化檔案工具透過 directory fd 和 `O_NOFOLLOW` 開啟檔案，只接受一般且無 hardlink 的檔案。寫入先完成暫存檔，再替換目的地，並保留既有檔案權限。`edit_file` 依原文字串定位，`apply_patch` 使用 Git 的 patch context；`write_file` 直接建立或替換指定檔案。
 
-上述 directory fd 路徑用於 Ubuntu／WSL2。Windows 原生以 `CreateFile` 的 `OPEN_REPARSE_POINT` 逐層檢查，開啟目錄時不授予 delete sharing，讓祖先目錄在操作期間不能被改名或替換；拒絕 junction、symlink、其他 reparse point、裝置名稱、ADS 與私有目錄別名。新檔案使用 Windows 不覆寫目的地的 rename，覆寫使用替換。Windows 設定目錄以 DACL 限定目前帳號與 SYSTEM；Linux 使用目錄 0700、設定檔 0600。
+上述 directory fd 路徑用於 Ubuntu／WSL2。Windows 原生以 `CreateFile` 的 `OPEN_REPARSE_POINT` 逐層檢查，開啟目錄時不授予 delete sharing，讓祖先目錄在操作期間不能被改名或替換；拒絕 junction、symlink、其他 reparse point、裝置名稱、ADS 與私有目錄別名。檔案寫入使用同目錄暫存檔與替換。Windows 設定目錄以 DACL 限定目前帳號與 SYSTEM；Linux 使用目錄 0700、設定檔 0600。
 
-Runner 對同一專案的結構化寫入加鎖；shell 與外部編輯器仍可同時修改 repo。Workspace 以不跟隨連結的方式開啟根目錄，核對 task 綁定的目錄身份；每次開啟檔案時再核對身份，沿用已開啟的 directory fd 或 Windows pinned handles。專案技能與本地擴充來源的子 Workspace 也保留原任務的根目錄綁定。Patch 先完整檢查再套用，不支援任意二進位、rename／copy 或連結型別的變更。結構化 Git 使用專案外、絕對 PATH 目錄中的執行檔，關閉 hooks、fsmonitor、log 簽章驗證與 Git transport，避免缺失物件觸發下載及外部程式；diff 另關閉外部 diff／textconv。Ubuntu／WSL2 的 Git 程序以已開啟的目錄 fd 對應 `/proc` 路徑啟動，Windows 在 Git 操作期間保留祖先目錄 handles。
+Runner 對同一專案的結構化寫入加鎖；shell 與外部編輯器仍可同時修改 repo。Workspace 以不跟隨連結的方式開啟根目錄，核對 task 綁定的目錄身份；每次開啟檔案時再核對身份，沿用已開啟的 directory fd 或 Windows pinned handles。專案技能與本地擴充來源的子 Workspace 也保留原任務的根目錄綁定。Patch 檢查授權路徑與檔案類型後交由 Git 套用，不支援任意二進位、rename／copy 或連結型別的變更。結構化 Git 使用專案外、絕對 PATH 目錄中的執行檔，關閉 hooks、fsmonitor、log 簽章驗證與 Git transport，避免缺失物件觸發下載及外部程式；diff 另關閉外部 diff／textconv。Ubuntu／WSL2 的 Git 程序以已開啟的目錄 fd 對應 `/proc` 路徑啟動，Windows 在 Git 操作期間保留祖先目錄 handles。
 
-`search_files` 安全開啟每頁最多 500 個檔案，串流複製至 Runner 私有目錄中的快照，再以可信 ripgrep 搜尋。每頁快照最多 20 MiB，超過時需縮小 path／glob；回傳保留原始相對檔名與行號。快照保留至程序結束後清除；`next_file_offset` 探索後續檔案，程序輸出游標則讀取同一頁的剩餘結果。
+`search_files` 以可信 ripgrep 直接搜尋專案，每頁最多 500 個符合篩選的檔案。當頁檔名轉成 literal globs，使用 `--no-follow` 排除連結與既有私有目錄；不複製檔案，也沒有整頁 20 MiB 的門檻。`next_file_offset` 取得後續檔案，程序輸出游標則讀取同一頁的剩餘結果。
 
 ## 命令生命週期
 
@@ -90,7 +94,7 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 | `src/webcodex/runtime.py` | Repo、Git、命令、圖片及擴充工具 |
 | `src/webcodex/projects.py` | 父目錄驗證、專案建立與登記、Runner 持久登記恢復 |
 | `src/webcodex/computer.py` | 選用桌面後端、截圖、座標檢查與輸入序列化 |
-| `src/webcodex/filesystem.py` | 路徑邊界、檔案讀寫與雜湊檢查 |
+| `src/webcodex/filesystem.py` | 路徑邊界與檔案讀寫 |
 | `src/webcodex/processes.py` | 子程序、PTY、輸出與停止流程 |
 | `src/webcodex/windows.py` | Windows 檔案 handle、ACL、ConPTY、Job 與啟動閘門 |
 | `src/webcodex/extensions.py` | 擴充安裝、skill 探索、持續存在的 MCP provider |

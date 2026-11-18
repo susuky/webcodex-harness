@@ -121,9 +121,13 @@ async def test_terminal_worker_input_cannot_be_split_across_calls(tmp_path):
                 ("shell", "task", "running", json.dumps(["bash"]), str(tmp_path)),
             )
         processes.active["shell"] = {"terminal": SimpleNamespace(write=sent.append)}
-        await processes.write("shell", "task", "co", False)
-        with pytest.raises(ValueError, match="External Codex/Work"):
-            await processes.write("shell", "task", "dex exec test\n", False)
+        results = await asyncio.gather(
+            processes.write("shell", "task", "co", False),
+            processes.write("shell", "task", "dex exec test\n", False),
+            return_exceptions=True,
+        )
+        assert results[0] is None
+        assert isinstance(results[1], ValueError) and "External Codex/Work" in str(results[1])
         assert sent == ["co"]
         assert (
             check_worker_input(

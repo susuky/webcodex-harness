@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import platform
@@ -459,7 +458,6 @@ def retention(
                             "task_id": tid,
                             "bytes": saved,
                             "time": updated,
-                            "digest": hashlib.sha256(raw.encode("utf-8")).digest(),
                         }
                     )
     if process_db.exists():
@@ -534,27 +532,24 @@ def retention(
                         skipped.append(item["id"])
                         continue
                     row = db.execute("SELECT result FROM jobs WHERE id=?", (item["id"],)).fetchone()
-                    if (
-                        not row
-                        or not isinstance(row[0], str)
-                        or hashlib.sha256(row[0].encode("utf-8")).digest() != item["digest"]
-                    ):
+                    if not row or not isinstance(row[0], str):
                         skipped.append(item["id"])
                         continue
                     compact = _compact_payload(row[0], now)
                     changed = db.execute(
-                        "UPDATE jobs SET result=? WHERE id=? AND result=?",
-                        (compact, item["id"], row[0]),
+                        "UPDATE jobs SET result=? WHERE id=?",
+                        (compact, item["id"]),
                     ).rowcount
                     if changed:
-                        reclaimed += item["bytes"]
+                        saved = len(row[0].encode("utf-8")) - len(compact.encode("utf-8"))
+                        reclaimed += saved
                         pruned_jobs[item["id"]] = compact
                         db.execute(
                             "INSERT INTO events(task_id,kind,data,created) VALUES (?,?,?,?)",
                             (
                                 item["task_id"],
                                 "retention.payload_removed",
-                                json.dumps({"job_id": item["id"], "bytes": item["bytes"]}),
+                                json.dumps({"job_id": item["id"], "bytes": saved}),
                                 now,
                             ),
                         )

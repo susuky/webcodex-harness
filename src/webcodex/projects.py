@@ -50,45 +50,43 @@ def restore_projects(config: RunnerConfig, db: sqlite3.Connection):
     config.projects.update(restored)
 
 
-def root_inventory(config: RunnerConfig, db: sqlite3.Connection) -> dict:
-    result = {}
-    for name, path in config.project_roots.items():
+def project_inventory(
+    projects: dict[str, Path], project_roots: dict[str, Path], records: list[sqlite3.Row]
+) -> tuple[dict, dict]:
+    roots = {}
+    for name, path in project_roots.items():
         try:
-            result[name] = {"binding": project_binding(path), "projects": []}
+            roots[name] = {"binding": project_binding(path), "projects": []}
         except (ValueError, OSError):
             continue
-    managed = set()
-    for row in db.execute("SELECT * FROM managed_projects ORDER BY name"):
-        managed.add(row["name"])
-        root = result.get(row["root"])
-        path = config.projects.get(row["name"])
+    managed = {row["name"]: row for row in records}
+    available = {}
+    for name, path in projects.items():
         try:
+            binding = project_binding(path)
+        except (ValueError, OSError):
+            continue
+        record = managed.get(name)
+        if record:
+            root = roots.get(record["root"])
             if (
-                root
-                and path
-                and root["binding"] == row["root_binding"]
-                and project_binding(path) == row["binding"]
+                root is None
+                or root["binding"] != record["root_binding"]
+                or binding != record["binding"]
             ):
-                root["projects"].append(row["name"])
-        except (ValueError, OSError):
-            continue
-    # Configured projects beneath a granted root follow the same policy as newly registered ones.
-    for name, path in config.projects.items():
-        if name in managed:
-            continue
-        try:
-            project_binding(path)
-        except (ValueError, OSError):
-            continue
-        parents = [
-            key
-            for key in result
-            if path != config.project_roots[key] and path.is_relative_to(config.project_roots[key])
-        ]
-        if parents:
-            key = max(parents, key=lambda key: len(config.project_roots[key].parts))
-            result[key]["projects"].append(name)
-    return result
+                continue
+            root["projects"].append(name)
+        else:
+            parents = [
+                key
+                for key in roots
+                if path != project_roots[key] and path.is_relative_to(project_roots[key])
+            ]
+            if parents:
+                key = max(parents, key=lambda key: len(project_roots[key].parts))
+                roots[key]["projects"].append(name)
+        available[name] = binding
+    return available, roots
 
 
 class ProjectOperations:
@@ -159,7 +157,7 @@ class ProjectOperations:
     async def project_create(
         self, root: str, name: Name, request_id: RequestID, git_init: bool = False
     ) -> dict:
-        """Create a new directory and persistently register it on the Runner under an exact root ID from project_roots_list. No existing task or project is needed. name is both the new project ID and a direct child directory; existing paths are never adopted or overwritten. git_init is an explicit optional action and creates no commit. Reuse request_id for the same request within this root; poll the returned job_id, then use the resulting project ID with task_create. Creation requires projects permission and operator approval by default."""
+        """Create a new directory and persistently register it on the Runner under an exact root ID from project_roots_list. No existing task or project is needed. name is both the new project ID and a direct child directory; existing paths are never adopted or overwritten. git_init is an explicit optional action and creates no commit. Reuse request_id for the same request within this root; poll the returned job_id, then use the resulting project ID with task_create. Creation requires projects permission."""
         key, workspace = self.parent(root, name)
         binding = workspace.binding
         with workspace.parent(name) as (parent, child):
@@ -219,7 +217,7 @@ class ProjectOperations:
         path: Annotated[str, Field(min_length=1, max_length=4096)],
         request_id: RequestID,
     ) -> dict:
-        """Persistently register an existing directory beneath an exact root ID from project_roots_list. path is relative to that root; traversal, symlinks and registering the root itself are rejected. Does not modify project files or initialize Git. No existing task is needed. Reuse request_id within this root and poll the returned job_id before using the resulting project ID with task_create. Requires projects permission and operator approval by default."""
+        """Persistently register an existing directory beneath an exact root ID from project_roots_list. path is relative to that root; traversal, symlinks and registering the root itself are rejected. Does not modify project files or initialize Git. No existing task is needed. Reuse request_id within this root and poll the returned job_id before using the resulting project ID with task_create. Requires projects permission."""
         key, workspace = self.parent(root, name)
         workspace.parts(path)
         return {

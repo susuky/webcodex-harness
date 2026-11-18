@@ -67,6 +67,10 @@ async def test_mcp_and_http_activity_exclude_card_polling_and_payloads(harness):
             service.store.db.execute(
                 "UPDATE jobs SET updated=? WHERE id=?", (observed_at, running["job_id"])
             )
+            service.store.db.execute(
+                "UPDATE process_states SET observed_at=? WHERE job_id=?",
+                (observed_at, running["job_id"]),
+            )
         view = {"task_id": task_id, "view_id": "1" * 32}
         bound = await client.call_tool(
             "task_app", {**view, "action": "bind"}, meta={"openai/session": "chat"}
@@ -500,6 +504,9 @@ async def test_card_monitoring_reads_json_only_for_selected_running_processes(
         )
         with store.db:
             store.db.execute("UPDATE jobs SET updated=? WHERE id=?", (now - age, job["job_id"]))
+            store.db.execute(
+                "UPDATE process_states SET observed_at=? WHERE job_id=?", (now - age, job["job_id"])
+            )
         return job["job_id"]
 
     historical = observe("finished", "completed", 0, 1000)
@@ -565,8 +572,8 @@ def test_work_counts_include_observations_outside_the_bounded_detail_lists(
         with store.db:
             store.db.execute("UPDATE jobs SET created=10,updated=10 WHERE id=?", (job["job_id"],))
             store.db.execute(
-                "UPDATE agent_observations SET created=10,updated=20 WHERE job_id=?",
-                (job["job_id"],),
+                "UPDATE process_states SET started_at=10,observed_at=? WHERE job_id=?",
+                (20 if tool == "subagent_spawn" else 10, job["job_id"]),
             )
     for index in range(100):
         job = store.enqueue(task, "exec_command", {}, str(index), 200)
@@ -672,3 +679,45 @@ async def test_missing_conversation_identity_never_exposes_shared_tool_activity(
         liveness = card.structuredContent["progress"]["liveness"]
         assert liveness["conversation"] is None and liveness["operation"] is None
         assert card.structuredContent["progress"]["runner_online"]
+
+
+@pytest.mark.parametrize("later_worker_observation", [False, True])
+async def test_card_keeps_observing_legacy_process_logs(
+    activity_service, monkeypatch, later_worker_observation
+):
+    service, task = activity_service
+    store = service.store
+    now = time.time()
+
+    def complete(tool, result, age):
+        with monkeypatch.context() as patch:
+            patch.setattr("webcodex.store.time.time", lambda: now - age)
+            job = store.enqueue(task, tool, {}, None, 100)
+            store.claim("local", "instance", 1)
+            store.complete("local", job["job_id"], "instance", "succeeded", result)
+        return job["job_id"]
+
+    complete(
+        "subagent_spawn",
+        {"agent_id": "legacy", "process_id": "legacy", "status": "running"},
+        40,
+    )
+    raw_job = complete(
+        "read_process",
+        {"process_id": "legacy", "status": "running", "next_cursor": 1234},
+        30,
+    )
+    if later_worker_observation:
+        complete("subagent_get", {"agent_id": "legacy", "status": "running"}, 20)
+    calls = []
+
+    async def call(owner, name, arguments):
+        calls.append((owner, name, arguments))
+
+    monkeypatch.setattr(service, "call", call)
+    await service.observe_card_processes(task)
+    assert len(calls) == 1
+    owner, name, arguments = calls[0]
+    assert (owner, name, arguments["process_id"]) == ("owner", "read_process", "legacy")
+    assert arguments["cursor"] == 1234
+    assert arguments["request_id"] == "card-observe:" + raw_job

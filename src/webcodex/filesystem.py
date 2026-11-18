@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
-import hashlib
 import os
 import stat
 import uuid
@@ -12,22 +11,6 @@ from .config import is_link, project_binding
 
 MAX_FILE = 2 * 1024 * 1024
 SKIP_DIRS = {".git", ".webcodex", ".venv", "node_modules", "__pycache__", "target", "dist"}
-
-
-def sha256(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-def file_version(info: os.stat_result) -> tuple:
-    return (
-        info.st_dev,
-        info.st_ino,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-        info.st_mode,
-        info.st_nlink,
-    )
 
 
 class Workspace:
@@ -177,7 +160,12 @@ class Workspace:
         return current
 
     def read(self, path: str, maximum: int = MAX_FILE) -> bytes:
-        return self._read_version(path, maximum)[0]
+        with self.open_file(path) as stream:
+            self.file_info(stream, maximum)
+            content = stream.read(maximum + 1)
+            if len(content) > maximum:
+                raise ValueError(f"File exceeds the {maximum}-byte read limit")
+            return content
 
     @contextlib.contextmanager
     def open_file(self, path: str):
@@ -209,26 +197,13 @@ class Workspace:
                 yield stream
 
     @staticmethod
-    def file_info(stream, maximum: int) -> os.stat_result:
+    def file_info(stream, maximum: int | None = None) -> os.stat_result:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError("Only regular, single-link files can be read")
-        if info.st_size > maximum:
+        if maximum is not None and info.st_size > maximum:
             raise ValueError(f"File exceeds the {maximum}-byte read limit")
         return info
-
-    def _read_version(self, path: str, maximum: int = MAX_FILE) -> tuple[bytes, os.stat_result]:
-        with self.open_file(path) as stream:
-            info = self.file_info(stream, maximum)
-            content = stream.read(maximum + 1)
-            if len(content) > maximum:
-                raise ValueError(f"File exceeds the {maximum}-byte read limit")
-            if file_version(os.fstat(stream.fileno())) != file_version(info):
-                raise ValueError("File changed while reading; read it again before editing")
-            if os.name == "nt":
-                # Match write's path stat while this file is still pinned against replacement.
-                info = os.stat(self.root / path, follow_symlinks=False)
-            return content, info
 
     def copy_file(
         self, path: str, target: Path, maximum: int, *, preserve_mode: bool = True
@@ -242,8 +217,6 @@ class Workspace:
                     if total > maximum:
                         raise ValueError(f"File exceeds the {maximum}-byte copy limit")
                     output.write(chunk)
-            if file_version(os.fstat(stream.fileno())) != file_version(info):
-                raise ValueError("File changed while copying; inspect the source before retrying")
             if preserve_mode:
                 target.chmod(stat.S_IMODE(info.st_mode) & 0o777)
             return total
@@ -285,14 +258,7 @@ class Workspace:
                         if not skip_unavailable:
                             raise
 
-    def write(
-        self,
-        path: str,
-        content: bytes,
-        expected_sha256: str | None,
-        *,
-        maximum: int = MAX_FILE,
-    ) -> dict:
+    def write(self, path: str, content: bytes, *, maximum: int = MAX_FILE) -> dict:
         if len(content) > maximum:
             raise ValueError("File exceeds the write limit")
         with self.parent(path, create=True) as (parent, name):
@@ -301,16 +267,10 @@ class Workspace:
             target = parent / name if windows else name
             mode = 0o644
             try:
-                previous, info = self._read_version(path, maximum)
-                mode = stat.S_IMODE(info.st_mode) & 0o777
+                with self.open_file(path) as stream:
+                    mode = stat.S_IMODE(self.file_info(stream).st_mode) & 0o777
             except FileNotFoundError:
-                previous, info = None, None
-            if previous is not None and expected_sha256 != sha256(previous):
-                raise ValueError(
-                    "File changed or expected_sha256 is missing; read it again before editing"
-                )
-            if previous is None and expected_sha256 is not None:
-                raise ValueError("File no longer exists")
+                pass
             temporary = ".webcodex-write-" + uuid.uuid4().hex
             if windows:
                 temporary = parent / temporary
@@ -318,41 +278,17 @@ class Workspace:
                 fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode, **options)
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(content)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                if info is None:
-                    # link is an atomic create-if-absent; it cannot overwrite a concurrent new file.
-                    if windows:
-                        os.rename(temporary, target)  # Windows rename is create-if-absent.
-                    else:
-                        os.link(
-                            temporary,
-                            name,
-                            src_dir_fd=parent,
-                            dst_dir_fd=parent,
-                            follow_symlinks=False,
-                        )
-                        os.unlink(temporary, dir_fd=parent)
-                else:
-                    current = os.stat(target, **options, follow_symlinks=False)
-                    if file_version(current) != file_version(info):
-                        raise ValueError("File changed while preparing the edit")
-                    replace_options = (
-                        {} if windows else {"src_dir_fd": parent, "dst_dir_fd": parent}
-                    )
-                    os.replace(temporary, target, **replace_options)
-                if not windows:
-                    os.fsync(parent)
+                replace_options = {} if windows else {"src_dir_fd": parent, "dst_dir_fd": parent}
+                os.replace(temporary, target, **replace_options)
             finally:
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(temporary, **options)
-        return {"path": path, "sha256": sha256(content), "bytes": len(content)}
+        return {"path": path, "bytes": len(content)}
 
-    def delete(self, path: str, expected_sha256: str) -> dict:
+    def delete(self, path: str) -> dict:
         with self.parent(path) as (parent, name):
-            content = self.read(path)
-            if sha256(content) != expected_sha256:
-                raise ValueError("File changed; read it again before deleting")
+            with self.open_file(path) as stream:
+                self.file_info(stream)
             if os.name == "nt":
                 os.unlink(parent / name)
             else:

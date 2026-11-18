@@ -12,14 +12,33 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from .config import identifier
+from .connections import REASONS, public_details, safe_details
 from .management import PROCESS_FRESH_SECONDS, execution_freshness, requested_status
 from .store import INTERNAL_OBSERVATION_PREFIXES
 
-PROCESS_TOOLS = "('exec_command','read_process','cancel_process','skill_run','search_files')"
-
 
 class SourceUnavailable(Exception):
-    pass
+    def __init__(self, message, reason="source_invalid_response", **details):
+        super().__init__(message)
+        self.reason, self.details = reason, details
+
+    @classmethod
+    def transport(cls, error, message, timeout_seconds=15):
+        reason = (
+            "source_connect_timeout"
+            if isinstance(error, httpx.ConnectTimeout)
+            else "source_read_timeout"
+            if isinstance(error, httpx.ReadTimeout)
+            else "source_timeout"
+            if isinstance(error, httpx.TimeoutException)
+            else "source_invalid_response"
+            if isinstance(error, (httpx.ProtocolError, httpx.DecodingError, ValueError))
+            else "source_unreachable"
+        )
+        details = {"exception_type": type(error).__name__}
+        if isinstance(error, httpx.TimeoutException):
+            details["timeout_seconds"] = timeout_seconds
+        return cls(message, reason, **details)
 
 
 class TaskUnavailable(Exception):
@@ -60,6 +79,8 @@ class Sources:
         self.creation_times: dict[tuple[str, str, str], float | None] = {}
         self.creation_lock = asyncio.Lock()
         self.clients: dict[tuple[str, str, str, str], httpx.AsyncClient] = {}
+        self.connection_cache: dict[tuple[str, str, bool], tuple[float, dict]] = {}
+        self.connection_locks: dict[tuple[str, str, bool], asyncio.Lock] = {}
         # Archiving is a client-scoped view preference, including for remote tasks.
         with self.service.store.db:
             self.service.store.db.execute(
@@ -111,6 +132,248 @@ class Sources:
     @staticmethod
     def response(data: dict, status_code: int = 200):
         return JSONResponse(data, status_code, headers={"Cache-Control": "no-store"})
+
+    async def source_failed(self, owner, source_id, operation, error, started):
+        if source_id != "local":
+            await asyncio.to_thread(
+                self.service.connections.fail,
+                "source",
+                operation,
+                error.reason,
+                source_id=source_id,
+                owner=owner,
+                details={
+                    "operation": operation,
+                    "duration_ms": (time.monotonic() - started) * 1000,
+                    **error.details,
+                },
+            )
+
+    async def source_recovered(self, owner, source_id, operation):
+        await asyncio.to_thread(
+            self.service.connections.recover,
+            "source",
+            operation,
+            source_id=source_id,
+            owner=owner,
+        )
+
+    async def connections(self, request):
+        owner = self.management.owner(request)
+        if set(request.query_params) - {"limit", "evidence"}:
+            raise ValueError("Unknown connection history parameter")
+        limit = int(request.query_params.get("limit", 30))
+        if not 1 <= limit <= 100:
+            raise ValueError("Connection history limit must be between 1 and 100")
+        evidence = request.query_params.get("evidence", "0")
+        if evidence not in {"0", "1"}:
+            raise ValueError("Expected evidence=0 or evidence=1")
+        data = await self.connection_data(
+            owner,
+            request.path_params.get("source_id"),
+            limit=limit,
+            include_evidence=evidence == "1",
+        )
+        return self.response(data)
+
+    async def connection_data(
+        self, owner: str, source_id: str | None = None, *, limit=30, include_evidence=False
+    ):
+        client = self.service.config.clients.get(owner)
+        if client is None or "read" not in client.permissions:
+            raise ValueError("Read permission is required")
+        if source_id:
+            self.source(owner, source_id)
+            source_ids = {source_id}
+        else:
+            source_ids = {"local", *self.service.config.clients[owner].management_sources}
+        runner_ids = {
+            project.split("/", 1)[0]
+            for project in [
+                *self.service.allowed_projects(owner),
+                *self.service.config.clients[owner].project_roots,
+            ]
+        }
+        data = await asyncio.to_thread(
+            self.service.connections.snapshot,
+            owner=owner,
+            source_ids=source_ids,
+            runner_ids=runner_ids,
+            limit=limit,
+            include_evidence=include_evidence,
+        )
+        for incident in data["incidents"]:
+            incident["source_label"] = self.label(owner, incident["source_id"])
+        data["sources"] = []
+        data["runners"] = []
+        if "local" in source_ids:
+            data["sources"].append(
+                {
+                    "source_id": "local",
+                    "source_label": "本機",
+                    "status": "available",
+                    "observed_at": data["observed_at"],
+                }
+            )
+            data["runners"] = [
+                self.tag(owner, "local", runner) for runner in self.management.runners(owner)
+            ]
+        remote_ids = sorted(source_ids - {"local"})
+        remote_data = await asyncio.gather(
+            *(
+                self.remote_connections(owner, remote, include_evidence=include_evidence)
+                for remote in remote_ids
+            )
+        )
+        for remote, result in zip(remote_ids, remote_data, strict=True):
+            data["sources"].append(
+                {"source_id": remote, "source_label": self.label(owner, remote), **result["source"]}
+            )
+            for row in result.get("incidents", []):
+                data["incidents"].append(
+                    {**row, "source_id": remote, "source_label": self.label(owner, remote)}
+                )
+            for row in result.get("runners", []):
+                data["runners"].append(
+                    self.tag(
+                        owner,
+                        remote,
+                        {
+                            **row,
+                            "observed_at": result["source"].get("observed_at"),
+                            "stale": result["source"]["status"] != "available",
+                        },
+                    )
+                )
+        data["incidents"].sort(
+            key=lambda row: row["recovered_at"] or row.get("closed_at") or row["started_at"],
+            reverse=True,
+        )
+        data["incidents"] = data["incidents"][:limit]
+        return data
+
+    async def remote_connections(self, owner, source_id, *, include_evidence=False):
+        key = (owner, source_id, include_evidence)
+        async with self.connection_locks.setdefault(key, asyncio.Lock()):
+            cached = self.connection_cache.get(key)
+            if cached and time.monotonic() - cached[0] < 15:
+                return cached[1]
+            result = {
+                **(cached[1] if cached else {}),
+                "source": {
+                    "status": "unavailable",
+                    "observed_at": cached[1]["source"].get("observed_at") if cached else None,
+                },
+            }
+            try:
+                async with self.remote_client(owner, source_id) as client:
+                    response = await client.get(
+                        "/api/manage/sources/local/connections",
+                        timeout=2,
+                        params={"evidence": "1"} if include_evidence else None,
+                    )
+                if response.status_code == 404:
+                    result["source"] = {"status": "unsupported"}
+                elif response.status_code in {401, 403}:
+                    result["source"]["reason"] = "source_auth_failed"
+                elif not response.is_success:
+                    result["source"].update(
+                        reason="source_http_error", http_status=response.status_code
+                    )
+                else:
+                    payload = response.json()
+                    if not isinstance(payload, dict) or not isinstance(
+                        payload.get("incidents"), list
+                    ):
+                        raise ValueError("Invalid connection history")
+                    incidents = []
+                    for row in payload["incidents"][:100]:
+                        if not isinstance(row, dict) or row.get("source_id") != "local":
+                            continue
+                        reason = row.get("reason")
+                        if reason not in REASONS or row.get("component") not in {
+                            "server",
+                            "source",
+                            "runner",
+                        }:
+                            raise ValueError("Invalid connection incident")
+                        started, recovered = row.get("started_at"), row.get("recovered_at")
+                        closed = row.get("closed_at")
+                        if any(
+                            type(value) not in (int, float) or not math.isfinite(value)
+                            for value in [
+                                started,
+                                *([recovered] if recovered is not None else []),
+                                *([closed] if closed is not None else []),
+                            ]
+                        ):
+                            raise ValueError("Invalid connection incident time")
+                        if any(
+                            not isinstance(row.get(field, {}), dict)
+                            for field in ("details", "recovery_details")
+                        ):
+                            raise ValueError("Invalid connection incident details")
+                        filter_details = safe_details if include_evidence else public_details
+                        details = filter_details(row.get("details"))
+                        incidents.append(
+                            {
+                                "id": str(row.get("id", ""))[:64],
+                                "component": row["component"],
+                                "source_id": source_id,
+                                "runner_id": row.get("runner_id"),
+                                "started_at": started,
+                                "recovered_at": recovered,
+                                **(
+                                    {"closed_at": closed, "end_reason": "diagnostic_changed"}
+                                    if closed is not None
+                                    else {}
+                                ),
+                                "last_seen_at": started,
+                                "reason": reason,
+                                "reason_label": REASONS[reason],
+                                "details": details,
+                                "recovery_details": filter_details(row.get("recovery_details")),
+                                "state": "changed"
+                                if closed is not None
+                                else "active"
+                                if recovered is None
+                                else "recovered",
+                            }
+                        )
+                    runners = payload.get("runners", [])
+                    if not isinstance(runners, list) or any(
+                        not isinstance(row, dict) for row in runners
+                    ):
+                        raise ValueError("Invalid Runner connection history")
+                    result = {
+                        "source": {
+                            "status": "available",
+                            "observed_at": time.time(),
+                            "persisted": payload.get("persisted") is not False,
+                        },
+                        "incidents": incidents,
+                        "runners": [
+                            {
+                                "id": row["id"],
+                                "last_seen": row.get("last_seen"),
+                                "online": row.get("online") is True,
+                            }
+                            for row in runners
+                            if isinstance(row.get("id"), str)
+                        ],
+                    }
+            except httpx.ConnectTimeout:
+                result["source"]["reason"] = "source_connect_timeout"
+            except httpx.ReadTimeout:
+                result["source"]["reason"] = "source_read_timeout"
+            except httpx.TimeoutException:
+                result["source"]["reason"] = "source_timeout"
+            except httpx.HTTPError:
+                result["source"]["reason"] = "source_unreachable"
+            except (ValueError, TypeError):
+                result["source"]["reason"] = "source_invalid_response"
+            self.connection_cache[key] = (time.monotonic(), result)
+            return result
 
     async def listing(self, request):
         owner = self.management.owner(request)
@@ -164,17 +427,10 @@ class Sources:
         live, attention, unconfirmed = set(), set(), set()
         online = {runner["id"] for runner in self.management.runners(owner) if runner["online"]}
         fresh_after = time.time() - PROCESS_FRESH_SECONDS
-        # Read the indexed process projection; command output can be many megabytes.
         observations = self.service.store.rows(
-            "WITH latest AS (SELECT task_id,process_status AS status,updated,"
-            "row_number() OVER (PARTITION BY task_id,process_id ORDER BY updated DESC,id DESC) AS rank "
-            f"FROM jobs WHERE task_id IN ({slots}) AND status='succeeded' "
-            "AND NOT EXISTS (SELECT 1 FROM agent_observations a "
-            "WHERE a.task_id=jobs.task_id AND a.agent_id=jobs.process_id) "
-            f"AND process_id IS NOT NULL AND tool IN {PROCESS_TOOLS}) "
-            "SELECT task_id,status,updated FROM latest WHERE rank=1 UNION ALL "
-            f"SELECT task_id,status,updated FROM agent_observations WHERE task_id IN ({slots})",
-            (*by_id, *by_id),
+            "SELECT task_id,status,observed_at AS updated FROM process_states "
+            f"WHERE task_id IN ({slots}) AND status='running'",
+            tuple(by_id),
         )
         for row in observations:
             if row["status"] == "running":
@@ -228,23 +484,39 @@ class Sources:
         try:
             response = await client.request(method, "/api/manage/" + path, **kwargs)
             if response.status_code in {401, 403}:
-                raise SourceUnavailable("來源驗證失敗或權限已撤銷")
+                raise SourceUnavailable(
+                    "來源驗證失敗或權限已撤銷",
+                    "source_auth_failed",
+                    http_status=response.status_code,
+                )
             if method == "GET" and path.startswith("tasks/") and response.status_code in {400, 404}:
                 raise TaskUnavailable("任務不存在或無權存取")
             if not response.is_success:
-                raise SourceUnavailable(f"來源回應錯誤（HTTP {response.status_code}）")
+                raise SourceUnavailable(
+                    f"來源回應錯誤（HTTP {response.status_code}）",
+                    "source_http_error",
+                    http_status=response.status_code,
+                )
             result = response.json()
             if not isinstance(result, dict):
                 raise ValueError("Expected an object")
             return result
         except httpx.ConnectTimeout:
-            raise SourceUnavailable("連線至來源逾時") from None
+            raise SourceUnavailable(
+                "連線至來源逾時", "source_connect_timeout", timeout_seconds=15
+            ) from None
         except httpx.ReadTimeout:
-            raise SourceUnavailable("來源回應逾時") from None
+            raise SourceUnavailable(
+                "來源回應逾時", "source_read_timeout", timeout_seconds=15
+            ) from None
         except httpx.TimeoutException:
-            raise SourceUnavailable("來源通訊逾時") from None
+            raise SourceUnavailable("來源通訊逾時", "source_timeout", timeout_seconds=15) from None
+        except (httpx.ProtocolError, httpx.DecodingError) as error:
+            raise SourceUnavailable(
+                "來源回傳了無效資料", "source_invalid_response", exception_type=type(error).__name__
+            ) from None
         except httpx.HTTPError:
-            raise SourceUnavailable("無法連線至來源") from None
+            raise SourceUnavailable("無法連線至來源", "source_unreachable") from None
         except ValueError:
             raise SourceUnavailable("來源回傳了無效資料") from None
 
@@ -275,6 +547,7 @@ class Sources:
         async with self.creation_lock:
             if key in self.creation_times:
                 return self.creation_times[key]
+            started = time.monotonic()
             try:
                 async with self.remote_client(owner, source_id) as client:
                     response = await client.post(
@@ -287,8 +560,18 @@ class Sources:
                     )
                 if response.status_code in {400, 404}:
                     raise TaskUnavailable("任務不存在或無權存取")
+                if response.status_code in {401, 403}:
+                    raise SourceUnavailable(
+                        "讀取任務日期時來源驗證失敗",
+                        "source_auth_failed",
+                        http_status=response.status_code,
+                    )
                 if not response.is_success:
-                    raise SourceUnavailable(f"讀取任務日期失敗（HTTP {response.status_code}）")
+                    raise SourceUnavailable(
+                        f"讀取任務日期失敗（HTTP {response.status_code}）",
+                        "source_http_error",
+                        http_status=response.status_code,
+                    )
                 payload = response.json()
                 events = payload.get("events") if isinstance(payload, dict) else None
                 if not isinstance(events, list) or len(events) > 1:
@@ -302,15 +585,17 @@ class Sources:
                         created = event.get("created")
                         if type(created) not in {int, float} or not math.isfinite(created):
                             raise SourceUnavailable("來源回傳了無效的任務日期")
-            except httpx.TimeoutException:
-                raise SourceUnavailable("讀取任務日期逾時") from None
-            except httpx.HTTPError:
-                raise SourceUnavailable("讀取任務日期時無法連線至來源") from None
-            except ValueError:
-                raise SourceUnavailable("來源回傳了無效的任務日期") from None
+            except SourceUnavailable as error:
+                await self.source_failed(owner, source_id, "task-date", error, started)
+                raise
+            except (httpx.HTTPError, ValueError) as error:
+                failure = SourceUnavailable.transport(error, "讀取任務日期失敗", timeout_seconds=3)
+                await self.source_failed(owner, source_id, "task-date", failure, started)
+                raise failure from None
             if len(self.creation_times) >= 4096:
                 self.creation_times.pop(next(iter(self.creation_times)))
             self.creation_times[key] = created
+            await self.source_recovered(owner, source_id, "task-date")
             return created
 
     @staticmethod
@@ -390,12 +675,15 @@ class Sources:
                         if next_offset is None:
                             result = {**page, "tasks": tasks, "next_offset": None}
                             self.catalogs[key] = (time.monotonic(), result)
+                            await self.source_recovered(owner, source_id, "state")
                             return result
                         if type(next_offset) is not int or next_offset <= offset:
                             raise SourceUnavailable("來源回傳了無效的分頁位置")
                         offset = next_offset
             except TimeoutError:
-                raise SourceUnavailable("讀取來源任務逾時") from None
+                raise SourceUnavailable(
+                    "讀取來源任務逾時", "source_timeout", timeout_seconds=15
+                ) from None
             raise SourceUnavailable("來源任務過多，無法完整載入")
 
     async def state(self, request):
@@ -435,6 +723,7 @@ class Sources:
             identifier(project)
         if len(environment) > 100:
             raise ValueError("Invalid environment filter")
+        started = time.monotonic()
         try:
             data = (
                 await self.remote_catalog(owner, source_id)
@@ -564,6 +853,7 @@ class Sources:
                 }
             )
         except SourceUnavailable as error:
+            await self.source_failed(owner, source_id, "state", error, started)
             return self.response({"source_id": source_id, "error": str(error)}, 502)
 
     async def archive(self, request):
@@ -622,6 +912,7 @@ class Sources:
             return self.response(
                 self.tag(owner, source_id, await self.management.refresh_data(owner, body))
             )
+        started = time.monotonic()
         try:
             key = (owner, source_id)
             async with self.remote_client(owner, source_id) as client:
@@ -629,8 +920,10 @@ class Sources:
             if data.get("updates"):
                 async with self.locks.setdefault(key, asyncio.Lock()):
                     self.catalogs.pop(key, None)
+            await self.source_recovered(owner, source_id, "refresh")
             return self.response(self.tag(owner, source_id, data))
         except SourceUnavailable as error:
+            await self.source_failed(owner, source_id, "refresh", error, started)
             return self.response({"source_id": source_id, "error": str(error)}, 502)
 
     async def set_status(self, request):
@@ -641,6 +934,7 @@ class Sources:
         if "write" not in self.service.config.clients[owner].permissions:
             return self.response({"error": "沒有更新任務的權限"}, 403)
         status = requested_status(await request.json())
+        started = time.monotonic()
         try:
             if source is None:
                 try:
@@ -656,13 +950,28 @@ class Sources:
                         "/api/manage/tasks/" + task_id + "/status", json={"status": status}
                     )
                 if response.status_code in {401, 403}:
+                    await self.source_failed(
+                        owner,
+                        source_id,
+                        "status",
+                        SourceUnavailable(
+                            "來源不允許更新這個任務",
+                            "source_auth_failed",
+                            http_status=response.status_code,
+                        ),
+                        started,
+                    )
                     return self.response({"error": "來源不允許更新這個任務"}, 403)
                 if response.status_code == 404:
                     return self.response({"error": "找不到任務，或來源尚未支援狀態更新"}, 404)
                 if response.status_code == 400:
                     return self.response({"error": "來源無法更新這個任務的狀態"}, 400)
                 if not response.is_success:
-                    raise SourceUnavailable("未取得更新結果，請重新整理確認狀態")
+                    raise SourceUnavailable(
+                        "未取得更新結果，請重新整理確認狀態",
+                        "source_http_error",
+                        http_status=response.status_code,
+                    )
                 updated = response.json()
                 if (
                     not isinstance(updated, dict)
@@ -672,6 +981,7 @@ class Sources:
                     or not math.isfinite(updated["updated"])
                 ):
                     raise SourceUnavailable("未取得更新結果，請重新整理確認狀態")
+                await self.source_recovered(owner, source_id, "status")
             return self.response(
                 {
                     "source_id": source_id,
@@ -679,7 +989,11 @@ class Sources:
                     **{key: updated[key] for key in ("status", "updated")},
                 }
             )
-        except (SourceUnavailable, httpx.HTTPError, ValueError):
+        except (SourceUnavailable, httpx.HTTPError, ValueError) as error:
+            if source:
+                if not isinstance(error, SourceUnavailable):
+                    error = SourceUnavailable.transport(error, "未取得來源回應")
+                await self.source_failed(owner, source_id, "status", error, started)
             return self.response({"error": "未取得來源回應，請重新整理確認任務狀態"}, 502)
         finally:
             # Invalidate even after a lost response: the source may already have saved the status.
@@ -705,12 +1019,14 @@ class Sources:
                 data["created_at"] = await self.remote_creation_time(owner, source_id, task_id)
             except SourceUnavailable as error:
                 data["date_error"] = str(error)
+        await self.source_recovered(owner, source_id, "tasks")
         return execution_freshness(data)
 
     async def detail(self, request):
         owner = self.management.owner(request)
         source_id, task_id = request.path_params["source_id"], request.path_params["task_id"]
         self.source(owner, source_id)
+        started = time.monotonic()
         try:
             return self.response(
                 self.tag(owner, source_id, await self.detail_data(owner, source_id, task_id))
@@ -720,12 +1036,14 @@ class Sources:
                 {"source_id": source_id, "task_id": task_id, "error": str(error)}, 404
             )
         except SourceUnavailable as error:
+            await self.source_failed(owner, source_id, "tasks", error, started)
             return self.response({"source_id": source_id, "error": str(error)}, 502)
 
     async def handoff(self, request):
         owner = self.management.owner(request)
         source_id, task_id = request.path_params["source_id"], request.path_params["task_id"]
         source = self.source(owner, source_id)
+        started = time.monotonic()
         try:
             detail = await self.detail_data(owner, source_id, task_id)
             if source is None:
@@ -767,12 +1085,15 @@ class Sources:
                 {"source_id": source_id, "task_id": task_id, "error": str(error)}, 404
             )
         except SourceUnavailable as error:
+            await self.source_failed(owner, source_id, "tasks", error, started)
             return self.response({"source_id": source_id, "error": str(error)}, 502)
 
 
 def source_routes(sources: Sources) -> list[Route]:
     return [
+        Route("/api/manage/connections", sources.connections, methods=["GET"]),
         Route("/api/manage/sources", sources.listing, methods=["GET"]),
+        Route("/api/manage/sources/{source_id}/connections", sources.connections, methods=["GET"]),
         Route("/api/manage/sources/{source_id}/state", sources.state, methods=["GET"]),
         Route("/api/manage/sources/{source_id}/refresh", sources.refresh, methods=["POST"]),
         Route("/api/manage/sources/{source_id}/tasks/{task_id}", sources.detail, methods=["GET"]),

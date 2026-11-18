@@ -1222,6 +1222,10 @@ async def test_unfinished_and_completed_filters_intersect_archive_without_resurr
                 store.db.execute(
                     "UPDATE jobs SET updated=? WHERE id=?", (time.time() - 3600, job["job_id"])
                 )
+                store.db.execute(
+                    "UPDATE process_states SET observed_at=? WHERE job_id=?",
+                    (time.time() - 3600, job["job_id"]),
+                )
     residual = store.enqueue(tasks["done_live"], "exec_command", {}, "still-delivering", 100)
     store.claim("local", "instance", 1)
     for name in ("attention", "done_attention", "live"):

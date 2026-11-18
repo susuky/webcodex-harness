@@ -15,7 +15,7 @@ from .config import RunnerConfig, identifier, private_dir, project_binding
 from .extensions import Extensions
 from .filesystem import Workspace
 from .processes import Processes
-from .projects import PROJECT_OPERATIONS, ProjectOperations, restore_projects, root_inventory
+from .projects import PROJECT_OPERATIONS, ProjectOperations, project_inventory, restore_projects
 from .runtime import Runtime
 from .store import new_id
 
@@ -78,19 +78,11 @@ class Runner:
         self.project_lock = asyncio.Lock()
 
     def inventory(self) -> dict:
-        """One removed/replaced directory must not disconnect all other projects."""
-        roots = root_inventory(self.config, self.db)
-        managed = {row[0] for row in self.db.execute("SELECT name FROM managed_projects")}
-        available = {name for root in roots.values() for name in root["projects"]}
-        result = {}
-        for name, path in self.config.projects.items():
-            if name in managed and name not in available:
-                continue
-            try:
-                result[name] = project_binding(path)
-            except (ValueError, OSError):
-                continue
-        return result
+        return project_inventory(
+            self.config.projects,
+            self.config.project_roots,
+            list(self.db.execute("SELECT * FROM managed_projects")),
+        )[0]
 
     async def execute(self, job: dict):
         job_id = identifier(job["id"])
@@ -121,17 +113,23 @@ class Runner:
                     )
                     result = await getattr(operations, name)(**args)
             else:
-                if self.inventory().get(project) != job["binding"]:
+                root = self.config.projects.get(project)
+                record = self.db.execute(
+                    "SELECT root,binding,root_binding FROM managed_projects WHERE name=?",
+                    (project,),
+                ).fetchone()
+                if (
+                    root is None
+                    or project_binding(root) != job["binding"]
+                    or (record and record["binding"] != job["binding"])
+                ):
                     raise ValueError(
                         "This project's directory is unavailable or changed. Use projects_list to "
                         "select an available project; other projects remain usable."
                     )
-                record = self.db.execute(
-                    "SELECT root,root_binding FROM managed_projects WHERE name=?", (project,)
-                ).fetchone()
-                if (
-                    record
-                    and project_binding(self.config.project_roots[record["root"]])
+                if record and (
+                    record["root"] not in self.config.project_roots
+                    or project_binding(self.config.project_roots[record["root"]])
                     != record["root_binding"]
                 ):
                     raise ValueError("Managed project's parent root changed")
@@ -185,12 +183,18 @@ class Runner:
             for r in self.db.execute("SELECT id FROM deliveries WHERE acknowledged=0 LIMIT 10000")
         ]
         known = list(dict.fromkeys([*self.active, *recorded]))[:10000]
+        projects, roots = await asyncio.to_thread(
+            project_inventory,
+            dict(self.config.projects),
+            dict(self.config.project_roots),
+            list(self.db.execute("SELECT * FROM managed_projects")),
+        )
         response = await client.post(
             "/api/runner/register",
             json={
                 "instance": self.instance,
-                "projects": self.inventory(),
-                "project_roots": root_inventory(self.config, self.db),
+                "projects": projects,
+                "project_roots": roots,
                 "known_jobs": known,
                 "refresh_inventory": refresh_inventory,
             },
@@ -202,29 +206,50 @@ class Runner:
             return await self._flush(client)
 
     async def _flush(self, client: httpx.AsyncClient):
-        rows = list(
-            self.db.execute(
-                "SELECT * FROM deliveries WHERE acknowledged=0 AND status!='running' LIMIT 100"
+        rejected = None
+        cursor = ""
+        count = 0
+        while True:
+            rows = list(
+                self.db.execute(
+                    "SELECT * FROM deliveries WHERE acknowledged=0 AND status!='running' "
+                    "AND id>? ORDER BY id LIMIT 100",
+                    (cursor,),
+                )
             )
-        )
-        for row in rows:
-            result = json.loads(row["result"])
-            if row["status"] == "succeeded" and result.get("registered") is True:
-                # Publish the durable project inventory before acknowledging creation to the client.
-                await self.register(client, refresh_inventory=True)
-            response = await client.post(
-                "/api/runner/complete",
-                json={
-                    "job_id": row["id"],
-                    "instance": row["instance"],
-                    "status": row["status"],
-                    "result": result,
-                },
-            )
-            response.raise_for_status()
-            self.db.execute("UPDATE deliveries SET acknowledged=1 WHERE id=?", (row["id"],))
-            self.db.commit()
-        return len(rows)
+            for row in rows:
+                result = json.loads(row["result"])
+                if row["status"] == "succeeded" and result.get("registered") is True:
+                    # Publish the durable project inventory before acknowledging creation to the client.
+                    await self.register(client, refresh_inventory=True)
+                response = await client.post(
+                    "/api/runner/complete",
+                    json={
+                        "job_id": row["id"],
+                        "instance": row["instance"],
+                        "status": row["status"],
+                        "result": result,
+                    },
+                )
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as error:
+                    if response.status_code != 400:
+                        raise
+                    # Retain rejected results while letting unrelated deliveries pass.
+                    rejected = rejected or error
+                    continue
+                self.db.execute(
+                    "UPDATE deliveries SET acknowledged=1,result=NULL WHERE id=?", (row["id"],)
+                )
+                self.db.commit()
+            count += len(rows)
+            if rejected is None or len(rows) < 100:
+                break
+            cursor = rows[-1]["id"]
+        if rejected is not None:
+            raise rejected
+        return count
 
     async def execute_and_notify(self, job: dict):
         await self.execute(job)

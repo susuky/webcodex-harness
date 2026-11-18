@@ -8,7 +8,7 @@ import pytest
 
 from webcodex.config import Client, RunnerConfig, ServerConfig, server_url
 from webcodex.extensions import copy_bundle, skill_metadata
-from webcodex.filesystem import Workspace, sha256
+from webcodex.filesystem import Workspace
 from webcodex.processes import Processes
 from webcodex.server import Service
 from webcodex.store import Store
@@ -23,17 +23,18 @@ def directory_link(link, target):
         link.symlink_to(target, target_is_directory=True)
 
 
-def test_guarded_files_and_directory_boundaries(tmp_path):
+def test_file_operations_and_directory_boundaries(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     workspace = Workspace(root)
-    original = workspace.write("nested/file.txt", b"original\n", None)
-    with pytest.raises(ValueError, match="changed"):
-        workspace.write("nested/file.txt", b"lost update", None)
-    workspace.write("nested/file.txt", b"revised\n", original["sha256"])
-    with pytest.raises(ValueError, match="changed"):
-        workspace.delete("nested/file.txt", original["sha256"])
+    assert workspace.write("nested/file.txt", b"original\n") == {
+        "path": "nested/file.txt",
+        "bytes": 9,
+    }
+    workspace.write("nested/file.txt", b"revised\n")
     assert workspace.read("nested/file.txt") == b"revised\n"
+    workspace.delete("nested/file.txt")
+    assert not (root / "nested/file.txt").exists()
     outside = tmp_path / "private.txt"
     outside.write_text("outside", encoding="utf-8", newline="\n")
     directory_link(root / "escape", tmp_path)
@@ -51,7 +52,7 @@ def test_guarded_files_and_directory_boundaries(tmp_path):
         with pytest.raises((ValueError, OSError)):
             workspace.read(path)
         with pytest.raises((ValueError, OSError)):
-            workspace.write(path, b"overwrite", sha256(b"outside"))
+            workspace.write(path, b"overwrite")
     assert outside.read_text(encoding="utf-8") == "outside"
     if os.name != "nt":
         os.mkfifo(root / "pipe")

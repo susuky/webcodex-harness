@@ -99,7 +99,10 @@
   }
   .brand { display: flex; align-items: center; gap: .75rem; font-size: 1.375rem; font-weight: 750; letter-spacing: -.04em; }
   .brand svg { inline-size: 1.75rem; block-size: 1.75rem; color: var(--accent); }
+  .header-title { position: relative; }
   .app-header h1 { padding-inline-start: 1.5rem; border-inline-start: 1px solid var(--line); }
+  #connection-toggle { position: absolute; inset-inline-start: calc(100% + 1.5rem); inset-block-start: 50%; translate: 0 -50%; white-space: nowrap; }
+  #connection-toggle svg { display: none; inline-size: 1.25rem; block-size: 1.25rem; }
   #toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-inline-start: auto; }
   #updated { margin-inline-end: .5rem; font-variant-numeric: tabular-nums; }
   #refresh { display: inline-flex; align-items: center; gap: .5rem; }
@@ -107,6 +110,15 @@
   main { display: flex; flex: 1; flex-direction: column; gap: .75rem; inline-size: 100%; max-inline-size: 100rem; min-block-size: 0; margin-inline: auto; padding: 1rem clamp(1rem, 2.5vw, 2.5rem); }
   #dashboard { display: flex; flex: 1; flex-direction: column; gap: .75rem; min-block-size: 0; container: workspace / inline-size; }
   #sources { display: flex; flex: none; gap: .75rem 1.5rem; flex-wrap: wrap; }
+  #connection-log { flex: none; max-block-size: 18rem; overflow: auto; padding: .625rem 1rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
+  #connection-list { margin: 0; padding: 0; list-style: none; }
+  #connection-list li { padding-block: .625rem; overflow-wrap: anywhere; }
+  #connection-list li + li { border-block-start: 1px solid var(--line); }
+  .connection-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: .375rem .75rem; font-size: .875rem; }
+  .connection-reason { margin-block: .25rem; font-size: .8125rem; }
+  .connection-times { display: flex; flex-wrap: wrap; gap: .125rem 1rem; margin: 0; font-size: .75rem; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .connection-times > div { display: flex; flex-wrap: wrap; gap: .375rem; }
+  .connection-times dd { margin: 0; }
   #filters { display: grid; grid-template-columns: minmax(13rem, 1.6fr) minmax(11rem, 1fr) minmax(9rem, .8fr) minmax(10rem, .85fr); gap: .75rem; align-items: end; }
   #filters label { display: grid; gap: .375rem; min-inline-size: 0; font-size: .8125rem; font-weight: 500; color: var(--muted); }
   #work { display: grid; grid-template-columns: minmax(21rem, .8fr) minmax(0, 1.6fr); flex: 1; min-block-size: 22rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--panel); }
@@ -141,6 +153,9 @@
     body { block-size: auto; min-block-size: 100dvh; }
     .app-header { gap: .75rem 1rem; }
     .app-header h1 { padding-inline-start: 1rem; font-size: 1rem; }
+    #connection-toggle { inset-inline-start: calc(100% + 1rem); min-inline-size: 44px; display: grid; place-items: center; }
+    #connection-toggle svg { display: block; }
+    #connection-label { position: absolute; clip-path: inset(50%); inline-size: 1px; block-size: 1px; overflow: hidden; }
     .brand { font-size: 1.25rem; }
     #toolbar { inline-size: 100%; }
     #updated { flex: 1; text-align: start; min-inline-size: 8rem; }
@@ -221,7 +236,7 @@
 }
 
 @layer preferences {
-  :where(.hidden, [hidden], #error:empty, #auth-error:empty) { display: none !important; }
+  :where(.hidden, [hidden], #error:empty, #auth-error:empty, #connection-error:empty) { display: none !important; }
   @media (pointer: coarse) {
     :where(button, input, select, summary, .detail-back) { min-block-size: max(3rem, 44px); }
     :where(input, select) { font-size: max(1rem, 16px); }
@@ -238,7 +253,7 @@
 <a class="skip-link" href="#detail">跳至任務詳情</a>
 <header class="app-header">
   <div class="brand" translate="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 5 7 7-7 7m11 0h6"/></svg>WebCodex</div>
-  <h1>任務中心</h1>
+  <div class="header-title"><h1>任務中心</h1><button id="connection-toggle" type="button" aria-expanded="false" aria-controls="connection-log" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5m4-1v5l3 2"/></svg><span id="connection-label">連線紀錄</span></button></div>
   <div id="toolbar" hidden><span id="updated" class="muted"></span><button id="refresh" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg>重新整理</button><button id="logout" type="button">登出</button></div>
 </header>
 <main>
@@ -252,6 +267,9 @@
   <p id="error" role="alert"></p>
   <div id="dashboard" hidden>
     <div id="sources"></div>
+    <section id="connection-log" aria-labelledby="connection-toggle" tabindex="0" hidden>
+      <p id="connection-error" class="offline connection-reason" role="status"></p><div id="connection-availability"></div><p id="connection-empty" class="muted">讀取中…</p><ol id="connection-list" role="list"></ol>
+    </section>
     <search id="filters" aria-label="篩選任務">
       <label for="query">搜尋任務<input id="query" name="q" type="search" placeholder="名稱、專案或任務 ID" autocorrect="off" autocapitalize="none" spellcheck="false"></label>
       <label for="project-filter">專案<select id="project-filter" name="project"><option value="">全部專案</option></select></label>
@@ -333,7 +351,7 @@
   const statusText = task => (task.archived?'已封存 · ':'')+label(taskState(task));
   let token='',authenticated=false,cookieSession=false,passwordEnabled=null,sources=[],selected=null,currentDetail=null,currentHandoff=null;
   const detailCache=new Map(),detailRequests=new Map(),observationRequests=new Map(),handoffCache=new Map(),handoffRequests=new Map(),archiveBusy=new Set(),statusBusy=new Set();
-  let sessionVersion=0,queryVersion=0,selectionVersion=0,busy=null,paging=false,timer=null,clockTimer=null,queryTimer=null,connectionStale=false;
+  let sessionVersion=0,queryVersion=0,selectionVersion=0,busy=null,paging=false,timer=null,clockTimer=null,queryTimer=null,connectionStale=false,connectionIncidents=[],connectionAvailability=[],connectionsLoaded=false,connectionsBusy=null;
   let restoredPages=Math.max(1,Math.min(100,Number(params.get('pages')) || 1));
   if(params.get('task'))selected={source_id:params.get('selected_source') || 'local',id:params.get('task')};
   $('query').value=params.get('q') || '';
@@ -391,6 +409,48 @@
       }
     }
     syncFilters();
+  }
+  function connectionReason(incident) {
+    const names={source_connect_timeout:'來源連線逾時',source_read_timeout:'來源回應逾時',source_timeout:'來源請求逾時',source_unreachable:'無法連線到來源',source_auth_failed:'來源驗證失敗',source_http_error:'來源回應錯誤',source_invalid_response:'來源回應格式錯誤',runner_heartbeat_expired:'心跳逾期',runner_status_unavailable:'讀取執行環境狀態失敗',monitor_scheduling_gap:'監測排程中斷',event_loop_blocked:'伺服器處理停頓'},details=incident.details || {};
+    const number=name=>typeof details[name]==='number' && Number.isFinite(details[name]) && details[name]>=0?details[name]:null;
+    const recoveredDuration=incident.recovery_details?.duration_ms,duration=typeof recoveredDuration==='number' && Number.isFinite(recoveredDuration) && recoveredDuration>=0?recoveredDuration:number('duration_ms');
+    let text=names[incident.reason] || '連線異常';
+    if(incident.reason==='event_loop_blocked' && duration!==null)text+='（'+new Intl.NumberFormat('zh-TW',{maximumFractionDigits:1}).format(duration/1000)+' 秒）';
+    else if(incident.reason==='monitor_scheduling_gap' && number('gap_seconds')!==null)text+='（'+new Intl.NumberFormat('zh-TW',{maximumFractionDigits:1}).format(details.gap_seconds)+' 秒）';
+    else if(incident.reason==='runner_heartbeat_expired' && number('age_seconds')!==null)text+='（'+Math.floor(details.age_seconds)+' 秒未收到心跳'+(number('threshold_seconds')!==null?'，門檻 '+details.threshold_seconds+' 秒':'')+'）';
+    else if(incident.reason==='source_http_error' && number('http_status')!==null)text+='（HTTP '+details.http_status+'）';
+    else if(number('timeout_seconds')!==null)text+='（等候 '+details.timeout_seconds+' 秒）';
+    const operations={state:'任務清單',tasks:'任務詳情','task-date':'任務日期',refresh:'程序觀察',status:'更新狀態'};
+    return incident.component==='source' && operations[details.operation]?operations[details.operation]+' · '+text:text;
+  }
+  function renderConnections() {
+    const active=connectionIncidents.filter(incident=>incident.state==='active').length;
+    $('connection-label').textContent='連線紀錄'+(active?' · '+active+' 起異常':connectionIncidents.length?' · '+connectionIncidents.length:'');
+    $('connection-toggle').classList.toggle('offline',active>0);
+    const unavailable=connectionAvailability.filter(source=>source.status!=='available' || source.persisted===false);
+    $('connection-availability').replaceChildren(...unavailable.map(source=>node('p',(source.source_label || sources.find(item=>item.id===source.source_id)?.label || source.source_id)+' · '+(source.status==='unsupported'?'尚未提供連線紀錄':source.status==='available'?'連線紀錄尚未寫入磁碟':'連線紀錄暫時無法讀取'),'connection-reason '+(source.status==='unsupported'?'muted':'offline'))));
+    $('connection-empty').hidden=connectionIncidents.length>0 || unavailable.length>0;
+    $('connection-empty').textContent=connectionsLoaded?'沒有連線異常紀錄':'讀取中…';
+    const content=JSON.stringify(connectionIncidents),list=$('connection-list');if(list.connectionData===content)return;list.connectionData=content;
+    const rows=connectionIncidents.map(incident=>{
+      const source=sources.find(source=>source.id===incident.source_id),component=incident.component==='runner'?'Runner '+incident.runner_id:incident.component==='server'?'Server':'來源',row=node('li'),heading=node('div',undefined,'connection-heading'),recovered=incident.state==='recovered',changed=incident.state==='changed';
+      row.dataset.incident=incident.id;
+      heading.append(node('strong',(source?.runner_labels?.[incident.runner_id] || source?.label || incident.source_label || '任務中心')+' · '+component),node('span',recovered?'已復線':changed?'原因已變更':['runner_status_unavailable','monitor_scheduling_gap'].includes(incident.reason)?'狀態待確認':incident.component==='server'?'處理停頓':incident.component==='source'?'連線異常':'目前失聯','status'+(recovered?' active':changed?'':' attention')));
+      const times=node('dl',undefined,'connection-times');
+      for(const [label,value] of [['發生',incident.started_at],[changed?'更新':recovered?'恢復':'最近偵測',changed?incident.closed_at:recovered?incident.recovered_at:incident.last_seen_at]]){const entry=node('div'),valueNode=node('dd');valueNode.append(timeNode(value));entry.append(node('dt',label),valueNode);times.append(entry);}
+      row.append(heading,node('p',connectionReason(incident),'connection-reason'),times);return row;
+    });
+    list.replaceChildren(...rows);
+  }
+  async function loadConnections(version) {
+    if($('connection-log').hidden || connectionsBusy===version)return;connectionsBusy=version;
+    try{
+      const data=await api('connections',undefined,version);connectionIncidents=data.incidents || [];connectionAvailability=[...(data.sources || [])];
+      if(data.persisted===false)connectionAvailability.push({source_id:'local',source_label:sources.find(source=>source.id==='local')?.label || '本機',status:'available',persisted:false});
+      connectionsLoaded=true;$('connection-error').textContent='';renderConnections();
+    }catch(error){
+      if(!error.staleSession && version===sessionVersion){$('connection-error').textContent='連線紀錄讀取失敗。請重新整理。';$('connection-empty').hidden=true;}
+    }finally{if(version===sessionVersion)connectionsBusy=null;}
   }
   function visibleTasks() {
     const q=$('query').value.trim().toLowerCase(),choice=$('state-filter').value,state=choice==='archived'?'all':choice,source=tuple($('source-filter').value,2),project=tuple($('project-filter').value,3),archived=archivedView();
@@ -700,6 +760,7 @@
         }
         await loadSource(source,version,query,reset?1:source.pages || restoredPages);
       })]);
+      await loadConnections(version);
       checkSession(version);if(query!==queryVersion)return;
       connectionStale=false;renderSources();renderTasks();renderDetails();saveView();
       $('updated').textContent='讀取 '+stamp(Math.max(0,...sources.map(s=>s.observed_at || 0)));$('error').textContent='';
@@ -711,7 +772,7 @@
     if(!response.ok){const error=new Error(data.error || '連線失敗');error.status=response.status;throw error;}return data;
   }
   function showAuth() {
-    $('boot').hidden=true;$('dashboard').hidden=true;$('toolbar').hidden=true;$('auth').hidden=false;
+    $('boot').hidden=true;$('dashboard').hidden=true;$('toolbar').hidden=true;$('connection-toggle').hidden=true;$('auth').hidden=false;
     const usePassword=passwordEnabled!==false;$('username-field').hidden=!usePassword;$('username').disabled=!usePassword;$('username').required=usePassword;$('credential-label').textContent=usePassword?'密碼':'用戶端 Token';$('credential').autocomplete=usePassword?'current-password':'off';$('credential').name=usePassword?'password':'token';
   }
   async function connect(version) {
@@ -720,7 +781,7 @@
     $('source-filter').replaceChildren(new Option('全部來源',''));if(sourceFilter){const value=JSON.stringify(sourceFilter);$('source-filter').append(new Option(sourceFilter[1],value));$('source-filter').value=value;}
     $('project-filter').replaceChildren(new Option('全部專案',''));if(project){const value=JSON.stringify(project);$('project-filter').append(new Option(project[2],value));$('project-filter').value=value;}
     if(!selected && view.get('task'))selected={source_id:view.get('selected_source') || 'local',id:view.get('task')};
-    $('credential').value='';$('auth-error').textContent='';$('boot').hidden=true;$('auth').hidden=true;$('dashboard').hidden=false;$('toolbar').hidden=false;renderSources();renderTasks();
+    $('credential').value='';$('auth-error').textContent='';$('boot').hidden=true;$('auth').hidden=true;$('dashboard').hidden=false;$('toolbar').hidden=false;$('connection-toggle').hidden=false;renderSources();renderTasks();
     clearInterval(clockTimer);clockTimer=setInterval(updateClocks,1000);await refresh();checkSession(version);clearInterval(timer);timer=setInterval(()=>{if(!document.hidden)refresh();},10000);
   }
   async function login(event) {
@@ -738,8 +799,9 @@
     finally{if(version===sessionVersion)$('login').disabled=false;}
   }
   function clearSession() {
-    sessionVersion++;queryVersion++;selectionVersion++;detailCache.clear();detailRequests.clear();observationRequests.clear();handoffCache.clear();handoffRequests.clear();archiveBusy.clear();statusBusy.clear();token='';authenticated=false;cookieSession=false;clearInterval(timer);clearInterval(clockTimer);clearTimeout(queryTimer);busy=null;paging=false;sources=[];selected=null;currentDetail=null;currentHandoff=null;connectionStale=false;restoredPages=1;
+    sessionVersion++;queryVersion++;selectionVersion++;detailCache.clear();detailRequests.clear();observationRequests.clear();handoffCache.clear();handoffRequests.clear();archiveBusy.clear();statusBusy.clear();token='';authenticated=false;cookieSession=false;clearInterval(timer);clearInterval(clockTimer);clearTimeout(queryTimer);busy=null;paging=false;sources=[];selected=null;currentDetail=null;currentHandoff=null;connectionStale=false;connectionIncidents=[];connectionAvailability=[];connectionsLoaded=false;connectionsBusy=null;restoredPages=1;
     if($('complete-dialog').open)$('complete-dialog').close('cancel');
+    $('connection-log').hidden=true;$('connection-toggle').setAttribute('aria-expanded','false');$('connection-error').textContent='';renderConnections();
     delete $('detail').dataset.task;
     for(const id of ['tasks','detail','sources'])$(id).replaceChildren();$('credential').value='';$('updated').textContent='';$('error').textContent='';$('auth-error').textContent='';$('login').disabled=false;$('refresh').disabled=false;showAuth();
   }
@@ -759,6 +821,7 @@
   }
   $('auth').addEventListener('submit',login);
   $('refresh').addEventListener('click',()=>refresh());$('logout').addEventListener('click',logout);
+  $('connection-toggle').addEventListener('click',()=>{const open=$('connection-log').hidden;$('connection-log').hidden=!open;$('connection-toggle').setAttribute('aria-expanded',String(open));if(open)loadConnections(sessionVersion);});
   $('query').addEventListener('input',filtersChanged);$('project-filter').addEventListener('change',filtersChanged);$('state-filter').addEventListener('change',filtersChanged);
   $('source-filter').addEventListener('change',()=>{
     const source=tuple($('source-filter').value,2),project=tuple($('project-filter').value,3);

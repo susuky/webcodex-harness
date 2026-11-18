@@ -26,9 +26,10 @@ from starlette.routing import Route
 from . import __version__
 from .catalog import definitions, tool
 from .config import MAX_PROJECTS, ServerConfig, identifier
+from .connections import ConnectionHistory
 from .continuation import ACTIVE as ACTIVE_WAIT_STATES
 from .continuation import APP_MIME, APP_URI, Continuations, fingerprint
-from .diagnostics import Diagnostics, hash_id
+from .diagnostics import HTTP_ROUTES, ConnectionMonitor, Diagnostics, hash_id
 from .management import Management, management_routes
 from .management_auth import PUBLIC_ROUTES, ManagementAuth
 from .management_sources import Sources
@@ -38,6 +39,7 @@ from .store import RunnerCompletion, Store, new_id
 
 TOOL_ACTIVITY = {
     "projects_list": "查詢專案",
+    "connection_status": "查詢連線紀錄",
     "project_roots_list": "查詢專案位置",
     "project_create": "建立專案",
     "project_register": "登記專案",
@@ -115,6 +117,11 @@ class TaskTools:
         task = self.store.task(task_id, self.owner)
         self.service.check_project(self.owner, task["runner"] + "/" + task["project"], task["kind"])
         return task
+
+    @tool()
+    async def connection_status(self) -> dict:
+        """Read current Server, source and Runner connection state and saved outage reasons, including recovery times. Works without dispatching Runner jobs; use it when a Runner or source is unavailable."""
+        return await self.service.sources.connection_data(self.owner, include_evidence=True)
 
     @tool()
     async def projects_list(self) -> dict:
@@ -234,7 +241,7 @@ class TaskTools:
         )
         task["progress"] = self.service.task_progress(task, self.window)
         task["service"] = self.store.service
-        task["continuation"] = self.service.task_continuation(task, self.window, task["progress"])
+        task["continuation"] = self.service.task_continuation(task, self.window)
         self.service.route_waiting_progress(task["progress"])
         task["handoff"] = self.service.task_handoff(task, task["progress"])
         return task
@@ -490,9 +497,7 @@ class TaskTools:
             await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
             job = self.store.job(job_id, self.owner)
         task = self.task(job["task_id"])
-        job["continuation"] = self.service.task_continuation(
-            task, self.window, self.service.task_progress(task, self.window)
-        )
+        job["continuation"] = self.service.task_continuation(task, self.window)
         self.service.route_waiting_job(job)
         return job
 
@@ -545,6 +550,7 @@ class Service:
         self.app_uri = f"{APP_URI}/{hashlib.sha256(self.app_html.encode()).hexdigest()[:16]}.html"
         self.config, self.store = config, Store(config.state_dir)
         self.diagnostics = Diagnostics("server", config.state_dir / "diagnostics")
+        self.connections = ConnectionHistory(config.state_dir / "connections")
         self.observe_tool_activity(self.store.interrupt_tool_activity)
         self.continuations = Continuations(self.store)
         self.resume_legacy_jobs()
@@ -591,12 +597,14 @@ class Service:
         if not runner or time.time() - runner["seen"] >= 15:
             return
         observations = self.store.rows(
-            "WITH latest AS (SELECT id,process_id,process_status,updated,"
-            "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
-            "FROM jobs WHERE task_id=? AND status='succeeded' AND process_id IS NOT NULL "
-            "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files')), "
-            "selected AS (SELECT id,process_id,updated FROM latest "
-            "WHERE rank=1 AND process_status='running' AND updated<? ORDER BY updated,id LIMIT 2) "
+            "WITH selected AS (SELECT latest.id,state.process_id,latest.updated "
+            "FROM process_states state JOIN jobs latest ON latest.id=("
+            "SELECT id FROM jobs INDEXED BY process_observations "
+            "WHERE task_id=state.task_id AND process_id=state.process_id AND status='succeeded' "
+            "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
+            "ORDER BY updated DESC,id DESC LIMIT 1) "
+            "WHERE state.task_id=? AND state.status='running' AND latest.updated<? "
+            "ORDER BY latest.updated,latest.id LIMIT 2) "
             "SELECT selected.id,selected.process_id,CASE WHEN json_valid(jobs.result) "
             "THEN coalesce(json_extract(jobs.result,'$.next_cursor'),0) ELSE 0 END AS cursor "
             "FROM selected JOIN jobs ON jobs.id=selected.id ORDER BY selected.updated,selected.id",
@@ -662,7 +670,7 @@ class Service:
             wait = self.continuations.arm(task["id"], ids, "manual:" + fingerprint(snapshot))
         await self.refresh_task_wait(task)
 
-    def task_continuation(self, task: dict, window: str | None, progress: dict) -> dict:
+    def task_continuation(self, task: dict, window: str | None) -> dict:
         continuation = self.continuations.public(task["id"], window)
         wait = continuation["wait"]
         reason = None
@@ -730,7 +738,8 @@ class Service:
         reviewed_at = None
         review = (
             self.store.one(
-                "SELECT result,updated FROM jobs WHERE task_id=? AND tool='review_changes' "
+                "SELECT result,updated FROM jobs INDEXED BY task_job_history "
+                "WHERE task_id=? AND tool='review_changes' "
                 "AND status='succeeded' ORDER BY updated DESC LIMIT 1",
                 (task["id"],),
             )
@@ -746,7 +755,8 @@ class Service:
             reviewed_at = review["result"].get("observed_at", review["updated"])
         for row in (
             self.store.rows(
-                "SELECT arguments FROM jobs WHERE task_id=? AND status='succeeded' "
+                "SELECT arguments FROM jobs INDEXED BY task_job_history "
+                "WHERE task_id=? AND status='succeeded' "
                 "AND tool IN ('write_file','edit_file','delete_file','apply_patch','import_image') ORDER BY created DESC LIMIT 200",
                 (task["id"],),
             )
@@ -813,7 +823,7 @@ class Service:
 
     def task_presentation(self, task: dict, window: str | None = None) -> dict:
         progress = self.task_progress(task, window, include_output=False)
-        continuation = self.task_continuation(task, window, progress)
+        continuation = self.task_continuation(task, window)
         return {
             "task": {
                 "id": task["id"],
@@ -902,14 +912,7 @@ class Service:
         running = [p for p in activity["process_observations"] if p["status"] == "running"]
         if work["running_count"] > len(running):
             # Keep an old live command observable when newer completed commands fill the card.
-            older = self.store.rows(
-                "WITH latest AS (SELECT id AS job_id,process_id,process_status AS status,"
-                "row_number() OVER (PARTITION BY process_id ORDER BY updated DESC,id DESC) AS rank "
-                "FROM jobs WHERE task_id=? AND status='succeeded' AND process_id IS NOT NULL "
-                "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files')) "
-                "SELECT job_id,process_id,status FROM latest WHERE rank=1 AND status='running'",
-                (task["id"],),
-            )
+            older = self.store.running_processes(task["id"])
             visible = {p["process_id"] for p in running}
             for process in older:
                 if process["process_id"] not in visible:
@@ -939,7 +942,8 @@ class Service:
                 }
             )
         issues = self.store.rows(
-            "SELECT id AS job_id,tool,status FROM jobs WHERE task_id=? AND updated>? "
+            "SELECT id AS job_id,tool,status FROM jobs INDEXED BY task_jobs "
+            "WHERE task_id=? AND updated>? "
             "AND status IN ('failed','unknown') ORDER BY updated DESC LIMIT 30",
             (task["id"], task["updated"]),
         )
@@ -1125,7 +1129,10 @@ class Service:
                 job_id = arguments.get("job_id")
                 if not isinstance(job_id, str):
                     return None
-                task_id = self.store.job(job_id, owner)["task_id"]
+                job = self.store.one(
+                    "SELECT task_id FROM jobs WHERE id=? AND owner=?", (job_id, owner)
+                )
+                task_id = job["task_id"] if job else None
             elif "task_id" in definition.model.model_fields:
                 task_id = arguments.get("task_id")
             else:
@@ -1343,9 +1350,27 @@ class RequestDiagnostics:
         for prefix in ("/api/admin/approvals/", "/api/admin/questions/"):
             if path.startswith(prefix):
                 route = prefix + ":id"
+        source_id = None
+        if path == "/api/manage":
+            route = path
+        elif path.startswith("/api/manage/"):
+            parts = path.split("/")
+            if len(parts) > 4 and parts[3] == "sources":
+                if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", parts[4]):
+                    source_id = parts[4]
+                parts[4] = ":source_id"
+                if len(parts) > 6 and parts[5] == "tasks":
+                    parts[6] = ":id"
+            elif len(parts) > 4 and parts[3] == "tasks":
+                parts[4] = ":id"
+            candidate = "/".join(parts)
+            if candidate in HTTP_ROUTES:
+                route = candidate
         http_id = new_id()
         scope.setdefault("state", {})["http_id"] = http_id
         fields = {"http_id": http_id, "route": route, "method": scope["method"]}
+        if source_id is not None:
+            fields["source_id"] = source_id
         quiet = route in {"/healthz", "/api/runner/poll"}
         started = time.monotonic()
         status, size, disconnected, completed = None, 0, False, False
@@ -1380,14 +1405,16 @@ class RequestDiagnostics:
         finally:
             if event == "http.completed" and disconnected and not completed:
                 event = "http.disconnected"
-            if not quiet or event != "http.completed" or status != 200:
+            duration_ms = (time.monotonic() - started) * 1000
+            slow_after = 6000 if route == "/api/runner/poll" else 1000
+            if not quiet or event != "http.completed" or status != 200 or duration_ms >= slow_after:
                 self.diagnostics.record(
                     event,
                     **fields,
                     http_status=status,
                     response_bytes=size,
                     disconnected=disconnected,
-                    duration_ms=(time.monotonic() - started) * 1000,
+                    duration_ms=duration_ms,
                 )
 
 
@@ -1499,6 +1526,7 @@ def create_app(config: ServerConfig):
     management_auth = ManagementAuth(config)
     management = Management(service)
     sources = Sources(management)
+    service.sources = sources
     mcp = Server(
         "webcodex",
         version=__version__,
@@ -1682,10 +1710,13 @@ def create_app(config: ServerConfig):
 
     @asynccontextmanager
     async def lifespan(app):
+        monitor = ConnectionMonitor(service.store, service.connections)
+        monitor.start()
         try:
             async with manager.run():
                 yield
         finally:
+            monitor.close()
             try:
                 await sources.close()
             finally:

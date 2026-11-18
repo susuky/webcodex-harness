@@ -119,7 +119,7 @@ class Processes:
                 raise ValueError("Too many running processes; cancel or wait for one first")
             if not argv or not argv[0] or any("\x00" in arg for arg in argv):
                 raise ValueError("A nonempty command without NUL characters is required")
-            check_worker_command(argv, cwd=cwd)
+            await asyncio.to_thread(check_worker_command, argv, cwd=cwd)
             proc = master = slave = job = terminal = gate = log = None
             try:
                 log = (self.directory / (process_id + ".log")).open("wb")
@@ -406,9 +406,10 @@ class Processes:
         state = self.active.get(process_id)
         if not state:
             raise ValueError("Process is no longer running")
-        state["policy_input"] = check_worker_input(
-            json.loads(row["command"]), state.get("policy_input", ""), chars
-        )
+        async with self.lock:
+            state["policy_input"] = await asyncio.to_thread(
+                check_worker_input, json.loads(row["command"]), state.get("policy_input", ""), chars
+            )
         if state["terminal"] is not None:
             data = chars.replace("\r\n", "\n").replace("\n", "\r") + ("\x1a\r" if eof else "")
             state["terminal"].write(data)

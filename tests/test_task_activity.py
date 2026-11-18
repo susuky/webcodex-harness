@@ -2,24 +2,23 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from unittest.mock import patch
 
 from webcodex.store import Store
 
 
-def observe(store, task, tool, process, status, request, created, updated):
-    job = store.enqueue(task, tool, {}, request, 10)
-    store.claim("runner", "instance", 1)
+def observe(store, task, tool, process, status, request, created, updated, job_status="succeeded"):
+    with patch("webcodex.store.time.time", return_value=created):
+        job = store.enqueue(task, tool, {}, request, 10)
+        store.claim("runner", "instance", 1)
     result = {
         "process_id": process,
         "status": status,
         "exit_code": 3 if status == "failed" else None,
         "output": "x" * 65536,
     }
-    store.complete("runner", job["job_id"], "instance", "succeeded", result)
-    with store.db:
-        store.db.execute(
-            "UPDATE jobs SET created=?,updated=? WHERE id=?", (created, updated, job["job_id"])
-        )
+    with patch("webcodex.store.time.time", return_value=updated):
+        store.complete("runner", job["job_id"], "instance", job_status, result)
     return job["job_id"], result
 
 
@@ -31,9 +30,9 @@ def test_activity_keeps_latest_observation_and_process_start_order(tmp_path):
         observe(store, task, "exec_command", "older", "running", "old-start", 10, 11)
         newest, result = observe(store, task, "skill_run", "newer", "failed", "new-start", 20, 21)
         observe(store, task, "read_process", "older", "completed", "old-read", 30, 31)
-        observe(store, task, "cancel_process", "excluded", "completed", "ignored", 40, 41)
-        with store.db:
-            store.db.execute("UPDATE jobs SET status='unknown' WHERE request_id='ignored'")
+        observe(
+            store, task, "cancel_process", "excluded", "completed", "ignored", 40, 41, "unknown"
+        )
         activity = store.task_activity(task)
         assert [
             (p["process_id"], p["status"], p["started_at"], p["tool"])
@@ -44,15 +43,15 @@ def test_activity_keeps_latest_observation_and_process_start_order(tmp_path):
         ]
         assert activity["latest_execution"]["job_id"] == newest
         assert activity["latest_execution"]["result"] == result
-        assert activity["job_counts"] == {"succeeded": 3, "unknown": 1}
+        assert "job_counts" not in activity
         statements = []
         store.db.set_trace_callback(statements.append)
         store.task_activity(task)
         store.db.set_trace_callback(None)
-        observation_query = next(s for s in statements if "WITH recent AS" in s)
+        observation_query = next(s for s in statements if "FROM process_states" in s)
         assert "json_extract" not in observation_query and "json_type" not in observation_query
         plan = store.db.execute("EXPLAIN QUERY PLAN " + observation_query).fetchall()
-        assert any("process_observations" in row[3] for row in plan)
+        assert any("recent_process_states" in row[3] for row in plan)
     finally:
         store.close()
 
@@ -88,6 +87,7 @@ def test_old_database_backfills_once_and_preserves_raw_results(tmp_path):
         )
     store.close()
     with sqlite3.connect(tmp_path / "state.sqlite3") as db:
+        db.execute("DROP TABLE process_states")
         db.execute("DROP INDEX process_observations")
         db.execute("DROP INDEX process_history")
         for column in ["process_id", "process_status", "process_exit_code"]:
@@ -136,3 +136,63 @@ def test_late_unknown_completion_updates_the_same_process_projection(tmp_path):
         assert before["latest_execution"]["result"] == result
     finally:
         store.close()
+
+
+def test_current_process_migration_uses_metadata_and_keeps_legacy_results(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    store.register("runner", "instance", {"project": "b" * 64})
+    task = store.create_task("owner", "runner/project", "Current process migration")
+    observe(store, task, "exec_command", "normal", "running", "start", 10, 11)
+    observe(store, task, "read_process", "normal", "completed", "done", 20, 21)
+    job = store.enqueue(task, "subagent_spawn", {}, "legacy", 10)
+    store.claim("runner", "instance", 1)
+    store.complete(
+        "runner",
+        job["job_id"],
+        "instance",
+        "succeeded",
+        {"agent_id": "legacy", "status": "running"},
+    )
+    expected = store.rows("SELECT * FROM process_states ORDER BY process_id")
+    store.close()
+    connect = sqlite3.connect
+    with connect(tmp_path / "state.sqlite3") as db:
+        db.execute(
+            "CREATE TABLE agent_observations AS SELECT task_id,process_id AS agent_id,"
+            "job_id,status,exit_code,started_at AS created,observed_at AS updated "
+            "FROM process_states WHERE tool='subagent_get'"
+        )
+        db.execute("DROP TABLE process_states")
+
+    def metadata_connection(*args, **kwargs):
+        db = connect(*args, **kwargs)
+
+        def authorize(action, table, column, database, source):
+            if (
+                action == sqlite3.SQLITE_READ
+                and table == "jobs"
+                and column in {"result", "arguments"}
+            ):
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        db.set_authorizer(authorize)
+        return db
+
+    monkeypatch.setattr("webcodex.store.sqlite3.connect", metadata_connection)
+    migrated = Store(tmp_path)
+    try:
+        assert migrated.rows("SELECT * FROM process_states ORDER BY process_id") == expected
+        assert (
+            migrated.one(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_observations'"
+            )
+            is None
+        )
+        migrated.db.set_authorizer(None)
+        assert migrated.job(job["job_id"], "owner")["result"] == {
+            "agent_id": "legacy",
+            "status": "running",
+        }
+    finally:
+        migrated.close()

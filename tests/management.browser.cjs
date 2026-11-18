@@ -149,6 +149,7 @@ async function verifyHandoffReading(browser,root,output,checks,errors,measuremen
   const projects=source=>[...new Map(allTasks[source].map(task=>[task.runner+"/"+task.project,{runner:task.runner,project:task.project,environment_label:environment(task)}])).values()];
   try{
     browser=await chromium.launch({headless:true,...(process.env.WEBCODEX_CHROMIUM?{executablePath:process.env.WEBCODEX_CHROMIUM}:{}),args:["--no-sandbox"]});
+    await require("./management_connections.browser.cjs")(browser,root,output,checks,errors,measurements);
     await verifyTaskListReading(browser,root,output,checks,errors,measurements);
     const context=await browser.newContext({viewport:{width:1400,height:1000},locale:"zh-TW",timezoneId:"Asia/Taipei"}),page=await context.newPage();
     await page.addInitScript(()=>{window.copied=[];Object.defineProperty(navigator,"clipboard",{value:{writeText:async text=>{window.copied.push(text);}}});});

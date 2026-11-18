@@ -30,7 +30,7 @@ uv run webcodex init --project-root 'C:\projects'
 uv run webcodex allow-root /absolute/path/to/projects
 ```
 
-這會保留憑證、既有專案與其他用戶端設定，備份兩份原始設定，授予預設 `owner` 用戶端在該父目錄建立／登記專案的權限。可用 `--client`、`--name` 與 `--config-dir` 指定其他用戶端、父目錄 ID 與設定位置。日常開發沿用用戶端與 Runner 的工具權限。
+這會保留憑證、既有專案與其他用戶端設定，授予預設 `owner` 用戶端在該父目錄建立／登記專案的權限。可用 `--client`、`--name` 與 `--config-dir` 指定其他用戶端、父目錄 ID 與設定位置。日常開發沿用用戶端與 Runner 的工具權限。
 
 重新啟動 Server 與 Runner 後，`project_roots_list` 應顯示父目錄及 `online: true`。其中 `can_create` 表示用戶端是否有專案管理權限；相容欄位 `approval_mode` 與 `new_project_approval_mode` 固定為 `automatic`。Runner 仍會獨立檢查工具權限。ChatGPT 更新連線工具清單後即可使用新增工具，無須為每個專案重建連線。
 

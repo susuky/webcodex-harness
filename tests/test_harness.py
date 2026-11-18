@@ -257,20 +257,22 @@ async def test_real_mcp_coding_and_extension_loop(harness):
         )
         assert (await process_result(client, task_id, before))["exit_code"] == 1
         file = (await call(client, "read_file", {"task_id": task_id, "path": "calc.py"}))["result"]
+        assert "return a - b" in file["content"]
+        assert "sha256" not in file
         patch = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n"
         await call(
             client,
             "apply_patch",
-            {"task_id": task_id, "patch": patch, "expected_sha256": {"calc.py": file["sha256"]}},
+            {"task_id": task_id, "patch": patch},
         )
         await call(
             client,
-            "write_file",
+            "edit_file",
             {
                 "task_id": task_id,
                 "path": "calc.py",
-                "content": "lost update",
-                "expected_sha256": file["sha256"],
+                "old_text": "return a - b",
+                "new_text": "return a * b",
             },
             error=True,
         )
