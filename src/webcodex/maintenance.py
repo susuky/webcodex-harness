@@ -342,15 +342,24 @@ def backup(directory: Path, destination: Path | None = None) -> dict:
 
 
 def _completed_tasks(db) -> set[str]:
+    if db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_states'"
+    ).fetchone():
+        running = "SELECT 1 FROM process_states WHERE task_id=t.id AND status='running'"
+    else:
+        # Retention can run against an installation before its Server has migrated.
+        running = (
+            "SELECT 1 FROM jobs p WHERE p.task_id=t.id AND p.status='succeeded' "
+            "AND p.process_id IS NOT NULL AND p.process_status='running' "
+            "AND NOT EXISTS (SELECT 1 FROM jobs n WHERE n.task_id=p.task_id "
+            "AND n.process_id=p.process_id AND n.status='succeeded' AND n.process_status!='running')"
+        )
     return {
         r[0]
         for r in db.execute(
             "SELECT t.id FROM tasks t WHERE t.status='completed' "
             "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.task_id=t.id AND j.status IN ('queued','running','pending_approval','unknown')) "
-            "AND NOT EXISTS (SELECT 1 FROM jobs p WHERE p.task_id=t.id AND p.status='succeeded' "
-            "AND p.process_id IS NOT NULL AND p.process_status='running' "
-            "AND NOT EXISTS (SELECT 1 FROM jobs n WHERE n.task_id=p.task_id AND n.process_id=p.process_id "
-            "AND n.status='succeeded' AND (n.updated>p.updated OR (n.updated=p.updated AND n.id>p.id))))"
+            f"AND NOT EXISTS ({running})"
         )
     }
 

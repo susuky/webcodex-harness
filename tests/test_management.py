@@ -254,8 +254,15 @@ async def test_management_refreshes_selected_task_beyond_first_page(harness):
         assert task_id not in {item["id"] for item in first["tasks"]}
         second = (await client.get("/api/manage/state?offset=60")).json()
         assert [item["id"] for item in second["tasks"]] == [task_id]
+        catalog = (await client.get("/api/manage/state?catalog=1")).json()
+        assert catalog["tasks"][0]["id"] == task_id and catalog["next_offset"] == 60
+        store.update_task(task_id, "owner", "active", "Changed between pages", [])
+        second = (await client.get("/api/manage/state?catalog=1&offset=60")).json()
+        assert [item["id"] for item in second["tasks"]] == [newer["id"]]
         await asyncio.sleep(0.3)
-        refreshed = await client.post("/api/manage/refresh", json={"task_ids": [task_id]})
+        refreshed = await client.post(
+            "/api/manage/refresh", json={"task_ids": ["expired-bookmark", task_id]}
+        )
         assert refreshed.status_code == 200 and len(refreshed.json()["updates"]) == 1
         detail = (await client.get("/api/manage/tasks/" + task_id)).json()
         assert detail["processes"][0]["status"] == "completed"
@@ -473,4 +480,6 @@ def test_management_prioritizes_offline_runner_for_pending_work(activity_service
         )
         store.db.execute("UPDATE runners SET seen=?", (time.time() - 30,))
     assert service.task_progress(task, include_output=False)["state"] == "waiting_runner"
-    assert Management(service).describe(task)["state"] == "waiting_runner"
+    detail = Management(service).describe(task)
+    assert detail["state"] == "waiting_runner"
+    assert detail["unanswered_operator_questions"] == 1

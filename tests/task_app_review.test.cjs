@@ -15,7 +15,7 @@ function fixture(replies) {
   const context = {
     ready: true, taskId: "task", stopped: false, busy: false, generation: 1, pollingBlocked: false,
     sequence: 0, pending: new Map(), viewId: "view", reviewVersion: 0, reviewLoaded: false,
-    selectedPath: null, pendingReview: null, reviewTimer: null, timer: null,
+    selectedPath: null, pendingReview: null, reviewTimer: null, timer: null, last: null,
     nextPollAt: 0, retryAt: 0, retryDelay: 15000, retryLimited: false,
     document: {hidden: false}, Date: class extends Date { static now() { return now; } },
     setTimeout(fn, delay) { const id = ++nextId; timers.set(id,{fn,at:now+delay,delay}); return id; },
@@ -133,6 +133,20 @@ test("background cards stop review retries and resume the original job when visi
   await f.advance(14999);
   assert.equal(f.calls.length,1);
   await f.advance(1);
+  assert.equal(f.calls[1].arguments.job_id,"original");
+  assert.equal(f.shown.length,1);
+});
+
+test("archiving stops new review requests and retries until restore", async () => {
+  const f = fixture([running,completed]);
+  await f.context.loadReview();
+  f.context.last = {progress:{state:"archived"}};
+  await f.advance(15000);
+  await f.context.loadReview();
+  assert.equal(f.calls.length,1);
+  f.context.last = {progress:{state:"ready"}};
+  f.context.el("review-refresh").click();
+  await flush();
   assert.equal(f.calls[1].arguments.job_id,"original");
   assert.equal(f.shown.length,1);
 });

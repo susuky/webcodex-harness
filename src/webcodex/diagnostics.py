@@ -51,6 +51,7 @@ _ENUMS = {
         "/api/manage/sources",
         "/api/manage/tasks/:id",
         "/api/manage/tasks/:id/status",
+        "/api/manage/tasks/:id/archive",
         "/api/manage/sources/:source_id/state",
         "/api/manage/sources/:source_id/refresh",
         "/api/manage/sources/:source_id/connections",

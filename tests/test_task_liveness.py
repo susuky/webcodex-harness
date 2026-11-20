@@ -7,6 +7,7 @@ import pytest
 
 from webcodex.config import Client, ServerConfig
 from webcodex.continuation import fingerprint
+from webcodex.management import Management
 from webcodex.server import Service
 from webcodex.store import Store, new_id
 
@@ -553,6 +554,64 @@ async def test_card_monitoring_reads_json_only_for_selected_running_processes(
         original_json.close()
     assert calls == expected
     assert reads.count("json_valid") == reads.count("json_extract") == len(expected)
+
+
+@pytest.mark.parametrize("observer", ["management", "card", "wait"])
+async def test_process_observers_retry_lost_read_claim(activity_service, observer):
+    service, task = activity_service
+    store = service.store
+    task_id = task["id"]
+    original = store.enqueue(task, "exec_command", {}, None, 100)
+    store.claim("local", "instance", 1)
+    process_id = original["job_id"]
+    store.complete(
+        "local",
+        process_id,
+        "instance",
+        "succeeded",
+        {"process_id": process_id, "status": "running"},
+    )
+    with store.db:
+        store.db.execute("UPDATE jobs SET updated=updated-11 WHERE id=?", (process_id,))
+    management = Management(service)
+    if observer == "wait":
+        service.continuations.arm(task_id, [process_id], "original-watch")
+
+    async def refresh():
+        if observer == "management":
+            await management.refresh_data("owner", {"task_id": task_id})
+        elif observer == "card":
+            await service.observe_card_processes(task)
+        else:
+            await service.refresh_task_wait(task)
+
+    await refresh()
+    [lost] = store.claim("local", "instance", 1)
+    assert lost["tool"] == "read_process"
+    # The Server committed the claim, but the Runner never saw the reply.
+    store.register("local", "instance", {"project": task["binding"]})
+    assert store.job(lost["id"], "owner")["status"] == "unknown"
+    management.observed.clear()
+    with store.db:
+        store.db.execute("UPDATE jobs SET updated=updated-11 WHERE id=?", (lost["id"],))
+
+    await asyncio.gather(refresh(), refresh())
+    [retry] = store.claim("local", "instance", 2)
+    assert retry["tool"] == "read_process" and retry["id"] != lost["id"]
+    assert retry["arguments"] == lost["arguments"]
+    if observer == "wait":
+        assert service.continuations.current(task_id)["state"] == "watching"
+    store.complete(
+        "local",
+        retry["id"],
+        "instance",
+        "succeeded",
+        {"process_id": process_id, "status": "completed", "exit_code": 0},
+    )
+    await refresh()
+    assert not store.running_processes(task_id)
+    if observer == "wait":
+        assert service.continuations.current(task_id)["state"] == "ready"
 
 
 def test_work_counts_include_observations_outside_the_bounded_detail_lists(

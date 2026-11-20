@@ -14,7 +14,7 @@ from starlette.routing import Route
 from .config import identifier
 from .connections import REASONS, public_details, safe_details
 from .management import PROCESS_FRESH_SECONDS, execution_freshness, requested_status
-from .store import INTERNAL_OBSERVATION_PREFIXES
+from .store import INTERNAL_OBSERVATION_PREFIXES, TaskArchived
 
 
 class SourceUnavailable(Exception):
@@ -46,6 +46,8 @@ class TaskUnavailable(Exception):
 
 
 def priority(task: dict) -> int:
+    if task.get("archived"):
+        return 4
     if task.get("status") == "completed":
         return 3
     if "_priority" in task:
@@ -63,7 +65,9 @@ def priority(task: dict) -> int:
         )
     ):
         return 0
-    if any(job.get("status") == "pending_approval" for job in jobs):
+    if task.get("unanswered_operator_questions") or any(
+        job.get("status") == "pending_approval" for job in jobs
+    ):
         return 1
     return (
         1 if task.get("state") in {"waiting_operator", "pending_approval", "project_changed"} else 2
@@ -81,13 +85,19 @@ class Sources:
         self.clients: dict[tuple[str, str, str, str], httpx.AsyncClient] = {}
         self.connection_cache: dict[tuple[str, str, bool], tuple[float, dict]] = {}
         self.connection_locks: dict[tuple[str, str, bool], asyncio.Lock] = {}
-        # Archiving is a client-scoped view preference, including for remote tasks.
+        # Existing preferences stay here until the task's source records the archive.
         with self.service.store.db:
             self.service.store.db.execute(
                 "CREATE TABLE IF NOT EXISTS management_archives ("
                 "owner TEXT NOT NULL,source_id TEXT NOT NULL,task_id TEXT NOT NULL,"
                 "archived_at REAL NOT NULL,PRIMARY KEY(owner,source_id,task_id))"
             )
+        for row in self.service.store.rows(
+            "SELECT a.owner,a.task_id,a.archived_at FROM management_archives a "
+            "JOIN tasks t ON t.id=a.task_id AND t.owner=a.owner WHERE a.source_id='local'"
+        ):
+            self.service.set_task_archive(row["owner"], row["task_id"], row["archived_at"])
+            self.forget_legacy_archive(row["owner"], "local", row["task_id"])
 
     def source(self, owner: str, source_id: str):
         identifier(source_id)
@@ -117,17 +127,51 @@ class Sources:
             )
         }
 
+    def forget_legacy_archive(self, owner: str, source_id: str, task_id: str):
+        with self.service.store.db:
+            self.service.store.db.execute(
+                "DELETE FROM management_archives WHERE owner=? AND source_id=? AND task_id=?",
+                (owner, source_id, task_id),
+            )
+
     def tag(self, owner: str, source_id: str, row: dict) -> dict:
         result = {**row, "source_id": source_id, "source_label": self.label(owner, source_id)}
         if "project" in row:
             result["environment_label"] = self.environment_label(owner, source_id, row["runner"])
-            if "archived" not in result:
-                result["archived"] = row["id"] in self.archived_ids(owner, source_id)
         if "project" in row and row.get("created_at") is None:
             created = self.creation_times.get((owner, source_id, row["id"]))
             if created is not None:
                 result["created_at"] = created
         return result
+
+    @staticmethod
+    def archive_flags(task: dict, legacy_ids: set[str]) -> dict:
+        pending = task["id"] in legacy_ids and not task.get("archived")
+        return {"archived": bool(task.get("archived")) or pending, "archive_pending": pending}
+
+    async def remote_archive(self, client, task_id: str, archived: bool):
+        data = await self.remote_request(
+            client, "POST", f"tasks/{task_id}/archive", json={"archived": archived}
+        )
+        if data.get("task_id") != task_id or data.get("archived") is not archived:
+            raise SourceUnavailable("未取得來源的封存確認")
+
+    async def sync_legacy_archives(self, owner: str, source_id: str, client, tasks: list):
+        if "write" not in self.service.config.clients[owner].permissions:
+            return
+        legacy = self.archived_ids(owner, source_id)
+        if not legacy:
+            return
+        for task in tasks:
+            if task["id"] not in legacy or "archived" not in task:
+                continue
+            if not task["archived"]:
+                try:
+                    await self.remote_archive(client, task["id"], True)
+                except SourceUnavailable:
+                    return
+                task["archived"] = True
+            self.forget_legacy_archive(owner, source_id, task["id"])
 
     @staticmethod
     def response(data: dict, status_code: int = 200):
@@ -412,6 +456,7 @@ class Sources:
         )
         tasks = self.service.store.rows(
             "SELECT id,title,runner,project,kind,binding,status,summary,updated,created AS created_at,"
+            "(archived_at IS NOT NULL) AS archived,"
             # Seek from the newest job and stop at the tracked activity, without reading old output.
             "coalesce((SELECT updated FROM jobs INDEXED BY task_jobs WHERE task_id=tasks.id "
             f"AND updated>coalesce(({activity}),0) AND (request_id IS NULL OR ({external})) "
@@ -613,6 +658,8 @@ class Sources:
                 raise SourceUnavailable("來源回傳了無效的任務時間")
         if "runner_online" in task and type(task["runner_online"]) is not bool:
             raise SourceUnavailable("來源回傳了無效的連線狀態")
+        if "archived" in task and type(task["archived"]) is not bool:
+            raise SourceUnavailable("來源回傳了無效的封存狀態")
         for field in ("processes", "outputs", "jobs", "issues", "errors"):
             rows = task.get(field, [])
             if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
@@ -630,6 +677,9 @@ class Sources:
         if not isinstance(liveness, dict) or not isinstance(liveness.get("work", {}), dict):
             raise SourceUnavailable("來源回傳了無效的工作狀態")
         work = liveness.get("work", {})
+        unanswered = task.get("unanswered_operator_questions", 0)
+        if type(unanswered) is not int or unanswered < 0:
+            raise SourceUnavailable("來源回傳了無效的工作狀態")
         if any(
             field in work and (type(work[field]) is not int or work[field] < 0)
             for field in ("running_count", "pending_count")
@@ -653,10 +703,10 @@ class Sources:
             tasks, seen, offset = [], set(), 0
             try:
                 async with asyncio.timeout(15), self.remote_client(owner, source_id) as client:
-                    # Old Servers expose only chronological pages. Fetch their catalog before filtering.
+                    # New sources keep catalog order stable across updates. Older ones ignore the flag.
                     for _ in range(100):
                         page = await self.remote_request(
-                            client, "GET", "state", params={"offset": offset}
+                            client, "GET", "state", params={"offset": offset, "catalog": 1}
                         )
                         if (
                             not isinstance(page.get("tasks"), list)
@@ -673,6 +723,11 @@ class Sources:
                                 seen.add(task["id"])
                         next_offset = page.get("next_offset")
                         if next_offset is None:
+                            try:
+                                async with asyncio.timeout(3):
+                                    await self.sync_legacy_archives(owner, source_id, client, tasks)
+                            except TimeoutError:
+                                pass  # Keep the pending archives for the next successful sync.
                             result = {**page, "tasks": tasks, "next_offset": None}
                             self.catalogs[key] = (time.monotonic(), result)
                             await self.source_recovered(owner, source_id, "state")
@@ -695,6 +750,7 @@ class Sources:
             "q",
             "offset",
             "limit",
+            "window",
             "state",
             "runner",
             "project",
@@ -703,6 +759,7 @@ class Sources:
         }:
             raise ValueError("Unknown management query parameter")
         offset, limit = int(params.get("offset", 0)), int(params.get("limit", 60))
+        window = int(params["window"]) if "window" in params else None
         query, state, runner = (
             params.get("q", "").strip().casefold(),
             params.get("state", "all"),
@@ -713,6 +770,10 @@ class Sources:
         archived = params.get("archived", "active")
         if offset < 0 or not 1 <= limit <= 100 or len(query) > 2000:
             raise ValueError("Invalid task query or page")
+        if window is not None:
+            if window < 1 or "offset" in params or "limit" in params:
+                raise ValueError("Use a positive window size without offset or limit")
+            limit = window
         if state not in {"all", "unfinished", "active", "attention", "completed", "unconfirmed"}:
             raise ValueError("Invalid task state filter")
         if archived not in {"active", "archived", "all"}:
@@ -736,6 +797,7 @@ class Sources:
             )
             catalog = data["tasks"]
             if source:
+                legacy_ids = self.archived_ids(owner, source_id)
                 runners = {
                     runner["id"]: runner
                     for runner in data["runners"]
@@ -761,7 +823,9 @@ class Sources:
                                 else "historical",
                             },
                         }
-                    catalog.append(execution_freshness(task))
+                    catalog.append(
+                        execution_freshness({**task, **self.archive_flags(task, legacy_ids)})
+                    )
             projects = [
                 {
                     "runner": task_runner,
@@ -773,7 +837,6 @@ class Sources:
                     key=lambda pair: (pair[1], pair[0]),
                 )
             ]
-            archived_ids = self.archived_ids(owner, source_id)
             tasks = [
                 task
                 for task in catalog
@@ -783,7 +846,7 @@ class Sources:
                     not environment
                     or self.environment_label(owner, source_id, task["runner"]) == environment
                 )
-                and (archived == "all" or (task["id"] in archived_ids) == (archived == "archived"))
+                and (archived == "all" or bool(task["archived"]) == (archived == "archived"))
                 and (
                     not query
                     or query
@@ -801,9 +864,11 @@ class Sources:
                         state == "unfinished"
                         or state == "active"
                         and priority(task) == 0
-                        or state == "attention"
+                        or not task["archived"]
+                        and state == "attention"
                         and (
                             task.get("_attention")
+                            or task.get("unanswered_operator_questions")
                             or task.get("state")
                             in {"waiting_operator", "pending_approval", "project_changed"}
                             or any(
@@ -811,7 +876,8 @@ class Sources:
                                 for job in task.get("jobs", [])
                             )
                         )
-                        or state == "unconfirmed"
+                        or not task["archived"]
+                        and state == "unconfirmed"
                         and (
                             task.get("_unconfirmed")
                             or task.get("liveness", {}).get("work", {}).get("unconfirmed_count")
@@ -833,18 +899,19 @@ class Sources:
             tasks.sort(key=sort_key)
             selected = tasks[offset : offset + limit]
             if source is None:
-                selected = [
-                    self.management.describe(self.management.task(owner, task["id"]))
-                    for task in selected
-                ]
+                described = []
+                for index, task in enumerate(selected):
+                    if index and index % 60 == 0:
+                        await asyncio.sleep(0)
+                    described.append(
+                        self.management.describe(self.management.task(owner, task["id"]))
+                    )
+                selected = described
             return self.response(
                 {
                     "source_id": source_id,
                     "source_label": self.label(owner, source_id),
-                    "tasks": [
-                        self.tag(owner, source_id, {**task, "archived": task["id"] in archived_ids})
-                        for task in selected
-                    ],
+                    "tasks": [self.tag(owner, source_id, task) for task in selected],
                     "projects": projects,
                     "runners": [self.tag(owner, source_id, runner) for runner in data["runners"]],
                     "next_offset": offset + limit if offset + limit < len(tasks) else None,
@@ -858,9 +925,14 @@ class Sources:
 
     async def archive(self, request):
         owner = self.management.owner(request)
-        source_id, task_id = request.path_params["source_id"], request.path_params["task_id"]
-        self.source(owner, source_id)
+        source_id, task_id = (
+            request.path_params.get("source_id", "local"),
+            request.path_params["task_id"],
+        )
+        source = self.source(owner, source_id)
         identifier(task_id)
+        if "write" not in self.service.config.clients[owner].permissions:
+            return self.response({"error": "沒有封存或還原任務的權限"}, 403)
         body = await request.json()
         if (
             not isinstance(body, dict)
@@ -868,23 +940,30 @@ class Sources:
             or type(body["archived"]) is not bool
         ):
             raise ValueError("Expected an archived boolean")
-        # Save only this viewer's preference. It remains usable while the source is offline.
-        with self.service.store.db:
-            if body["archived"]:
-                self.service.store.db.execute(
-                    "INSERT INTO management_archives(owner,source_id,task_id,archived_at) "
-                    "VALUES (?,?,?,?) ON CONFLICT(owner,source_id,task_id) "
-                    "DO UPDATE SET archived_at=excluded.archived_at",
-                    (owner, source_id, task_id, time.time()),
-                )
-            else:
-                self.service.store.db.execute(
-                    "DELETE FROM management_archives WHERE owner=? AND source_id=? AND task_id=?",
-                    (owner, source_id, task_id),
-                )
-        return self.response(
-            {"source_id": source_id, "task_id": task_id, "archived": body["archived"]}
-        )
+        archived = body["archived"]
+        if source is None:
+            try:
+                self.management.task(owner, task_id)
+            except ValueError:
+                return self.response({"error": "任務不存在或無權存取"}, 404)
+            self.service.set_task_archive(owner, task_id, time.time() if archived else None)
+        else:
+            key = (owner, source_id)
+            async with self.locks.setdefault(key, asyncio.Lock()):
+                try:
+                    async with self.remote_client(owner, source_id) as client:
+                        await self.remote_archive(client, task_id, archived)
+                except SourceUnavailable as error:
+                    status = error.details.get("http_status")
+                    if status in {401, 403}:
+                        return self.response({"error": "來源未授權封存或還原"}, 403)
+                    if status == 404:
+                        return self.response({"error": "任務不存在或來源尚未支援封存"}, 404)
+                    return self.response({"error": "未取得來源確認，請重新整理任務狀態"}, 502)
+                finally:
+                    self.catalogs.pop(key, None)
+                self.forget_legacy_archive(owner, source_id, task_id)
+        return self.response({"source_id": source_id, "task_id": task_id, "archived": archived})
 
     async def refresh(self, request):
         owner = self.management.owner(request)
@@ -904,6 +983,14 @@ class Sources:
             raise ValueError("Expected at most 100 task IDs")
         if task_id is not None and task_ids is not None:
             raise ValueError("Use task_id or task_ids")
+        if source:
+            legacy_ids = self.archived_ids(owner, source_id)
+            if task_id in legacy_ids:
+                task_ids = []
+            elif task_ids is not None:
+                task_ids = [value for value in task_ids if value not in legacy_ids]
+            if task_ids is not None:
+                body = {"task_ids": task_ids}
         if task_ids == []:
             return self.response(
                 self.tag(owner, source_id, {"updates": [], "observed_at": time.time()})
@@ -934,6 +1021,8 @@ class Sources:
         if "write" not in self.service.config.clients[owner].permissions:
             return self.response({"error": "沒有更新任務的權限"}, 403)
         status = requested_status(await request.json())
+        if source and task_id in self.archived_ids(owner, source_id):
+            return self.response({"error": "請先還原任務"}, 409)
         started = time.monotonic()
         try:
             if source is None:
@@ -964,6 +1053,8 @@ class Sources:
                     return self.response({"error": "來源不允許更新這個任務"}, 403)
                 if response.status_code == 404:
                     return self.response({"error": "找不到任務，或來源尚未支援狀態更新"}, 404)
+                if response.status_code == 409:
+                    return self.response({"error": "請先還原任務"}, 409)
                 if response.status_code == 400:
                     return self.response({"error": "來源無法更新這個任務的狀態"}, 400)
                 if not response.is_success:
@@ -989,6 +1080,8 @@ class Sources:
                     **{key: updated[key] for key in ("status", "updated")},
                 }
             )
+        except TaskArchived:
+            return self.response({"error": "請先還原任務"}, 409)
         except (SourceUnavailable, httpx.HTTPError, ValueError) as error:
             if source:
                 if not isinstance(error, SourceUnavailable):
@@ -1020,7 +1113,9 @@ class Sources:
             except SourceUnavailable as error:
                 data["date_error"] = str(error)
         await self.source_recovered(owner, source_id, "tasks")
-        return execution_freshness(data)
+        return execution_freshness(
+            {**data, **self.archive_flags(data, self.archived_ids(owner, source_id))}
+        )
 
     async def detail(self, request):
         owner = self.management.owner(request)
@@ -1063,16 +1158,21 @@ class Sources:
                     "files_observed_at": None,
                 }
             instruction = (
-                f"請使用「{self.label(owner, source_id)}」的 WebCodex 連線，在此對話接續原任務 {task_id}"
-                f"（{detail['runner']}/{detail['project']}）。\n"
-                f'先用 task_get(task_id="{task_id}") 讀取目前 progress 與 handoff，'
-                f'再用 task_takeover(task_id="{task_id}") 接手並顯示任務卡片。'
-                "沿用原 task_id、job_id 與 process_id，取得既有命令的最新狀態與輸出後繼續原工作。"
+                None
+                if detail["archived"]
+                else (
+                    f"請使用「{self.label(owner, source_id)}」的 WebCodex 連線，在此對話接續原任務 {task_id}"
+                    f"（{detail['runner']}/{detail['project']}）。\n"
+                    f'直接呼叫 task_takeover(task_id="{task_id}") 取得進度與交接資料，'
+                    "依回傳的 next_action 顯示任務卡片。"
+                    "沿用原 task_id、job_id 與 process_id，取得既有命令的最新狀態與輸出後繼續原工作。"
+                )
             )
             return self.response(
                 {
                     "source_id": source_id,
                     "task_id": task_id,
+                    "archived": detail["archived"],
                     "created_at": detail.get("created_at"),
                     "started_at": detail.get("started_at"),
                     "handoff": handoff,
@@ -1093,6 +1193,7 @@ def source_routes(sources: Sources) -> list[Route]:
     return [
         Route("/api/manage/connections", sources.connections, methods=["GET"]),
         Route("/api/manage/sources", sources.listing, methods=["GET"]),
+        Route("/api/manage/tasks/{task_id}/archive", sources.archive, methods=["POST"]),
         Route("/api/manage/sources/{source_id}/connections", sources.connections, methods=["GET"]),
         Route("/api/manage/sources/{source_id}/state", sources.state, methods=["GET"]),
         Route("/api/manage/sources/{source_id}/refresh", sources.refresh, methods=["POST"]),

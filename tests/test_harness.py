@@ -23,7 +23,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from webcodex.config import Client, RunnerConfig, ServerConfig
 from webcodex.runner import Runner
-from webcodex.server import create_app
+from webcodex.server import create_app, mcp_result
 
 SOURCE_ROOT = str(Path(__file__).resolve().parents[1] / "src")
 
@@ -173,6 +173,62 @@ async def process_result(client, task_id, initial, *, timeout_seconds=20):
         )["result"]
     assert result["status"] != "running", json.dumps(result, ensure_ascii=False)
     return result
+
+
+async def test_runner_process_time_limits_are_opt_in(harness, monkeypatch):
+    deadlines = []
+    monitor = harness.runner.processes._monitor
+
+    async def record_deadline(process_id, seconds):
+        deadlines.append(seconds)
+        await monitor(process_id, seconds)
+
+    monkeypatch.setattr(harness.runner.processes, "_monitor", record_deadline)
+    assert harness.runner.config.max_process_seconds is None
+
+    async with harness.mcp() as client:
+        task = await call(client, "task_create", {"project": "local/project", "title": "Limits"})
+        task_id = task["id"]
+        base = {"task_id": task_id, "argv": [sys.executable, "-c", "print('done')"]}
+        for seconds in (None, 14400, 28800, 172800):
+            args = base if seconds is None else {**base, "timeout_seconds": seconds}
+            job = await call(client, "exec_command", args)
+            assert (await process_result(client, task_id, job))["exit_code"] == 0
+        assert deadlines == [None, 14400, 28800, 172800]
+
+        legacy = {**base, "request_id": "one-hour-default"}
+        original = await call(client, "exec_command", {**legacy, "timeout_seconds": 3600})
+        retry = await call(client, "exec_command", legacy)
+        assert retry["job_id"] == original["job_id"]
+
+        harness.runner.config.max_process_seconds = 1
+        job = await call(
+            client,
+            "exec_command",
+            {
+                "task_id": task_id,
+                "argv": [sys.executable, "-c", "import time; time.sleep(10)"],
+                "timeout_seconds": 28800,
+            },
+        )
+        assert (await process_result(client, task_id, job))["status"] == "timed_out"
+        assert deadlines == [None, 14400, 28800, 172800, 3600, 1]
+
+
+def test_mcp_result_keeps_structured_data_and_distinct_provider_content_once():
+    native = {
+        "content": [
+            {"type": "text", "text": '{"count": 1}'},
+            {"type": "text", "text": "Provider explanation"},
+        ],
+        "structuredContent": {"count": 1},
+    }
+    result = mcp_result({"status": "succeeded", "result": {"mcp_result": native}})
+    assert result.structuredContent == {
+        "status": "succeeded",
+        "result": {"provider_result": {"count": 1}},
+    }
+    assert [block.text for block in result.content] == ["Provider explanation"]
 
 
 async def test_real_mcp_coding_and_extension_loop(harness):

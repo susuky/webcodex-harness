@@ -35,7 +35,7 @@ from .management_auth import PUBLIC_ROUTES, ManagementAuth
 from .management_sources import Sources
 from .projects import PROJECT_OPERATIONS
 from .runtime import Runtime
-from .store import RunnerCompletion, Store, new_id
+from .store import RunnerCompletion, Store, TaskArchived, new_id, require_unarchived
 
 TOOL_ACTIVITY = {
     "projects_list": "查詢專案",
@@ -80,6 +80,7 @@ TOOL_ACTIVITY = {
     "resize_terminal": "調整終端畫面",
     "list_processes": "查詢執行中命令",
     "view_image": "檢視圖片",
+    "view_images": "預覽多張圖片",
     "import_image": "匯入圖片",
     "computer_status": "查詢桌面狀態",
     "computer_screenshot": "擷取桌面畫面",
@@ -160,7 +161,7 @@ class TaskTools:
         title: Annotated[str, Field(min_length=1, max_length=500)],
         request_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None,
     ) -> dict:
-        """Create a durable coding task for an explicitly selected project. Save its task ID; subsequent conversations use task_list/task_get to resume the same work. Read workspace_info and applicable instructions before editing."""
+        """Create a durable coding task for an explicitly selected project. Save its ID for task_takeover on a later user request. Read workspace_info and applicable instructions before editing."""
         self.service.check_project(self.owner, project)
         return self.store.create_task(self.owner, project, title, request_id=request_id)
 
@@ -172,7 +173,7 @@ class TaskTools:
         title: Annotated[str, Field(min_length=1, max_length=500)] | None = None,
         request_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None,
     ) -> dict:
-        """Start or resume coding in one call. For new work pass an exact project ID and title; reuse request_id on retries. A task_id identifies persistent Server work, independent of a conversation or repository; separate work in the same repository gets a new task. When the user requests cross-conversation continuation, find the original with task_list/task_get, take control with task_takeover, then pass that task_id here. It supplies its authorized project; preserve original job_id/process_id and inspect their results instead of rerunning commands. Returns current progress plus workspace_info (Git, instructions, tools). Follow next_action to present the task card for this user-initiated turn, then follow workspace.next_action if it is still running. A completed task stays completed until task_update explicitly reopens it. Never infer an ambiguous project or silently create a replacement task."""
+        """Start coding with an exact project ID and title. Reuse request_id on retries. Pass an existing task_id when you need to load its workspace (Git, instructions, tools). Returns current progress and the workspace job. Follow next_action to present the task card and workspace.next_action to finish loading the workspace. For cross-conversation handoff, task_takeover alone supplies the current progress and handoff. Preserve the original task and job/process IDs. A completed task stays completed until explicitly reopened."""
         if "read" not in self.service.config.clients[self.owner].permissions:
             raise ValueError("Starting a workspace requires read permission")
         if task_id:
@@ -189,11 +190,14 @@ class TaskTools:
                     **(await self.project_roots_list()),
                 }
             task = await self.task_create(project, title or "開發：" + project, request_id)
+        require_unarchived(task)
         workspace = await self.service.call(
             self.owner, "workspace_info", {"task_id": task["id"]}, window=self.window
         )
+        task = self.task(task["id"])
+        require_unarchived(task)
         return {
-            "task": await self.task_get(task["id"]),
+            "task": self.task_snapshot(task),
             "workspace": workspace,
             "next_action": {"tool": "task_present", "arguments": {"task_id": task["id"]}},
         }
@@ -203,18 +207,11 @@ class TaskTools:
         self,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 30,
+        include_archived: bool = False,
     ) -> dict:
-        """Find this client's durable tasks across MCP connections and Server restarts. Saved status/summary are handoff notes, not live blockers; follow task_get to read current progress. Transport session IDs are not task IDs."""
-        allowed = sorted(self.service.allowed_projects(self.owner))
-        roots = self.service.config.clients[self.owner].project_roots
-        project_slots = ",".join("?" for _ in allowed) or "NULL"
-        root_slots = ",".join("?" for _ in roots) or "NULL"
-        rows = self.store.rows(
-            "SELECT id,title,runner,project,kind,status,summary,updated FROM tasks WHERE owner=? "
-            f"AND ((kind='coding' AND runner||'/'||project IN ({project_slots})) "
-            f"OR (kind='project' AND runner||'/'||project IN ({root_slots}))) "
-            "ORDER BY updated DESC,rowid DESC LIMIT ? OFFSET ?",
-            (self.owner, *allowed, *roots, limit + 1, offset),
+        """Find this client's durable task IDs. Use include_archived=true to find archived tasks. For inspection use task_get. To take over a task on the user's request, pass its ID directly to task_takeover. Restore archived tasks before continuing them."""
+        rows, next_offset = self.service.list_task_page(
+            self.owner, offset, limit, include_archived=include_archived
         )
         return {
             "tasks": [
@@ -222,14 +219,14 @@ class TaskTools:
                     **r,
                     "next_action": {"tool": "task_get", "arguments": {"task_id": r["id"]}},
                 }
-                for r in rows[:limit]
+                for r in rows
             ],
-            "next_offset": offset + limit if len(rows) > limit else None,
+            "next_offset": next_offset,
         }
 
     @tool()
     async def task_get(self, task_id: str) -> dict:
-        """Resume a task using progress: pending jobs and latest process observations/output. Saved status/summary/plan may be stale. Read the handoff and current progress; follow job_get/read_process in this turn, collect the original execution result, and continue authorized work. Task monitoring never requires ending the turn. Later messages require the user to explicitly enable them in the card."""
+        """Read recent task history and current progress. Use task_takeover directly when the user requests control in this conversation. For an active task, use its job_get/read_process actions to collect original results. Archived tasks can be inspected here and restored in the task center."""
         task = self.task(task_id)
         task["jobs"] = self.store.rows(
             "SELECT id AS job_id,tool,status,created,updated FROM jobs WHERE task_id=? ORDER BY created DESC LIMIT 30",
@@ -239,18 +236,27 @@ class TaskTools:
             "SELECT id,question,answer FROM questions WHERE task_id=? ORDER BY created DESC LIMIT 20",
             (task_id,),
         )
-        task["progress"] = self.service.task_progress(task, self.window)
-        task["service"] = self.store.service
-        task["continuation"] = self.service.task_continuation(task, self.window)
-        self.service.route_waiting_progress(task["progress"])
-        task["handoff"] = self.service.task_handoff(task, task["progress"])
-        return task
+        return self.task_snapshot(task, handoff=True)
+
+    def task_snapshot(self, task: dict, *, handoff: bool = False) -> dict:
+        handoff_jobs = {} if handoff else None
+        progress = self.service.task_progress(task, self.window, handoff_jobs=handoff_jobs)
+        self.service.route_waiting_progress(progress)
+        result = {
+            **task,
+            "progress": progress,
+            "service": self.store.service,
+            "continuation": self.service.task_continuation(task, self.window),
+        }
+        if handoff:
+            result["handoff"] = self.service.task_handoff(task, progress, observations=handoff_jobs)
+        return result
 
     @tool()
-    async def task_present(self, task_id: str) -> dict:
-        """Show the task progress App once in each user-initiated turn that starts or resumes sustained work. Reuse it while working. It monitors existing jobs; manual continuation and explicitly enabled automatic messages are separate controls. Opening or reconnecting a card keeps automatic messages off. Continue job_get/read_process in the current turn."""
+    async def task_present(self, task_id: str, include_handoff: bool = True) -> dict:
+        """Show the task progress App once in each user-initiated turn. Follow the arguments supplied by task_takeover to reuse an already received handoff. The card monitors existing jobs, and opening it keeps automatic messaging off. Continue job_get/read_process in the current turn."""
         task = self.task(task_id)
-        return self.service.task_presentation(task, self.window)
+        return self.service.task_presentation(task, self.window, include_handoff=include_handoff)
 
     @tool()
     async def task_review(
@@ -319,6 +325,7 @@ class TaskTools:
     ) -> dict:
         """Explicitly monitor existing jobs in the task card. Use when the user asks to monitor those jobs; continue job_get/read_process in the current turn by default. Monitoring never enables automatic messages. The user can choose manual continuation or explicitly enable limited automatic messages in the card. Reuse request_id for the same jobs. Replace an uncertain notice only after an explicit recovery request."""
         task = self.task(task_id)
+        require_unarchived(task)
         if task["status"] == "completed" or task["kind"] != "coding":
             raise ValueError("Only an unfinished coding task can wait for continuation")
         for job_id in job_ids:
@@ -326,7 +333,7 @@ class TaskTools:
                 raise ValueError("Every waiting job must belong to this exact task")
         self.service.continuations.arm(task_id, job_ids, request_id, replace_wait_id)
         await self.service.refresh_task_wait(task)
-        return self.service.task_presentation(task, self.window)
+        return self.service.task_presentation(self.task(task_id), self.window)
 
     @tool("write")
     async def task_resume(
@@ -337,10 +344,13 @@ class TaskTools:
     ) -> dict:
         """Consume the exact App continuation before resuming work. Pass the server-provided values unchanged. A duplicate returns already_consumed=true: do not start another workflow or repeat effects. This does not widen existing authorization. After a first successful consume, inspect current progress, report it, continue the authorized task, and present no additional card."""
         task = self.task(task_id)
+        require_unarchived(task)
         if task["status"] == "completed":
             raise ValueError("This task is already completed")
         consumed = self.service.continuations.consume(task_id, wait_id, consume_token)
-        return {**consumed, "task": await self.task_get(task_id)}
+        if consumed["already_consumed"]:
+            return consumed
+        return {**consumed, "task": self.task_snapshot(task)}
 
     @tool()
     async def task_app(
@@ -375,6 +385,12 @@ class TaskTools:
         task = self.task(task_id)
         if action != "finish" and (delivery_error is not None or delivery_error_code is not None):
             raise ValueError("Delivery diagnostics belong to the finish action")
+        if task["archived_at"] is not None and action in {"bind", "state"}:
+            return {
+                **self.service.task_presentation(task, self.window),
+                "control": {"bound": False, "reason": "archived"},
+            }
+        require_unarchived(task)
         if "write" not in self.service.config.clients[self.owner].permissions:
             if action not in {"bind", "state"}:
                 raise ValueError("Continuation control is not permitted for a read-only client")
@@ -397,10 +413,12 @@ class TaskTools:
                 raise ValueError("The current view generation is required")
             # Verify control before preparing a new snapshot or observing a job.
             continuation.controller(task_id, view_id, generation, self.window)
-            if action == "prepare_manual":
-                await self.service.sync_card_watch(task, manual=True, request_id=request_id)
-            elif action == "prepare":
-                await self.service.sync_card_watch(task)
+            if action in {"prepare_manual", "prepare"}:
+                await self.service.sync_card_watch(
+                    task, manual=action == "prepare_manual", request_id=request_id
+                )
+                task = self.task(task_id)
+                require_unarchived(task)
             control = continuation.action(
                 task_id,
                 view_id,
@@ -414,19 +432,32 @@ class TaskTools:
                 request_id=request_id,
             )
         if action in {"bind", "state", "enable"}:
-            await self.service.observe_card_processes(task)
-            await self.service.sync_card_watch(task)
+            try:
+                await self.service.observe_card_processes(task)
+                await self.service.sync_card_watch(task)
+            except TaskArchived:
+                pass  # An archive can arrive while waiting for an in-flight observation.
+        if action in {"bind", "state", "enable", "takeover"}:
+            task = self.task(task_id)
+        if task["archived_at"] is not None:
+            control = {"bound": False, "reason": "archived"}
         return {**self.service.task_presentation(task, self.window), "control": control}
 
     @tool("write")
     async def task_takeover(self, task_id: str) -> dict:
-        """Explicitly take this same account's task into the current conversation. Return its goal, changed files, verification, output cursors, issues and next steps. Keep original commands running and revoke the old card's sending authority. Automatic messaging stays off. Cross-account tasks require a separately authorized identity grant."""
+        """Take this same account's task into the current conversation on user request. Returns progress and handoff in one call. Follow next_action to present the card, then use the original job and process IDs. Original commands keep running, the old card loses its sending authority, and automatic messaging stays off."""
         task = self.task(task_id)
+        require_unarchived(task)
         control = self.service.continuations.takeover(task_id, new_id(), self.window)
         review_job = await self.service.capture_handoff_review(task, control["generation"])
-        result = await self.task_get(task_id)
+        task = self.task(task_id)
+        require_unarchived(task)
+        result = self.task_snapshot(task, handoff=True)
         result["handoff"]["review_job"] = review_job
-        result["next_action"] = {"tool": "task_present", "arguments": {"task_id": task_id}}
+        result["next_action"] = {
+            "tool": "task_present",
+            "arguments": {"task_id": task_id, "include_handoff": False},
+        }
         return result
 
     @tool("write")
@@ -439,7 +470,9 @@ class TaskTools:
         handoff: dict[str, list[str]] | None = None,
     ) -> dict:
         """Save the task's current status, concise handoff summary and plan. Write the summary in the user's language (Traditional Chinese for Traditional Chinese requests), using short Markdown paragraphs or bullets for results, current work and next steps. Put paths and commands in backticks; avoid a single dense paragraph. Each plan step has step and status (pending/in_progress/completed). Mark completed only after checking the requested result and relevant tests."""
-        if self.task(task_id)["kind"] != "coding":
+        task = self.task(task_id)
+        require_unarchived(task)
+        if task["kind"] != "coding":
             raise ValueError("Project management records stay open; update the coding task instead")
         for step in plan:
             if (
@@ -491,13 +524,18 @@ class TaskTools:
     ) -> dict:
         """Observe the same durable job after a timeout/disconnect. Follow its job_get/read_process next_action in this turn, inspect outcome and exit_code, then continue the authorized work. Do independent work while waiting. Reuse the same job and process instead of repeating the command. A connected task card does not change this waiting strategy."""
         job = self.store.job(job_id, self.owner)
-        self.task(job["task_id"])
+        task = self.task(job["task_id"])
         deadline = time.monotonic() + wait_seconds
         while job["status"] in {"queued", "running"} and time.monotonic() < deadline:
+            if job["status"] == "queued" and task["archived_at"] is not None:
+                break
             await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
             job = self.store.job(job_id, self.owner)
         task = self.task(job["task_id"])
         job["continuation"] = self.service.task_continuation(task, self.window)
+        if task["archived_at"] is not None:
+            job.pop("next_action", None)
+            job["next_step"] = "This task is archived. Restore it in the task center to continue."
         self.service.route_waiting_job(job)
         return job
 
@@ -513,7 +551,7 @@ class TaskTools:
         self, task_id: str, question: Annotated[str, Field(min_length=1, max_length=4000)]
     ) -> dict:
         """Record an out-of-band question for the local operator to answer via CLI. For ordinary clarification or a user already chatting with you, ask directly in the conversation instead; this tool does not display a ChatGPT question UI."""
-        self.task(task_id)
+        require_unarchived(self.task(task_id))
         question_id = new_id()
         with self.store.db:
             self.store.db.execute(
@@ -555,7 +593,26 @@ class Service:
         self.continuations = Continuations(self.store)
         self.resume_legacy_jobs()
 
+    def set_task_archive(self, owner: str, task_id: str, archived_at: float | None):
+        with self.continuations.transaction():
+            changed = self.store.db.execute(
+                "UPDATE tasks SET archived_at=? WHERE owner=? AND id=? "
+                "AND (archived_at IS NOT NULL) != ?",
+                (archived_at, owner, task_id, archived_at is not None),
+            )
+            if changed.rowcount:
+                if archived_at is not None:
+                    self.continuations.cancel_pending(task_id)
+                    self.store.db.execute(
+                        "UPDATE task_controllers SET lease_until=0 WHERE task_id=?", (task_id,)
+                    )
+                self.store.event(
+                    task_id, "task.archived" if archived_at is not None else "task.restored", {}
+                )
+
     async def refresh_task_wait(self, task: dict):
+        if task["archived_at"] is not None:
+            return
         wait = self.continuations.current(task["id"])
         if not wait or wait["state"] != "watching":
             return
@@ -563,72 +620,132 @@ class Service:
             self.continuations.cancel(task["id"])
             return
         jobs, ready = [], True
+        watch_request = "watch:" + wait["id"] + ":"
         for job_id in json.loads(wait["jobs"]):
             job = self.store.job(job_id, task["owner"])
             result = job.get("result") or {}
+            process_id = None
             if (
                 job["status"] == "succeeded"
                 and result.get("status") == "running"
                 and result.get("process_id")
             ):
+                process_id = result["process_id"]
+            elif (
+                job["status"] == "unknown"
+                and job["tool"] == "read_process"
+                and (job["request_id"] or "").startswith(watch_request)
+            ):
+                arguments = self.store.one("SELECT arguments FROM jobs WHERE id=?", (job_id,))
+                process_id = arguments["arguments"]["process_id"]
+            if process_id:
                 job = await self.call(
                     task["owner"],
                     "read_process",
                     {
                         "task_id": task["id"],
-                        "process_id": result["process_id"],
+                        "process_id": process_id,
                         "wait_seconds": 0,
-                        "request_id": "watch:" + wait["id"] + ":" + job_id,
+                        "request_id": watch_request + job_id,
                     },
                 )
             jobs.append(job["job_id"])
-            if job["status"] in {"queued", "running", "pending_approval"} or (
-                job["status"] == "succeeded"
-                and (job.get("result") or {}).get("status") == "running"
+            if (
+                job["status"] in {"queued", "running", "pending_approval"}
+                or (job["status"] == "unknown" and process_id)
+                or (
+                    job["status"] == "succeeded"
+                    and (job.get("result") or {}).get("status") == "running"
+                )
             ):
                 ready = False
         self.continuations.refresh(wait["id"], wait["jobs"], jobs, ready)
 
+    async def request_process_observation(
+        self,
+        owner: str,
+        task_id: str,
+        process_id: str,
+        previous_job_id: str,
+        *,
+        request_prefix: str,
+        max_bytes: int,
+    ) -> dict:
+        request_id = request_prefix + previous_job_id
+        attempt = self.store.one(
+            "SELECT id AS job_id,status,updated FROM jobs WHERE owner=? AND task_id=? "
+            "AND tool='read_process' AND (request_id=? OR request_id GLOB ?) "
+            "ORDER BY rowid DESC LIMIT 1",
+            (owner, task_id, request_id, request_id + ":*"),
+        )
+        if attempt:
+            if (
+                attempt["status"] not in {"failed", "unknown"}
+                or time.time() - attempt["updated"] < 10
+            ):
+                return attempt
+            request_id += ":" + attempt["job_id"]
+        cursor = self.store.one(
+            "SELECT CASE WHEN json_valid(result) THEN CASE "
+            "WHEN json_type(result,'$.next_cursor')='integer' "
+            "THEN max(0,json_extract(result,'$.next_cursor')) ELSE 0 END ELSE 0 END AS cursor "
+            "FROM jobs WHERE id=?",
+            (previous_job_id,),
+        )["cursor"]
+        return await self.call(
+            owner,
+            "read_process",
+            {
+                "task_id": task_id,
+                "process_id": process_id,
+                "cursor": cursor,
+                "max_bytes": max_bytes,
+                "wait_seconds": 0,
+                "request_id": request_id,
+            },
+        )
+
     async def observe_card_processes(self, task: dict):
         """Refresh bounded live process observations independently of messaging consent."""
-        if task["status"] == "completed" or task["kind"] != "coding":
+        if (
+            task["archived_at"] is not None
+            or task["status"] == "completed"
+            or task["kind"] != "coding"
+        ):
             return
         runner = self.store.one("SELECT seen FROM runners WHERE id=?", (task["runner"],))
         if not runner or time.time() - runner["seen"] >= 15:
             return
         observations = self.store.rows(
-            "WITH selected AS (SELECT latest.id,state.process_id,latest.updated "
+            "SELECT latest.id,state.process_id "
             "FROM process_states state JOIN jobs latest ON latest.id=("
             "SELECT id FROM jobs INDEXED BY process_observations "
             "WHERE task_id=state.task_id AND process_id=state.process_id AND status='succeeded' "
             "AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files') "
             "ORDER BY updated DESC,id DESC LIMIT 1) "
             "WHERE state.task_id=? AND state.status='running' AND latest.updated<? "
-            "ORDER BY latest.updated,latest.id LIMIT 2) "
-            "SELECT selected.id,selected.process_id,CASE WHEN json_valid(jobs.result) "
-            "THEN coalesce(json_extract(jobs.result,'$.next_cursor'),0) ELSE 0 END AS cursor "
-            "FROM selected JOIN jobs ON jobs.id=selected.id ORDER BY selected.updated,selected.id",
+            "ORDER BY latest.updated,latest.id LIMIT 2",
             (task["id"], time.time() - 10),
         )
         for observed in observations:
-            await self.call(
+            await self.request_process_observation(
                 task["owner"],
-                "read_process",
-                {
-                    "task_id": task["id"],
-                    "process_id": observed["process_id"],
-                    "cursor": observed["cursor"],
-                    "max_bytes": 8192,
-                    "wait_seconds": 0,
-                    "request_id": "card-observe:" + observed["id"],
-                },
+                task["id"],
+                observed["process_id"],
+                observed["id"],
+                request_prefix="card-observe:",
+                max_bytes=8192,
             )
 
     async def sync_card_watch(
         self, task: dict, *, manual: bool = False, request_id: str | None = None
     ):
         """Observe existing jobs; automatic consent is held only by the active view."""
-        if task["status"] == "completed" or task["kind"] != "coding":
+        if (
+            task["archived_at"] is not None
+            or task["status"] == "completed"
+            or task["kind"] != "coding"
+        ):
             return
         controller = self.store.one("SELECT * FROM task_controllers WHERE task_id=?", (task["id"],))
         automatic = bool(
@@ -641,9 +758,8 @@ class Service:
                 "SELECT id FROM jobs WHERE task_id=? "
                 "AND tool NOT IN ('read_process','list_processes','workspace_info','review_changes') "
                 "AND (created>=? OR status IN ('queued','running') OR (process_status='running' AND "
-                "(SELECT latest.process_status FROM jobs latest WHERE latest.task_id=jobs.task_id "
-                "AND latest.process_id=jobs.process_id AND latest.status='succeeded' "
-                "ORDER BY latest.updated DESC,latest.id DESC LIMIT 1)='running')) "
+                "EXISTS (SELECT 1 FROM process_states WHERE task_id=jobs.task_id "
+                "AND process_id=jobs.process_id AND status='running'))) "
                 "AND NOT EXISTS (SELECT 1 FROM task_watch_members m WHERE m.task_id=jobs.task_id AND m.job_id=jobs.id) "
                 "ORDER BY created LIMIT 64",
                 (task["id"], controller["enabled_at"]),
@@ -674,7 +790,9 @@ class Service:
         continuation = self.continuations.public(task["id"], window)
         wait = continuation["wait"]
         reason = None
-        if task["status"] == "completed":
+        if task["archived_at"] is not None:
+            reason = "archived"
+        elif task["status"] == "completed":
             reason = "completed"
         elif task["kind"] != "coding":
             reason = "unsupported_task"
@@ -729,7 +847,14 @@ class Service:
         )
         return {key: review[key] for key in ("job_id", "status", "next_action") if key in review}
 
-    def task_handoff(self, task: dict, progress: dict, *, include_output: bool = True) -> dict:
+    def task_handoff(
+        self,
+        task: dict,
+        progress: dict,
+        *,
+        include_output: bool = True,
+        observations: dict[str, dict] | None = None,
+    ) -> dict:
         saved = self.store.one(
             "SELECT snapshot,updated FROM task_handoffs WHERE task_id=?", (task["id"],)
         )
@@ -771,7 +896,11 @@ class Service:
         outputs = []
         validation = list(notes.get("validation", []))
         for process in progress["process_observations"][:5]:
-            observation = self.store.job(process["job_id"], task["owner"]) if include_output else {}
+            observation = {}
+            if include_output:
+                observation = (observations or {}).get(process["job_id"]) or self.store.job(
+                    process["job_id"], task["owner"]
+                )
             result = observation.get("result") or {}
             original = (
                 self.store.one(
@@ -798,7 +927,9 @@ class Service:
                     "exit_code": process["exit_code"],
                     "output": str(result.get("output", ""))[-1200:],
                     "command": command,
-                    "next_action": observation.get("next_action"),
+                    "next_action": observation.get("next_action")
+                    if task["archived_at"] is None
+                    else None,
                     "output_cursor": observation.get("output_cursor", result.get("next_cursor", 0)),
                     "unread": bool(observation.get("unread_output") or result.get("has_more")),
                     "observed_at": process["observed_at"],
@@ -821,10 +952,12 @@ class Service:
             "files_observed_at": reviewed_at,
         }
 
-    def task_presentation(self, task: dict, window: str | None = None) -> dict:
+    def task_presentation(
+        self, task: dict, window: str | None = None, *, include_handoff: bool = True
+    ) -> dict:
         progress = self.task_progress(task, window, include_output=False)
         continuation = self.task_continuation(task, window)
-        return {
+        result = {
             "task": {
                 "id": task["id"],
                 "title": task["title"],
@@ -841,15 +974,20 @@ class Service:
                 "liveness": progress["liveness"],
             },
             "continuation": continuation,
-            "handoff": self.task_handoff(task, progress, include_output=False),
         }
+        if include_handoff:
+            result["handoff"] = self.task_handoff(task, progress, include_output=False)
+        return result
 
     def resume_legacy_jobs(self):
         # Upgrade old queues in place; revoked access and completed tasks never execute.
         with self.store.db:
             for job in self.store.rows(
-                "SELECT jobs.*,tasks.kind,tasks.status AS task_status FROM jobs "
-                "JOIN tasks ON tasks.id=jobs.task_id WHERE jobs.status='pending_approval'"
+                "SELECT jobs.id,jobs.task_id,jobs.owner,jobs.runner,jobs.project,jobs.tool,"
+                "tasks.kind,tasks.status AS task_status FROM jobs INDEXED BY pending_jobs "
+                "JOIN tasks ON tasks.id=jobs.task_id "
+                "WHERE jobs.status IN ('queued','pending_approval','running') "
+                "AND jobs.status='pending_approval'"
             ):
                 client = self.config.clients.get(job["owner"])
                 definition = (PROJECT_OPERATIONS if job["kind"] == "project" else REMOTE).get(
@@ -884,6 +1022,31 @@ class Service:
                 allowed.update(runner + "/" + name for name in root["projects"])
         return allowed
 
+    def list_task_page(
+        self,
+        owner: str,
+        offset: int,
+        limit: int,
+        *,
+        include_archived: bool,
+        catalog: bool = False,
+    ) -> tuple[list[dict], int | None]:
+        allowed = sorted(self.allowed_projects(owner))
+        roots = self.config.clients[owner].project_roots
+        project_slots = ",".join("?" for _ in allowed) or "NULL"
+        root_slots = ",".join("?" for _ in roots) or "NULL"
+        # Catalog pages are sorted by the task center after collection. Updates must not shift them.
+        order = "rowid" if catalog else "updated DESC,rowid DESC"
+        rows = self.store.rows(
+            "SELECT id,title,runner,project,kind,status,summary,updated,archived_at FROM tasks WHERE owner=? "
+            "AND (? OR archived_at IS NULL) "
+            f"AND ((kind='coding' AND runner||'/'||project IN ({project_slots})) "
+            f"OR (kind='project' AND runner||'/'||project IN ({root_slots}))) "
+            f"ORDER BY {order} LIMIT ? OFFSET ?",
+            (owner, include_archived, *allowed, *roots, limit + 1, offset),
+        )
+        return rows[:limit], offset + limit if len(rows) > limit else None
+
     def check_project(self, owner: str, project: str, kind: str = "coding"):
         allowed = (
             self.config.clients[owner].project_roots
@@ -894,7 +1057,12 @@ class Service:
             raise ValueError("Project is not authorized for this client")
 
     def task_progress(
-        self, task: dict, window: str | None = None, *, include_output: bool = True
+        self,
+        task: dict,
+        window: str | None = None,
+        *,
+        include_output: bool = True,
+        handoff_jobs: dict[str, dict] | None = None,
     ) -> dict:
         activity = self.store.task_activity(task, include_output=include_output)
         work = activity.pop("work")
@@ -920,8 +1088,14 @@ class Service:
                     if observation.get("next_action"):
                         actions.append(observation["next_action"])
         output_actions = []
-        for process in activity["process_observations"] if include_output else []:
-            observation = self.store.job(process["job_id"], task["owner"])
+        for index, process in enumerate(activity["process_observations"] if include_output else []):
+            observation = (
+                self.store.job(process["job_id"], task["owner"])
+                if index
+                else activity["latest_execution"]
+            )
+            if handoff_jobs is not None and index < 5:
+                handoff_jobs[process["job_id"]] = observation
             action = observation.get("next_action")
             if action and (
                 (observation.get("result") or {}).get("has_more")
@@ -972,7 +1146,12 @@ class Service:
             "SELECT count(*) AS count FROM questions WHERE task_id=? AND answer IS NULL",
             (task["id"],),
         )["count"]
-        if binding != task["binding"]:
+        if task["archived_at"] is not None:
+            state, message = (
+                "archived",
+                "This task is archived. Restore it in the task center to continue.",
+            )
+        elif binding != task["binding"]:
             state, message = (
                 "project_changed",
                 "The registered project changed. Inspect its identity before creating a replacement task.",
@@ -1019,9 +1198,9 @@ class Service:
             "recent_process_issues": failed,
             "unanswered_operator_questions": questions,
             "next_actions": []
-            if state in {"waiting_runner", "project_changed", "completed"}
+            if state in {"waiting_runner", "project_changed", "completed", "archived"}
             else actions,
-            "output_actions": output_actions,
+            "output_actions": [] if state == "archived" else output_actions,
             "liveness": {
                 "observed_at": time.time(),
                 "runner_last_seen": runner["seen"] if runner else None,
@@ -1138,7 +1317,9 @@ class Service:
             else:
                 return None
             if isinstance(task_id, str):
-                return TaskTools(self, owner).task(task_id)["id"]
+                task = TaskTools(self, owner).task(task_id)
+                if task["archived_at"] is None:
+                    return task["id"]
         except (ValueError, KeyError):
             pass
         return None
@@ -1298,6 +1479,9 @@ class Service:
             request_id = args.pop("request_id")
         if request_id is not None and (not request_id or len(request_id) > 128):
             raise ValueError("request_id must contain 1–128 characters")
+        if name == "exec_command" and args["timeout_seconds"] is None:
+            # Older Runners accept an omitted timeout but reject null.
+            del args["timeout_seconds"]
         job = self.store.enqueue(
             task,
             name,
@@ -1315,13 +1499,24 @@ def mcp_result(result: dict) -> types.CallToolResult:
     error = result.get("status") in {"failed", "cancelled", "unknown"}
     if native:
         converted = types.CallToolResult.model_validate(native)
-        content.extend(converted.content)
         error = error or converted.isError
         result = dict(result)
         result["result"] = {k: v for k, v in result["result"].items() if k != "mcp_result"}
-        if converted.structuredContent is not None:
-            result["result"]["provider_result"] = converted.structuredContent
-    content.insert(0, types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
+        provider = converted.structuredContent
+        if provider is not None:
+            result["result"]["provider_result"] = provider
+        for item in converted.content:
+            if (
+                provider is not None
+                and isinstance(item, types.TextContent)
+                and item.text.lstrip().startswith("{")
+            ):
+                try:
+                    if json.loads(item.text) == provider:
+                        continue
+                except (json.JSONDecodeError, RecursionError):
+                    pass
+            content.append(item)
     return types.CallToolResult(content=content, structuredContent=result, isError=error)
 
 
@@ -1542,20 +1737,22 @@ def create_app(config: ServerConfig):
             "only for native applications, OS dialogs, or a necessary step that available browser tools "
             "cannot perform. Return to browser tools after that step. A denied website or tool permission "
             "must not be bypassed through desktop control. For existing projects, use projects_list, "
-            "then work_on_project(project, title, request_id) to start, or work_on_project(task_id) to resume. "
+            "then work_on_project(project, title, request_id) to start. "
             "A task_id identifies persistent Server work, not a conversation or repository. Independent work "
             "gets a new task even in the same repository. When the user requests continuation from another "
-            "conversation, use task_list/task_get to find the original task, task_takeover to read its handoff "
-            "and transfer card control, then work_on_project(task_id) with that same ID. Preserve original "
+            "conversation, use task_list only if you need the ID. Call task_takeover once for its current "
+            "progress, handoff and card control, then follow its next_action. Inspect workspace_info separately "
+            "only when you need the current project's details. Preserve original "
             "job_id/process_id and read their results instead of restarting commands or creating a replacement. "
             "The returned workspace already contains the initial Git status and root instructions; avoid "
-            "repeating those reads without a reason. task_create and task_list/task_get remain available. Read applicable "
-            "AGENTS.md and matching skills before changing code. Preserve unrelated edits. Use file hashes for "
-            "edits and run relevant tests. Use task_review to show changed files, new untracked files, "
+            "repeating those reads without a reason. For several project images, use view_images to screen "
+            "a batch on the Runner. Use view_image only for the selected originals that need closer inspection. Read applicable "
+            "AGENTS.md and matching skills before changing code. Preserve unrelated edits and run relevant "
+            "tests. Use task_review to show changed files, new untracked files, "
             "per-file diffs and actual execution results before closeout. Reviews remain available after completion. "
             "Save the current summary/plan with task_update in the user's language; for Traditional Chinese "
             "requests use Traditional Chinese, short Markdown paragraphs or bullets, and code spans for paths. "
-            "On resume, task_get.progress takes precedence over saved status/summary/plan. A stale waiting "
+            "On resume, use the returned progress to decide the next step. A stale waiting "
             "summary is not a current blocker. Read latest_execution: job status succeeded only means the "
             "tool returned; outcome/exit_code can show command failure. "
             "Continue authorized work in the same turn. Keep job_get/read_process as the default "

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import os
 import signal
 import sqlite3
@@ -82,6 +83,56 @@ async def test_log_failure_does_not_launch_an_untracked_process(processes, monke
         assert not processes.active
     finally:
         await reap_test_children(processes, children)
+
+
+@pytest.mark.parametrize(
+    "tty", [False, pytest.param(True, marks=pytest.mark.skipif(os.name == "nt", reason="Unix PTY"))]
+)
+async def test_capture_failure_preserves_output_and_releases_process_slot(
+    processes, monkeypatch, tty
+):
+    open_path = Path.open
+
+    class FullLog:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def write(self, data):
+            self.stream.write(data[:5])
+            self.stream.flush()
+            raise OSError(errno.ENOSPC, "log full")
+
+        def close(self):
+            self.stream.close()
+            raise OSError(errno.ENOSPC, "log full during close")
+
+    def open_log(path, mode="r", *args, **kwargs):
+        stream = open_path(path, mode, *args, **kwargs)
+        return FullLog(stream) if path.name == "full.log" and mode == "wb" else stream
+
+    monkeypatch.setattr(Path, "open", open_log)
+    processes.config.max_processes = 1
+    await processes.start(
+        "full",
+        "task",
+        [sys.executable, "-c", "import time; print('saved and lost', flush=True); time.sleep(2)"],
+        processes.config.projects["project"],
+        5,
+        tty,
+    )
+    await processes.wait("full", "task", 5)
+    result = processes.read("full", "task")
+    assert (result["status"], result["output"], result["truncated"]) == ("failed", "saved", True)
+    assert not processes.active
+    await processes.start(
+        "next",
+        "task",
+        [sys.executable, "-c", "print('ok')"],
+        processes.config.projects["project"],
+        5,
+    )
+    await processes.wait("next", "task", 5)
+    assert processes.read("next", "task")["status"] == "completed"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Real Unix process-group fixture")

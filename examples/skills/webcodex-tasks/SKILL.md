@@ -11,11 +11,14 @@ description: 使用 WebCodex 開始工作、續接原任務、跨對話接手或
 
 - 獨立的新工作：用 `projects_list` 選擇確切專案，再以 `work_on_project(project, title, request_id)` 建立新任務並保存回傳的 `task_id`。不要只因 repo 相同就沿用其他對話的任務。
 - 使用者要求延續原工作：已知 ID 就用 `task_get(task_id)`；未知時以 `task_list` 找到對應目標，再讀 `task_get`。同一客戶身分（owner）及現行專案權限內才能續接；跨帳號需另行授權。
-- 使用者要求換到目前對話接手：呼叫 `task_takeover(task_id)`，讀取回傳的 `handoff` 與即時 `progress`，依 `next_action` 顯示工作卡。同一任務的卡片控制權只交給一個視窗；接手會撤回舊卡片的發訊權，原有命令繼續執行，自動訊息保持關閉。
+- 封存任務可用 `task_list(include_archived=true)` 查找歷史。須從任務中心還原後才能接手或送出新工具工作。
+- 使用者要求換到目前對話接手時，直接呼叫 `task_takeover(task_id)`，使用它回傳的 `handoff` 和 `progress` 接續，依 `next_action` 顯示工作卡。需要查找 ID 時用 `task_list`。接手會撤回舊卡片的發訊權，原有命令繼續執行，自動訊息保持關閉。
 
 續接時沿用原 `task_id`、`job_id` 與 `process_id`。queued/running job 用 `job_get`；已有程序用 `read_process`／`write_stdin`。從實際輸出與交接的下一步繼續，`progress` 優先於可能過時的 summary／plan。不要另開替代任務或重跑仍在執行的命令；遺失回應時查原 job，重試同一請求沿用 `request_id`。
 
 例如對話 A 使用 `T1`，對話 B 建立 `T2`，兩者的任務紀錄分開；B 只有明確沿用 `T1` 才會看到 A 的工作並續接。
+
+批次檢查圖片時，用 `view_images` 一次預覽最多 20 個指定路徑。依編號挑出需要細看的圖，再用 `view_image` 讀取原圖。
 
 ## 判讀工作卡
 

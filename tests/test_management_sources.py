@@ -76,9 +76,11 @@ def test_management_sources_are_explicit_per_client_and_hide_tokens_in_repr(tmp_
         ManagementSource(url="https://example.com", token="x" * 40 + "\n")
 
 
-async def test_portal_observes_real_legacy_server_and_handoff_is_read_only(harness, tmp_path):
+async def test_portal_archives_at_the_source_and_preserves_existing_process(harness, tmp_path):
     source = ManagementSource(url=harness.url, token="c" * 40, label="Windows")
-    app = create_app(portal_config(tmp_path / "portal", {"windows": source}))
+    config = portal_config(tmp_path / "portal", {"windows": source})
+    config.clients["owner"].permissions.add("write")
+    app = create_app(config)
     remote = harness.app.state.service
     async with harness.http() as client:
         created = await client.post(
@@ -131,7 +133,7 @@ async def test_portal_observes_real_legacy_server_and_handoff_is_read_only(harne
                         "id": "windows",
                         "label": "Windows",
                         "runner_labels": {},
-                        "can_update_tasks": False,
+                        "can_update_tasks": True,
                     }
                 ]
             }
@@ -157,6 +159,8 @@ async def test_portal_observes_real_legacy_server_and_handoff_is_read_only(harne
             assert (
                 task_id in handoff["continuation_prompt"]
                 and "task_takeover" in handoff["continuation_prompt"]
+                and "task_get" not in handoff["continuation_prompt"]
+                and "work_on_project" not in handoff["continuation_prompt"]
             )
             assert remote.store.one("SELECT count(*) AS n FROM jobs")["n"] == jobs_before
             assert remote.store.rows("SELECT * FROM task_controllers") == controller_before
@@ -169,19 +173,51 @@ async def test_portal_observes_real_legacy_server_and_handoff_is_read_only(harne
                 await portal.get("/api/manage/sources/windows/state?archived=archived")
             ).json()
             assert [row["id"] for row in archived_view["tasks"]] == [task_id]
-            assert (await portal.get(base)).json()["archived"] is True
-            assert remote.store.task(task_id, "owner") == task_before
+            detail = (await portal.get(base)).json()
+            assert detail["archived"] is True and detail["state"] == "archived"
+            assert (await portal.get(base + "/handoff")).json()["continuation_prompt"] is None
+            assert (
+                await portal.post("/api/manage/sources/windows/refresh", json={"task_id": task_id})
+            ).json()["updates"] == []
+            assert (
+                await portal.post(base + "/status", json={"status": "completed"})
+            ).status_code == 409
+            saved = remote.store.task(task_id, "owner")
+            assert saved.pop("archived_at") is not None
+            task_before.pop("archived_at")
+            assert saved == task_before
+            async with harness.mcp() as mcp:
+                default = await mcp.call_tool("task_list", {})
+                assert default.structuredContent["tasks"] == []
+                history = await mcp.call_tool("task_list", {"include_archived": True})
+                assert [row["id"] for row in history.structuredContent["tasks"]] == [task_id]
+                retained = await mcp.call_tool("task_get", {"task_id": task_id})
+                assert retained.structuredContent["progress"]["state"] == "archived"
+                assert retained.structuredContent["progress"]["next_actions"] == []
+                for tool, arguments in (
+                    ("work_on_project", {}),
+                    ("task_takeover", {}),
+                    ("workspace_info", {}),
+                    ("task_wait", {"job_ids": [execution["job_id"]], "request_id": "archive"}),
+                ):
+                    blocked = await mcp.call_tool(tool, {"task_id": task_id, **arguments})
+                    assert blocked.isError and "Task is archived" in str(blocked.content)
+                card = await mcp.call_tool(
+                    "task_app", {"task_id": task_id, "action": "bind", "view_id": "1" * 32}
+                )
+                assert card.structuredContent["control"] == {"bound": False, "reason": "archived"}
             assert remote.store.one("SELECT count(*) AS n FROM jobs")["n"] == jobs_before
             assert remote.store.rows("SELECT * FROM task_controllers") == controller_before
             restored = await portal.post(base + "/archive", json={"archived": False})
             assert restored.status_code == 200 and restored.json()["archived"] is False
+            assert task_id in (await portal.get(base + "/handoff")).json()["continuation_prompt"]
             assert (await portal.get("/api/manage/sources/windows/state")).json()[
                 "total_count"
             ] == 1
 
             await asyncio.sleep(0.6)
             refreshed = await portal.post(
-                "/api/manage/sources/windows/refresh", json={"task_id": task_id}
+                "/api/manage/sources/windows/refresh", json={"task_ids": ["expired-link", task_id]}
             )
             assert refreshed.status_code == 200 and refreshed.json()["updates"]
             detail = (await portal.get(base)).json()
@@ -248,7 +284,6 @@ async def test_mark_complete_and_reopen_updates_source_and_preserves_notes(harne
                 )
             ).status_code == 400
             await portal.get("/api/manage/sources/windows/state")
-            await portal.post(base + "/archive", json={"archived": True})
             for status in ("completed", "active"):
                 response = await portal.post(base + "/status", json={"status": status})
                 assert response.status_code == 200 and response.json()["status"] == status
@@ -259,7 +294,7 @@ async def test_mark_complete_and_reopen_updates_source_and_preserves_notes(harne
                     await portal.get("/api/manage/sources/windows/state?archived=all")
                 ).json()
                 assert archived["tasks"][0]["status"] == status
-                assert archived["tasks"][0]["archived"] is True
+                assert archived["tasks"][0]["archived"] is False
                 assert store.job(job["job_id"], "owner")["status"] != "cancelled"
             other = store.create_task("reviewer", "local/project", "其他帳號")
             denied = await portal.post(
@@ -368,6 +403,9 @@ async def test_local_catalog_prioritizes_old_work_searches_before_paging_and_kee
     assert state["next_offset"] == 1 and state["total_count"] == 67
     active = json.loads((await manager.state(scoped_request(query="state=active"))).body)
     assert [task["id"] for task in active["tasks"]] == [live["id"]]
+    window = json.loads((await manager.state(scoped_request(query="window=120"))).body)
+    assert len(window["tasks"]) == window["total_count"] == 67
+    assert window["tasks"][0]["id"] == live["id"] and window["next_offset"] is None
     searched = json.loads(
         (await manager.state(scoped_request(query="q=Completed%2064&limit=1"))).body
     )
@@ -1058,11 +1096,24 @@ def test_catalog_does_not_count_internal_observation_jobs_as_active(activity_ser
     assert manager.local_catalog("owner")[0]["_priority"] == 0
 
 
-async def test_archive_is_persistent_viewer_preference_while_source_is_offline(tmp_path):
-    source = ManagementSource(url="https://offline.invalid", token="s" * 40)
-    config = portal_config(tmp_path / "portal", {"windows": source, "ubuntu": source})
-    config.clients["other"].management_sources = {"windows": source}
+async def test_archive_requires_write_and_source_confirmation(tmp_path, monkeypatch):
+    source = ManagementSource(url="https://windows.example", token="s" * 40)
+    config = portal_config(tmp_path / "portal", {"windows": source})
     app = create_app(config)
+    manager = app.state.management_sources
+    failure = None
+
+    async def upstream(request):
+        assert request.method == "POST" and request.url.path == "/api/manage/tasks/same-id/archive"
+        if failure is None:
+            raise httpx.ConnectError("Offline")
+        return httpx.Response(failure)
+
+    monkeypatch.setattr(
+        manager,
+        "remote_client",
+        lambda *_: httpx.AsyncClient(base_url=source.url, transport=httpx.MockTransport(upstream)),
+    )
     base = "/api/manage/sources/windows/tasks/same-id/archive"
     try:
         async with httpx.AsyncClient(
@@ -1071,7 +1122,12 @@ async def test_archive_is_persistent_viewer_preference_while_source_is_offline(t
             headers={"Authorization": "Bearer " + "portal" * 8},
         ) as client:
             response = await client.post(base, json={"archived": True})
-            assert response.status_code == 200 and response.json()["archived"] is True
+            assert response.status_code == 403
+            config.clients["owner"].permissions.add("write")
+            assert (await client.post(base, json={"archived": True})).status_code == 502
+            failure = 404
+            assert (await client.post(base, json={"archived": True})).status_code == 404
+            assert manager.archived_ids("owner", "windows") == set()
             for body in ({"archived": "yes"}, {"archived": True, "status": "completed"}, {}):
                 assert (await client.post(base, json=body)).status_code == 400
             assert (
@@ -1084,18 +1140,131 @@ async def test_archive_is_persistent_viewer_preference_while_source_is_offline(t
         await app.state.management_sources.close()
         app.state.service.store.close()
         app.state.service.diagnostics.close()
-    reopened = create_app(config)
+
+
+async def test_legacy_archive_migrates_to_remote_task_and_restore_stays_restored(
+    harness, tmp_path, monkeypatch
+):
+    source = ManagementSource(url=harness.url, token="c" * 40, label="Windows")
+    config = portal_config(tmp_path / "portal", {"windows": source})
+    config.clients["owner"].permissions.add("write")
+    app = create_app(config)
+    manager = app.state.management_sources
+    remote = harness.app.state.service.store
+    task_id = remote.create_task("owner", "local/project", "Previously archived")["id"]
+    database = app.state.service.store.db
+    with database:
+        database.execute(
+            "INSERT INTO management_archives VALUES ('owner','windows',?,?)",
+            (task_id, time.time() - 60),
+        )
+    legacy_task = harness.app.state.management_sources.management.describe(
+        remote.task(task_id, "owner")
+    )
+    legacy_task.pop("archived")
+
+    async def legacy_source(request):
+        assert request.method == "GET" and request.url.path == "/api/manage/state"
+        return httpx.Response(
+            200,
+            json={"tasks": [legacy_task], "runners": [], "observed_at": time.time()},
+        )
+
     try:
-        manager = Sources(Management(reopened.state.service))
-        assert manager.archived_ids("owner", "windows") == {"same-id"}
-        assert manager.archived_ids("other", "windows") == set()
-        assert manager.archived_ids("owner", "ubuntu") == set()
-        assert reopened.state.service.store.rows("SELECT * FROM tasks") == []
-        assert reopened.state.service.store.rows("SELECT * FROM jobs") == []
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1",
+            headers={"Authorization": "Bearer " + "portal" * 8},
+        ) as portal:
+            base = "/api/manage/sources/windows"
+            with monkeypatch.context() as legacy:
+                legacy.setattr(
+                    manager,
+                    "remote_client",
+                    lambda *_: httpx.AsyncClient(
+                        base_url=source.url, transport=httpx.MockTransport(legacy_source)
+                    ),
+                )
+                pending = (await portal.get(base + "/state?archived=archived")).json()
+                assert pending["tasks"][0]["archive_pending"] is True
+                assert (await portal.post(base + "/refresh", json={"task_id": task_id})).json()[
+                    "updates"
+                ] == []
+                assert remote.task(task_id, "owner")["archived_at"] is None
+            manager.catalogs.clear()
+            tasks = (await portal.get(base + "/state?archived=archived")).json()["tasks"]
+            assert [row["id"] for row in tasks] == [task_id]
+            assert tasks[0]["archived"] and not tasks[0]["archive_pending"]
+            assert remote.task(task_id, "owner")["archived_at"] is not None
+            assert manager.archived_ids("owner", "windows") == set()
+            restored = await portal.post(
+                base + f"/tasks/{task_id}/archive", json={"archived": False}
+            )
+            assert restored.status_code == 200
+            tasks = (await portal.get(base + "/state")).json()["tasks"]
+            assert [row["id"] for row in tasks] == [task_id]
+            assert remote.task(task_id, "owner")["archived_at"] is None
+    finally:
+        await manager.close()
+        app.state.service.store.close()
+        app.state.service.diagnostics.close()
+
+
+async def test_legacy_local_archive_pauses_queue_and_cancels_continuation(tmp_path):
+    config = ServerConfig(
+        state_dir=tmp_path / "source",
+        admin_token="a" * 40,
+        runners={"local": "r" * 40},
+        clients={"owner": Client(token="c" * 40, projects=["local/project"])},
+    )
+    app = create_app(config)
+    service = app.state.service
+    store = service.store
+    store.register("local", "instance", {"project": "b" * 64})
+    task = store.create_task("owner", "local/project", "Previously archived")
+    running = store.enqueue(task, "list_files", {}, "in-flight", 100)
+    assert [row["id"] for row in store.claim("local", "instance", 1)] == [running["job_id"]]
+    queued = store.enqueue(task, "list_files", {}, "queued", 100)
+    service.continuations.arm(task["id"], [queued["job_id"]], "old-watch")
+    archived_at = time.time() - 60
+    with store.db:
+        store.db.execute(
+            "INSERT INTO management_archives VALUES ('owner','local',?,?)",
+            (task["id"], archived_at),
+        )
+    await app.state.management_sources.close()
+    store.close()
+    service.diagnostics.close()
+    reopened = create_app(config)
+    service = reopened.state.service
+    store = service.store
+    try:
+        assert store.task(task["id"], "owner")["archived_at"] == archived_at
+        assert service.continuations.current(task["id"])["state"] == "cancelled"
+        assert store.claim("local", "instance", 1) == []
+        assert store.job(queued["job_id"], "owner")["status"] == "queued"
+        store.complete("local", running["job_id"], "instance", "succeeded", {"files": ["done"]})
+        assert store.job(running["job_id"], "owner")["result"]["files"] == ["done"]
+        with pytest.raises(ValueError, match="Task is archived"):
+            store.enqueue(task, "list_files", {}, None, 100)
+        other = store.create_task("owner", "local/project", "New work")
+        other_job = store.enqueue(other, "list_files", {}, None, 1)
+        assert [row["id"] for row in store.claim("local", "instance", 1)] == [other_job["job_id"]]
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=reopened),
+            base_url="http://127.0.0.1",
+            headers={"Authorization": "Bearer " + "c" * 40},
+        ) as client:
+            restored = await client.post(
+                f"/api/manage/tasks/{task['id']}/archive", json={"archived": False}
+            )
+            assert restored.status_code == 200
+        assert [row["id"] for row in store.claim("local", "instance", 1)] == [queued["job_id"]]
+        assert service.continuations.current(task["id"])["state"] == "cancelled"
     finally:
         await reopened.state.management_sources.close()
-        reopened.state.service.store.close()
-        reopened.state.service.diagnostics.close()
+        store.close()
+        service.diagnostics.close()
 
 
 async def test_complete_project_options_and_environment_filters(activity_service, monkeypatch):
@@ -1189,6 +1358,37 @@ async def test_local_and_remote_priorities_agree_on_changed_project_and_old_appr
     )
 
 
+async def test_attention_includes_offline_tasks_with_unanswered_questions(
+    activity_service, monkeypatch
+):
+    service, task = activity_service
+    store = service.store
+    service.config.clients["owner"].management_sources = {
+        "windows": ManagementSource(url="https://windows.example", token="w" * 40)
+    }
+    manager = Sources(Management(service))
+    store.enqueue(task, "read_file", {}, "pending-offline", 100)
+    with store.db:
+        store.db.execute("UPDATE runners SET seen=?", (time.time() - 30,))
+        store.db.execute(
+            "INSERT INTO questions(id,task_id,question,created) VALUES (?,?,?,?)",
+            ("offline-question", task["id"], "Which file?", time.time()),
+        )
+
+    async def remote_catalog(owner, source_id):
+        return {
+            "tasks": [manager.management.describe(task)],
+            "runners": manager.management.runners(owner),
+            "observed_at": time.time(),
+        }
+
+    monkeypatch.setattr(manager, "remote_catalog", remote_catalog)
+    for source in ("local", "windows"):
+        data = json.loads((await manager.state(scoped_request(source, "state=attention"))).body)
+        assert data["total_count"] == 1
+        assert data["tasks"][0]["unanswered_operator_questions"] == 1
+
+
 @pytest.mark.parametrize("source_id", ["local", "windows"])
 async def test_unfinished_and_completed_filters_intersect_archive_without_resurrecting_work(
     activity_service, monkeypatch, source_id
@@ -1268,9 +1468,7 @@ async def test_unfinished_and_completed_filters_intersect_archive_without_resurr
             ),
         )
     for name in ("archived_unfinished", "archived_completed"):
-        request = scoped_request(source_id, task_id=tasks[name]["id"])
-        request._json = {"archived": True}
-        assert (await manager.archive(request)).status_code == 200
+        service.set_task_archive("owner", tasks[name]["id"], time.time())
 
     unfinished = {"live", "idle", "attention", "stale"}
     completed = {"done_live", "done_stale", "done_attention"}
@@ -1300,14 +1498,14 @@ async def test_unfinished_and_completed_filters_intersect_archive_without_resurr
 
     # Completion changes the task list classification, not the saved work observations.
     all_tasks = data["tasks"]
-    assert [task["status"] == "completed" for task in all_tasks] == [False] * 5 + [True] * 4
+    assert [task["state"] for task in all_tasks[-2:]] == ["archived", "archived"]
     by_id = {task["id"]: task for task in all_tasks}
     assert priority(by_id[live["id"]]) == 0
     assert any(job["status"] == "pending_approval" for job in by_id[live["id"]]["jobs"])
     assert by_id[tasks["done_live"]["id"]]["processes"][0]["status"] == "running"
     assert by_id[tasks["done_stale"]["id"]]["liveness"]["work"]["unconfirmed_count"] == 1
     assert store.job(residual["job_id"], "owner")["status"] == "running"
-    for name in completed | {"archived_completed"}:
+    for name in completed:
         assert priority(by_id[tasks[name]["id"]]) == 3
     assert all(
         task["_priority"] == 3

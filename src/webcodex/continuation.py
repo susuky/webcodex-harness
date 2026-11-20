@@ -550,15 +550,17 @@ class Continuations:
 
     def cancel(self, task_id: str):
         with self.transaction():
-            self._lose_view(task_id, time.time())
-            self.db.execute(
-                "UPDATE task_controllers SET auto_enabled=0 WHERE task_id=?", (task_id,)
-            )
-            self.db.execute(
-                "UPDATE task_waits SET state='cancelled',updated=? WHERE task_id=? "
-                "AND state IN ('watching','ready','prepared','accepted','unknown')",
-                (time.time(), task_id),
-            )
+            self.cancel_pending(task_id)
+
+    def cancel_pending(self, task_id: str):
+        now = time.time()
+        self._lose_view(task_id, now)
+        self.db.execute("UPDATE task_controllers SET auto_enabled=0 WHERE task_id=?", (task_id,))
+        self.db.execute(
+            "UPDATE task_waits SET state='cancelled',updated=? WHERE task_id=? "
+            "AND state IN ('watching','ready','prepared','accepted','unknown')",
+            (now, task_id),
+        )
 
     def public(self, task_id: str, window: str | None = None) -> dict:
         wait = self.current(task_id)

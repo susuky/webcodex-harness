@@ -67,7 +67,8 @@ async def test_password_session_reads_only_management_and_logout_revokes(harness
                 "/api/manage/refresh", json={"task_ids": []}, headers={"Origin": "http://ll1:8790"}
             )
         ).status_code == 200
-        archive = "/api/manage/sources/local/tasks/saved-task/archive"
+        task = harness.app.state.service.store.create_task("owner", "local/project", "Saved task")
+        archive = "/api/manage/sources/local/tasks/" + task["id"] + "/archive"
         assert (await browser.post(archive, json={"archived": True})).status_code == 403
         assert (
             await browser.post(archive, json={"archived": True}, headers={"Origin": harness.url})

@@ -37,10 +37,10 @@ def add_history(store, task):
     observation("old-live", "running", 1, 30)
     for index in range(110):
         observation(f"new-{index}", "completed", 20000 + index, 20000 + index)
-    # Equal observation timestamps must still select the greatest job ID.
+    # Keep terminal and running projections stable even at equal observation times.
     observation("tie-finished", "running", 2, 50)
     observation("tie-finished", "completed", 3, 50)
-    observation("tie-live", "completed", 4, 60)
+    observation("tie-live", "running", 4, 60)
     observation("tie-live", "running", 5, 60)
     active_agent = observation("legacy-live", "running", 6, 10)
     observation("legacy-finished", "running", 7, 10)

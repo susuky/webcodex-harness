@@ -12,7 +12,7 @@ from pathlib import Path
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
-from .store import INTERNAL_OBSERVATION_PREFIXES
+from .store import INTERNAL_OBSERVATION_PREFIXES, TaskArchived, require_unarchived
 
 PROCESS_FRESH_SECONDS = 90
 
@@ -58,7 +58,9 @@ def execution_freshness(task: dict, *, now: float | None = None) -> dict:
     )
     work.update(confirmed_running_count=fresh, unconfirmed_count=max(0, observed - fresh))
     task["liveness"] = {**liveness, "work": work}
-    if task.get("status") == "completed":
+    if task.get("archived"):
+        task["state"] = "archived"
+    elif task.get("status") == "completed":
         task["state"] = "completed"
     elif task.get("state") in {"project_changed", "waiting_operator"}:
         pass
@@ -81,7 +83,6 @@ class Management:
     def __init__(self, service):
         self.service = service
         self.observed: dict[tuple[str, str], float] = {}
-        self.inflight: dict[tuple[str, str], str] = {}
         self.lock = asyncio.Lock()
 
     def owner(self, request) -> str:
@@ -179,10 +180,12 @@ class Management:
                     k: task[k]
                     for k in ("id", "title", "runner", "project", "status", "summary", "updated")
                 },
+                "archived": task["archived_at"] is not None,
                 "runner_online": online,
                 "created_at": task["created"],
                 "started_at": started["started_at"] if started else None,
                 "state": state,
+                "unanswered_operator_questions": unanswered,
                 "processes": processes,
                 "jobs": [
                     {k: j.get(k) for k in ("job_id", "tool", "status", "updated")} for j in pending
@@ -201,11 +204,15 @@ class Management:
             }
         )
 
-    async def listing(self, owner: str, offset: int = 0, limit: int = 60) -> dict:
-        listed = await self.service.call(owner, "task_list", {"offset": offset, "limit": limit})
+    def listing(
+        self, owner: str, offset: int = 0, *, catalog: bool = False, include_archived: bool = True
+    ) -> dict:
+        rows, next_offset = self.service.list_task_page(
+            owner, offset, 60, include_archived=include_archived, catalog=catalog
+        )
         return {
-            "tasks": [self.describe(self.task(owner, row["id"])) for row in listed["tasks"]],
-            "next_offset": listed["next_offset"],
+            "tasks": [self.describe(self.task(owner, row["id"])) for row in rows],
+            "next_offset": next_offset,
         }
 
     async def state(self, request):
@@ -214,7 +221,10 @@ class Management:
         if offset < 0:
             raise ValueError("Invalid offset")
         return JSONResponse(
-            await self.state_data(owner, offset), headers={"Cache-Control": "no-store"}
+            await self.state_data(
+                owner, offset, catalog=request.query_params.get("catalog") == "1"
+            ),
+            headers={"Cache-Control": "no-store"},
         )
 
     def runners(self, owner: str) -> list[dict]:
@@ -227,8 +237,8 @@ class Management:
             if r["id"] in runner_ids
         ]
 
-    async def state_data(self, owner: str, offset: int = 0) -> dict:
-        result = await self.listing(owner, offset)
+    async def state_data(self, owner: str, offset: int = 0, *, catalog: bool = False) -> dict:
+        result = self.listing(owner, offset, catalog=catalog)
         result["runners"] = self.runners(owner)
         result["observed_at"] = time.time()
         return result
@@ -255,18 +265,24 @@ class Management:
             raise ValueError("Expected at most 100 task IDs")
         if task_id is not None and task_ids is not None:
             raise ValueError("Use task_id or task_ids")
-        if task_ids is None and task_id is not None:
-            task_ids = [task_id]
-        tasks = (
-            [self.describe(self.task(owner, value)) for value in dict.fromkeys(task_ids)]
-            if task_ids is not None
-            else (await self.listing(owner))["tasks"]
-        )
+        if task_id is not None:
+            tasks = [self.describe(self.task(owner, task_id))]
+        elif task_ids is None:
+            tasks = self.listing(owner, include_archived=False)["tasks"]
+        else:
+            tasks = []
+            for value in dict.fromkeys(task_ids):
+                try:
+                    task = self.task(owner, value)
+                except ValueError:
+                    # The browser may still have a task whose project grant was removed.
+                    continue
+                tasks.append(self.describe(task))
         candidates = sorted(
             (
                 (task, p)
                 for task in tasks
-                if task["runner_online"]
+                if task["runner_online"] and not task["archived"]
                 for p in task["processes"]
                 if p["status"] == "running"
             ),
@@ -283,33 +299,14 @@ class Management:
                     break
                 self.observed[key] = time.monotonic()
                 try:
-                    if key in self.inflight:
-                        result = await self.service.call(
-                            owner,
-                            "job_get",
-                            {
-                                "job_id": self.inflight[key],
-                                "wait_seconds": 0,
-                            },
-                        )
-                    else:
-                        prior = self.service.store.job(process["job_id"], owner).get("result") or {}
-                        result = await self.service.call(
-                            owner,
-                            "read_process",
-                            {
-                                "task_id": task["id"],
-                                "process_id": process["process_id"],
-                                "cursor": max(0, int(prior.get("next_cursor", 0))),
-                                "max_bytes": 16384,
-                                "wait_seconds": 0,
-                                "request_id": "manage-observe:" + process["job_id"],
-                            },
-                        )
-                    if result.get("status") in {"queued", "running", "pending_approval"}:
-                        self.inflight[key] = result["job_id"]
-                    else:
-                        self.inflight.pop(key, None)
+                    result = await self.service.request_process_observation(
+                        owner,
+                        task["id"],
+                        process["process_id"],
+                        process["job_id"],
+                        request_prefix="manage-observe:",
+                        max_bytes=16384,
+                    )
                     updates.append(
                         {
                             "process_id": process["process_id"],
@@ -321,9 +318,7 @@ class Management:
                     updates.append({"process_id": process["process_id"], "error": str(error)[:500]})
             if len(self.observed) > 2000:
                 cutoff = time.monotonic() - 600
-                self.observed = {
-                    k: v for k, v in self.observed.items() if v >= cutoff or k in self.inflight
-                }
+                self.observed = {k: v for k, v in self.observed.items() if v >= cutoff}
         return {"updates": updates, "observed_at": time.time()}
 
     async def detail(self, request):
@@ -335,6 +330,7 @@ class Management:
 
     async def update_status(self, owner: str, task_id: str, status: str) -> dict:
         task = self.task(owner, task_id)
+        require_unarchived(task)
         if task["kind"] != "coding":
             raise ValueError("專案管理紀錄需保持開啟")
         # The local task_update path does not yield between reading and saving these notes.
@@ -361,8 +357,12 @@ class Management:
             self.task(owner, task_id)
         except ValueError:
             return JSONResponse({"error": "任務不存在或無權存取"}, 404)
+        try:
+            updated = await self.update_status(owner, task_id, status)
+        except TaskArchived:
+            return JSONResponse({"error": "請先還原任務"}, 409)
         return JSONResponse(
-            await self.update_status(owner, task_id, status),
+            updated,
             headers={"Cache-Control": "no-store"},
         )
 
@@ -382,23 +382,40 @@ class Management:
                 "ELSE 0 END ORDER BY updated DESC,id DESC LIMIT 12",
                 (task["id"], process["process_id"]),
             )
+            pages = []
+            removed_output = ""
+            for job in jobs:
+                payload = json.loads(job["result"])
+                output = payload["output"]
+                if payload.get("retention"):
+                    removed_output = removed_output or output
+                    continue
+                start = int(payload.get("cursor", 0))
+                stop = payload.get("next_cursor") or start + len(output.encode("utf-8"))
+                pages.append((start, stop, output))
             chunks = []
-            end = 0
-            for job in reversed(jobs):
-                payload = json.loads(job["result"]) if job["result"] else {}
-                output = payload.get("output")
+            left = None
+            # Start at the end so a later page retains its tail when pages overlap.
+            for start, stop, output in sorted(pages, key=lambda p: (p[1], -p[0]), reverse=True):
+                if left is not None:
+                    if start >= left:
+                        continue
+                    if stop > left:
+                        encoded = output.encode("utf-8")
+                        cut = len(encoded) - (stop - left)
+                        if len(encoded) != stop - start:
+                            # Raw offsets can only be mapped through intact text at either end.
+                            replacement = b"\xef\xbf\xbd"
+                            if cut < encoded.rfind(replacement) + len(replacement):
+                                cut = min(left - start, encoded.find(replacement))
+                        output = encoded[: max(0, cut)].decode("utf-8", errors="replace")
                 if output:
-                    start = int(payload.get("cursor", 0))
-                    encoded = output.encode("utf-8")
-                    if start + len(encoded) > end:
-                        chunks.append(
-                            encoded[max(0, end - start) :].decode("utf-8", errors="replace")
-                        )
-                        end = start + len(encoded)
+                    chunks.append(output)
+                    left = start
             result["outputs"].append(
                 {
                     **process,
-                    "output": "".join(chunks)[-32768:],
+                    "output": ("".join(reversed(chunks)) or removed_output)[-32768:],
                 }
             )
         result["errors"] = self.service.store.rows(

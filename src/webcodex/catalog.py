@@ -60,7 +60,7 @@ def definitions(cls, *, remote: bool) -> dict[str, Definition]:
         description = inspect.getdoc(fn) or name
         if remote:
             description += (
-                " Requires an explicit task_id from task_create/task_list. Returns a durable job_id; "
+                " Requires an existing task_id. Returns a durable job_id; "
                 "follow job_get/read_process for the same execution in the current turn. "
                 "Continue independent work while commands run, then collect their result without "
                 "ending the turn. Drain remaining output and continue the authorized task. "

@@ -72,6 +72,16 @@ class RunnerCompletion(StrictModel):
     result: RunnerResult
 
 
+class TaskArchived(ValueError):
+    def __init__(self):
+        super().__init__("Task is archived; restore it in the task center before continuing")
+
+
+def require_unarchived(task: dict):
+    if task["archived_at"] is not None:
+        raise TaskArchived()
+
+
 def new_id() -> str:
     return uuid.uuid4().hex
 
@@ -132,6 +142,7 @@ class Store:
             ("runners", "project_roots", "TEXT NOT NULL DEFAULT '{}'"),
             ("tasks", "kind", "TEXT NOT NULL DEFAULT 'coding'"),
             ("tasks", "request_id", "TEXT"),
+            ("tasks", "archived_at", "REAL"),
             ("jobs", "process_id", "TEXT"),
             ("jobs", "process_status", "TEXT"),
             ("jobs", "process_exit_code", "INTEGER"),
@@ -190,9 +201,10 @@ class Store:
             "CREATE INDEX IF NOT EXISTS latest_task_activity ON task_tool_activity "
             "(task_id,coalesce(finished_at,started_at) DESC)"
         )
-        if not self.one(
+        created_process_states = not self.one(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='process_states'"
-        ):
+        )
+        if created_process_states:
             self.db.execute(
                 "CREATE TABLE process_states ("
                 "task_id TEXT NOT NULL REFERENCES tasks(id), process_id TEXT NOT NULL,"
@@ -232,6 +244,32 @@ class Store:
             "CREATE INDEX IF NOT EXISTS running_process_states ON process_states "
             "(task_id,observed_at) WHERE status='running'"
         )
+        if created_process_states or not self.one(
+            "SELECT 1 FROM metadata WHERE key='terminal_process_states'"
+        ):
+            # Repair running rows that were overwritten by a delayed delivery.
+            self.db.execute("""
+                WITH terminal AS (
+                    SELECT state.task_id,state.process_id,job.id,job.tool,
+                        job.process_status,job.process_exit_code,job.updated
+                    FROM process_states state JOIN jobs job ON job.id=(
+                        SELECT id FROM jobs INDEXED BY process_observations
+                        WHERE task_id=state.task_id AND process_id=state.process_id
+                          AND status='succeeded' AND process_status!='running'
+                          AND tool IN ('exec_command','read_process','cancel_process','skill_run','search_files')
+                        ORDER BY updated DESC,id DESC LIMIT 1
+                    )
+                    WHERE state.status='running' AND state.tool!='subagent_get'
+                )
+                UPDATE process_states AS state
+                SET job_id=terminal.id,tool=terminal.tool,status=terminal.process_status,
+                    exit_code=terminal.process_exit_code,observed_at=terminal.updated
+                FROM terminal
+                WHERE state.task_id=terminal.task_id AND state.process_id=terminal.process_id
+            """)
+            self.db.execute(
+                "INSERT OR IGNORE INTO metadata(key,value) VALUES ('terminal_process_states','1')"
+            )
         self.db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS task_requests ON tasks(owner,request_id) "
             "WHERE request_id IS NOT NULL"
@@ -407,7 +445,7 @@ class Store:
         if kind == "project":
             previous = self.one(
                 "SELECT id FROM tasks WHERE owner=? AND runner=? AND project=? AND binding=? "
-                "AND kind='project' ORDER BY created LIMIT 1",
+                "AND kind='project' AND archived_at IS NULL ORDER BY created DESC,rowid DESC LIMIT 1",
                 (owner, runner, name, binding),
             )
             if previous:
@@ -429,7 +467,7 @@ class Store:
         return row
 
     def update_task(self, task_id: str, owner: str, status: str, summary: str, plan: list) -> dict:
-        self.task(task_id, owner)
+        require_unarchived(self.task(task_id, owner))
         with self.db:
             self.db.execute(
                 "UPDATE tasks SET status=?, summary=?, plan=?, updated=? WHERE id=?",
@@ -448,6 +486,13 @@ class Store:
         *,
         allow_completed: bool = False,
     ) -> dict:
+        current = self.one(
+            "SELECT archived_at,status FROM tasks WHERE id=? AND owner=?",
+            (task["id"], task["owner"]),
+        )
+        if current is None:
+            raise ValueError("Task not found")
+        require_unarchived(current)
         encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
         if request_id:
             old = self.one(
@@ -455,10 +500,18 @@ class Store:
                 (task["owner"], task["id"], request_id),
             )
             if old:
-                if old["tool"] != tool or old["arguments"] != arguments:
+                previous = old["arguments"]
+                if (
+                    tool == old["tool"] == "exec_command"
+                    and "timeout_seconds" not in arguments
+                    and previous.get("timeout_seconds") == 3600
+                ):
+                    # Legacy Servers stored the one-hour default for omitted timeouts.
+                    del previous["timeout_seconds"]
+                if old["tool"] != tool or previous != arguments:
                     raise ValueError("request_id already belongs to a different call")
                 return self.job(old["id"], task["owner"])
-        if task["status"] == "completed" and not allow_completed:
+        if current["status"] == "completed" and not allow_completed:
             raise ValueError("Task is completed; use task_update to reopen it first")
         runner = self.one("SELECT * FROM runners WHERE id=?", (task["runner"],))
         binding = (
@@ -471,7 +524,9 @@ class Store:
         if binding != task["binding"]:
             raise ValueError("Project root changed; create a new task for the new root")
         count = self.db.execute(
-            "SELECT count(*) FROM jobs WHERE owner=? AND status IN ('queued','pending_approval','running')",
+            "SELECT count(*) FROM jobs JOIN tasks ON tasks.id=jobs.task_id WHERE jobs.owner=? "
+            "AND jobs.status IN ('queued','pending_approval','running') "
+            "AND (jobs.status='running' OR tasks.archived_at IS NULL)",
             (task["owner"],),
         ).fetchone()[0]
         if count >= limit:
@@ -669,17 +724,24 @@ class Store:
     def observe_process(
         self, task_id, process_id, job_id, tool, status, exit_code, started_at, observed_at
     ):
-        self.db.execute(
+        updated = self.db.execute(
             "INSERT INTO process_states VALUES (?,?,?,?,?,?,?,?) "
             "ON CONFLICT(task_id,process_id) DO UPDATE SET job_id=excluded.job_id,"
             "tool=CASE WHEN process_states.tool='subagent_get' THEN process_states.tool "
             "ELSE excluded.tool END,status=excluded.status,exit_code=excluded.exit_code,"
             "started_at=min(process_states.started_at,excluded.started_at),"
             "observed_at=excluded.observed_at "
-            "WHERE process_states.tool!='subagent_get' OR process_states.status='running' "
-            "OR (excluded.tool='subagent_get' AND excluded.status!='running')",
+            "WHERE process_states.status='running' OR (excluded.status!='running' "
+            "AND (process_states.tool!='subagent_get' OR excluded.tool='subagent_get'))",
             (task_id, process_id, job_id, tool, status, exit_code, started_at, observed_at),
-        )
+        ).rowcount
+        if not updated:
+            # A delayed start can fill in the original start time without reopening the process.
+            self.db.execute(
+                "UPDATE process_states SET started_at=? "
+                "WHERE task_id=? AND process_id=? AND started_at>?",
+                (started_at, task_id, process_id, started_at),
+            )
 
     def claim(self, runner_id: str, instance: str, limit: int) -> list[dict]:
         runner = self.one("SELECT * FROM runners WHERE id=?", (runner_id,))
@@ -692,7 +754,9 @@ class Store:
             if now - runner["seen"] >= 5:
                 self.db.execute("UPDATE runners SET seen=? WHERE id=?", (now, runner_id))
             for row in self.rows(
-                "SELECT id FROM jobs WHERE runner=? AND status='queued' ORDER BY created LIMIT ?",
+                "SELECT jobs.id FROM jobs JOIN tasks ON tasks.id=jobs.task_id "
+                "WHERE jobs.runner=? AND jobs.status='queued' AND tasks.archived_at IS NULL "
+                "ORDER BY jobs.created LIMIT ?",
                 (runner_id, limit),
             ):
                 job = self.one("SELECT * FROM jobs WHERE id=?", (row["id"],))

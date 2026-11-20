@@ -4,6 +4,8 @@ import json
 import sqlite3
 from unittest.mock import patch
 
+import pytest
+
 from webcodex.store import Store
 
 
@@ -134,6 +136,47 @@ def test_late_unknown_completion_updates_the_same_process_projection(tmp_path):
         store.complete("runner", job["job_id"], "instance", "failed", {"error": "duplicate"})
         assert store.task_activity(task) == before
         assert before["latest_execution"]["result"] == result
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_terminal_process_survives_delayed_running_observation_and_migration(tmp_path, legacy):
+    store = Store(tmp_path)
+    try:
+        store.register("runner", "instance", {"project": "b" * 64})
+        task = store.create_task("owner", "runner/project", "Delayed delivery")
+        terminal, _ = observe(store, task, "read_process", "process", "failed", "done", 20, 30)
+        delayed, _ = observe(store, task, "exec_command", "process", "running", "start", 10, 40)
+        activity = store.task_activity(task)
+        assert activity["process_observations"] == [
+            {
+                "job_id": terminal,
+                "tool": "read_process",
+                "process_id": "process",
+                "status": "failed",
+                "exit_code": 3,
+                "started_at": 10,
+                "observed_at": 30,
+            }
+        ]
+        assert activity["work"]["running_count"] == 0
+        assert store.job(delayed, "owner")["outcome"] == "running"
+        with store.db:
+            if legacy:
+                store.db.execute("DROP TABLE process_states")
+            else:
+                store.db.execute("DELETE FROM metadata WHERE key='terminal_process_states'")
+                store.db.execute(
+                    "UPDATE process_states SET job_id=?,tool='exec_command',status='running',"
+                    "exit_code=NULL,observed_at=40",
+                    (delayed,),
+                )
+    finally:
+        store.close()
+    store = Store(tmp_path)
+    try:
+        assert store.task_activity(task) == activity
     finally:
         store.close()
 

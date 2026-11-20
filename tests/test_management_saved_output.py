@@ -4,6 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from webcodex.management import Management
 from webcodex.store import Store
 
@@ -88,5 +90,41 @@ def test_management_preserves_last_output_after_thirteen_empty_observations(tmp_
             store.db.execute("SELECT count(*) FROM jobs WHERE tool='exec_command'").fetchone()[0]
             == 1
         )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("pages", "expected"),
+    [
+        ([(0, 2, "AB"), (4, 6, "EF"), (2, 4, "CD")], "ABCDEF"),
+        ([(0, 2, "�A"), (2, 3, "B")], "�AB"),
+        ([(0, 4, "繁A"), (3, 8, "A體B")], "繁A體B"),
+        ([(0, 4, "�ABC"), (2, 5, "BCD")], "�ABCD"),
+    ],
+)
+def test_management_combines_saved_output_by_raw_cursor(tmp_path, pages, expected):
+    store = Store(tmp_path)
+    try:
+        store.register("local", "instance", {"project": "b" * 64})
+        task = store.create_task("owner", "local/project", "Paged output")
+        for start, stop, output in pages:
+            job = store.enqueue(task, "read_process", {}, None, 10)
+            store.claim("local", "instance", 1)
+            store.complete(
+                "local",
+                job["job_id"],
+                "instance",
+                "succeeded",
+                {
+                    "process_id": "paged-process",
+                    "status": "completed",
+                    "output": output,
+                    "cursor": start,
+                    "next_cursor": stop,
+                },
+            )
+        detail = Management(ProgressService(store)).detail_data("owner", task["id"])
+        assert detail["outputs"][0]["output"] == expected
     finally:
         store.close()

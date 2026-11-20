@@ -204,7 +204,7 @@ async def test_real_mcp_desktop_input_and_screenshot(tmp_path, multimonitor):
             await settle()
             snapshot = await call(client, "computer_screenshot", {**task_args, **capture_args})
             response = await client.call_tool("job_get", {"job_id": snapshot["job_id"]})
-            native = response.content[1]
+            [native] = response.content
             assert native.type == "image" and native.mimeType == "image/jpeg"
             data = base64.b64decode(native.data)
             picture = Image.open(io.BytesIO(data))

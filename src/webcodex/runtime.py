@@ -9,10 +9,12 @@ import re
 import shutil
 import sys
 import time
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 import httpx
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pydantic import Field
 from typing_extensions import TypedDict
 
@@ -31,6 +33,8 @@ Count = Annotated[int, Field(ge=1, le=1000)]
 Offset = Annotated[int, Field(ge=0, le=10_000_000)]
 Argv = Annotated[list[Annotated[str, Field(max_length=32000)]], Field(min_length=1, max_length=256)]
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_VIEW_IMAGE_BYTES = 1024 * 1024
+MAX_OVERVIEW_PIXELS = 24_000_000
 
 
 class ImageFile(TypedDict):
@@ -50,6 +54,63 @@ def image_mime(data: bytes) -> str:
     if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
         return "image/webp"
     raise ValueError("Unsupported image format; use PNG, JPEG, GIF or WebP")
+
+
+def image_overview(workspace: Workspace, paths: list[str]) -> dict:
+    images, skipped, thumbnails = [], [], []
+    seen: set[tuple[str, ...]] = set()
+    for path in paths:
+        try:
+            parts = workspace.parts(path)
+            if parts in seen:
+                raise ValueError("Duplicate image path")
+            seen.add(parts)
+            data = workspace.read(path, MAX_VIEW_IMAGE_BYTES)
+            with Image.open(BytesIO(data), formats=("PNG", "JPEG", "GIF", "WEBP")) as image:
+                if image.width * image.height > MAX_OVERVIEW_PIXELS:
+                    raise ValueError("Image exceeds the 24-megapixel overview limit")
+                ImageOps.exif_transpose(image, in_place=True)
+                if image.mode in {"1", "P"}:
+                    image = image.convert("RGBA")
+                image.thumbnail((240, 160), Image.Resampling.LANCZOS)
+                thumbnails.append(image.convert("RGBA"))
+        except (OSError, SyntaxError, Image.DecompressionBombError):
+            skipped.append({"path": path, "reason": "Image could not be read"})
+        except ValueError as error:
+            skipped.append({"path": path, "reason": str(error)})
+        else:
+            images.append({"index": len(images) + 1, "path": path})
+
+    result = {"images": images, "skipped": skipped}
+    if not images:
+        return result
+
+    columns = min(4, len(images))
+    rows = (len(images) + columns - 1) // columns
+    width, height = 256, 192
+    sheet = Image.new("RGB", (width * columns, height * rows), "#eeeeee")
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default(size=16)
+    for index, thumbnail in enumerate(thumbnails):
+        row, column = divmod(index, columns)
+        x, y = column * width, row * height
+        draw.text((x + 8, y + 4), str(index + 1), fill="black", font=font)
+        draw.rectangle((x + 8, y + 24, x + 247, y + 183), fill="white")
+        position = (x + (width - thumbnail.width) // 2, y + 24 + (160 - thumbnail.height) // 2)
+        sheet.paste(thumbnail, position, thumbnail)
+
+    with BytesIO() as output:
+        sheet.save(output, format="JPEG", quality=75)
+        result["mcp_result"] = {
+            "content": [
+                {
+                    "type": "image",
+                    "mimeType": "image/jpeg",
+                    "data": base64.b64encode(output.getvalue()).decode(),
+                }
+            ],
+        }
+    return result
 
 
 async def download_image(url: str) -> bytes:
@@ -538,10 +599,10 @@ class Runtime:
         argv: Argv | None = None,
         cwd: PathArg = ".",
         tty: bool = False,
-        timeout_seconds: Annotated[int, Field(ge=1, le=86400)] = 3600,
+        timeout_seconds: Annotated[int | None, Field(ge=1)] = None,
         yield_time_ms: Annotated[int, Field(ge=0, le=2000)] = 500,
     ) -> dict:
-        """Start a real command, using exactly one of argv or command. command uses PowerShell on Windows and bash on Linux. Prefer argv for exact executable arguments. Returns a persistent process_id and output cursor; continue with read_process/write_stdin, never restart to obtain output. Starting Codex/Work agents is prohibited, including through wrappers, scripts, SDKs and APIs. tty allocates ConPTY on Windows or PTY on Linux. Execute permission grants the Runner OS user's access; cwd is not an OS sandbox. Environment changes persist only inside the same live process."""
+        """Start a real command, using exactly one of argv or command. command uses PowerShell on Windows and bash on Linux. Prefer argv for exact executable arguments. Omit timeout_seconds to use the Runner's limit if configured, or run without a deadline. Returns a persistent process_id and output cursor; continue with read_process/write_stdin, never restart to obtain output. Starting Codex/Work agents is prohibited, including through wrappers, scripts, SDKs and APIs. tty allocates ConPTY on Windows or PTY on Linux. Execute permission grants the Runner OS user's access; cwd is not an OS sandbox. Environment changes persist only inside the same live process."""
         if (command is None) == (argv is None):
             raise ValueError("Supply exactly one of command or argv")
         if argv is not None:
@@ -561,12 +622,15 @@ class Runtime:
             ]
         else:
             args = ["bash", "--noprofile", "--norc", "-c", command]
+        limit = self.config.max_process_seconds
+        if limit is not None and (timeout_seconds is None or timeout_seconds > limit):
+            timeout_seconds = limit
         process = await self.processes.start(
             self.job_id,
             self.task_id,
             args,
             self.workspace.path(cwd, directory=True),
-            min(timeout_seconds, self.config.max_process_seconds),
+            timeout_seconds,
             tty,
         )
         await self.processes.wait(process, self.task_id, yield_time_ms / 1000)
@@ -576,7 +640,7 @@ class Runtime:
     async def read_process(
         self,
         process_id: str,
-        cursor: Offset = 0,
+        cursor: Annotated[int, Field(ge=0)] = 0,
         max_bytes: Annotated[int, Field(ge=1, le=131072)] = 65536,
         wait_seconds: Annotated[float, Field(ge=0, le=30)] = 0,
     ) -> dict:
@@ -615,9 +679,16 @@ class Runtime:
         return {"processes": self.processes.list(self.task_id)}
 
     @tool()
+    async def view_images(
+        self, paths: Annotated[list[PathArg], Field(min_length=1, max_length=20)]
+    ) -> dict:
+        """Review a group of project images as one numbered thumbnail sheet created on the Runner. Use this first for multiple images, then use view_image only for selected originals needing detail. Supports PNG, JPEG, GIF and WebP up to 1 MiB and 24 megapixels each, using the first frame of animated files. Returns the index-to-path mapping and skipped paths."""
+        return await asyncio.to_thread(image_overview, self.workspace, paths)
+
+    @tool()
     async def view_image(self, path: PathArg) -> dict:
-        """Read a PNG, JPEG, GIF or WebP from the project as native MCP image content, with a 1 MiB input limit."""
-        data = await asyncio.to_thread(self.workspace.read, path, 1024 * 1024)
+        """Read a selected original PNG, JPEG, GIF or WebP from the project as native MCP image content, with a 1 MiB input limit. To review a group, start with view_images and request originals only for images needing detail."""
+        data = await asyncio.to_thread(self.workspace.read, path, MAX_VIEW_IMAGE_BYTES)
         mime = image_mime(data)
         return {
             "path": path,

@@ -310,6 +310,7 @@
     needs_attention: ["有結果需要處理", ""],
     project_changed: ["需要確認專案", "專案位置已變更，請先在對話中確認。"],
     completed: ["任務已完成", ""],
+    archived: ["任務已封存", "請在任務中心還原。"],
   };
   function notify(method, params={}) {
     if (method === "ui/notifications/size-changed") {
@@ -499,7 +500,7 @@
     el("continuation-state").hidden = !state;
     el("resume").disabled = !owns || completed || sending || busy || ["prepared","accepted","unknown"].includes(wait?.state);
     el("resume").textContent = sending ? "傳送中…" : "接續工作";
-    const blockedIdentity = ["missing_window","read_only"].includes(value.control?.reason);
+    const blockedIdentity = ["missing_window","read_only","archived"].includes(value.control?.reason);
     el("takeover").hidden = completed || blockedIdentity || (owns && wait?.state !== "unknown");
     el("takeover").disabled = sending || busy;
     const deliveries = continuation.deliveries || [];
@@ -518,6 +519,7 @@
     if (!value.task || value.task.id !== taskId || !value.progress || !value.continuation) throw new Error("invalid-state");
     if (!states[value.progress.state] || !Array.isArray(value.task.plan)) throw new Error("invalid-state");
     const justCompleted = value.task.status === "completed" && last && last.task.status !== "completed";
+    const archiveChanged = (value.progress.state === "archived") !== (last?.progress.state === "archived");
     last = value; activityReceivedAt = Date.now(); connectionFailed = false;
     el("title").textContent = value.task.title;
     let [status,detail] = states[value.progress.state];
@@ -543,6 +545,12 @@
     el("updated").textContent = "更新 " + timestamp(Date.now()/1000);
     el("connection").textContent = "監看中"; el("dot").className = "dot live";
     renderMessaging(value); renderHandoff(value.handoff); refreshActivity();
+    if (archiveChanged) {
+      const archived = value.progress.state === "archived";
+      if (archived) { clearTimeout(reviewTimer); reviewTimer = null; }
+      el("review-refresh").disabled = archived;
+      for (const button of el("files").querySelectorAll("button")) button.disabled = archived;
+    }
     notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
     if (justCompleted && ready && reviewLoaded) void loadReview(selectedPath);
   }
@@ -564,6 +572,7 @@
     el("files").replaceChildren();
     for (const file of files) {
       const button = node("button",""); button.type = "button";
+      button.disabled = last?.progress.state === "archived";
       const separator = file.path.lastIndexOf("/");
       button.append(node("span",file.path.slice(separator+1),"file-name"));
       if (separator >= 0) button.append(node("span",file.path.slice(0,separator),"file-directory"));
@@ -649,14 +658,14 @@
   }
   function scheduleReview(delay) {
     clearTimeout(reviewTimer); reviewTimer = null;
-    if (!stopped && !document.hidden && pendingReview) reviewTimer = setTimeout(() => {
+    if (!stopped && !document.hidden && pendingReview && last?.progress.state !== "archived") reviewTimer = setTimeout(() => {
       reviewTimer = null;
       const {path,jobId,requestId} = pendingReview;
       void loadReview(path,jobId,requestId);
     },Math.min(2147483647,Math.max(delay,retryAt-Date.now())));
   }
   async function loadReview(path=null, jobId=null, requestId=null) {
-    if (!ready || !taskId || stopped || document.hidden) return;
+    if (!ready || !taskId || stopped || document.hidden || last?.progress.state === "archived") return;
     clearTimeout(reviewTimer); reviewTimer = null;
     const version = ++reviewVersion; reviewLoaded = true; selectedPath = path;
     requestId ||= viewId + ":" + version;
@@ -694,7 +703,7 @@
       }
     } finally {
       if (version === reviewVersion) {
-        el("review-refresh").disabled = false; el("review-refresh").textContent = pendingReview ? "重試" : "重新整理";
+        el("review-refresh").disabled = last?.progress.state === "archived"; el("review-refresh").textContent = pendingReview ? "重試" : "重新整理";
         el("changes").setAttribute("aria-busy","false"); el("runs").setAttribute("aria-busy","false");
       }
     }

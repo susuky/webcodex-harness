@@ -53,7 +53,8 @@ class Runner:
             "WHERE acknowledged=0"
         )
         self.db.execute(
-            "UPDATE deliveries SET status='unknown',result=? WHERE status='running'",
+            "UPDATE deliveries INDEXED BY unacknowledged_deliveries "
+            "SET status='unknown',result=? WHERE acknowledged=0 AND status='running'",
             (
                 json.dumps(
                     {"error": "Runner restarted during execution; inspect state before retrying"}

@@ -5,6 +5,7 @@ import codecs
 import contextlib
 import errno
 import json
+import logging
 import os
 import shutil
 import signal
@@ -21,6 +22,8 @@ if os.name != "nt":
     import fcntl
     import pty
     import termios
+
+logger = logging.getLogger(__name__)
 
 
 def environment(config: RunnerConfig) -> dict[str, str]:
@@ -105,7 +108,7 @@ class Processes:
         task_id: str,
         argv: list[str],
         cwd: Path,
-        timeout_seconds: int,
+        timeout_seconds: int | None,
         tty: bool = False,
         cleanup_dir: Path | None = None,
         *,
@@ -248,14 +251,6 @@ class Processes:
                     with contextlib.suppress(OSError):
                         os.close(slave)
 
-    def _append(self, state: dict, chunk: bytes):
-        state["bytes"] += len(chunk)
-        room = max(0, self.config.max_output_bytes - state["stored"])
-        state["log"].write(chunk[:room])
-        state["log"].flush()
-        state["stored"] += min(len(chunk), room)
-        state["truncated"] = state["bytes"] > state["stored"]
-
     @staticmethod
     def _signal(state: dict, sig: int):
         if state["job"] is not None:
@@ -266,27 +261,47 @@ class Processes:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(state["proc"].pid, sig)
 
-    async def _monitor(self, process_id: str, timeout_seconds: int):
+    async def _monitor(self, process_id: str, timeout_seconds: int | None):
         state = self.active[process_id]
         proc, master = state["proc"], state["master"]
         loop = asyncio.get_running_loop()
         pump = None
+        output_error = None
+
+        def capture(chunk: bytes):
+            nonlocal output_error
+            state["bytes"] += len(chunk)
+            if output_error is not None:
+                return  # Drain the child even after the output file stops accepting writes.
+            room = max(0, self.config.max_output_bytes - state["stored"])
+            try:
+                state["log"].write(chunk[:room])
+                state["log"].flush()
+            except OSError as error:
+                output_error = error
+                state["truncated"] = True
+                return
+            state["stored"] += min(len(chunk), room)
+            state["truncated"] = state["bytes"] > state["stored"]
 
         def read_pty():
+            nonlocal output_error
             try:
                 while chunk := os.read(master, 65536):
-                    self._append(state, chunk)
+                    capture(chunk)
+                    if output_error is not None and proc.returncode is None:
+                        break
                 loop.remove_reader(master)
             except BlockingIOError:
                 pass
             except OSError as error:
                 if error.errno != errno.EIO:
-                    raise
+                    output_error = output_error or error
                 loop.remove_reader(master)
 
         async def read_pipe():
             while chunk := await proc.stdout.read(65536):
-                self._append(state, chunk)
+                capture(chunk)
 
         async def read_console():
             terminal = state["terminal"]
@@ -298,7 +313,7 @@ class Processes:
                         raise
                     break
                 if chunk:
-                    self._append(state, chunk.encode("utf-8"))
+                    capture(chunk.encode("utf-8"))
                 elif proc.returncode is not None:
                     break
                 await asyncio.sleep(0.02)
@@ -313,7 +328,7 @@ class Processes:
         try:
             async with asyncio.timeout(timeout_seconds):
                 # Process.wait can wait for inherited pipes after the leader exits.
-                while proc.returncode is None:  # noqa: ASYNC110 — leader exit precedes inherited pipe EOF
+                while proc.returncode is None and output_error is None:  # noqa: ASYNC110
                     if pump is not None and pump.done():
                         pump.result()
                     await asyncio.sleep(0.05)
@@ -323,41 +338,56 @@ class Processes:
             status = "cancelled"
         except Exception as error:
             status = "failed"
-            self._append(state, f"\nOutput capture failed: {type(error).__name__}\n".encode())
+            output_error = error
         finally:
             self._signal(state, getattr(signal, "SIGKILL", signal.SIGTERM))
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), 3)
             if pump is not None:
-                with contextlib.suppress(Exception, asyncio.CancelledError):
+                try:
                     await asyncio.wait_for(pump, 2)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as error:
+                    output_error = output_error or error
             else:
                 read_pty()
                 loop.remove_reader(master)
                 os.close(master)
-            state["log"].close()
+            try:
+                state["log"].close()
+            except OSError as error:
+                output_error = output_error or error
             if state["job"] is not None:
                 state["job"].Close()
                 state["gate"].Close()
             if state.get("cleanup_dir") is not None:
                 shutil.rmtree(state["cleanup_dir"], ignore_errors=True)
+            if output_error is not None:
+                state["truncated"] = True
             if state["cancelled"]:
                 status = "cancelled"
-            elif status == "completed" and proc.returncode != 0:
+            elif status == "completed" and (proc.returncode != 0 or output_error is not None):
                 status = "failed"
-            self.db.execute(
-                "UPDATE processes SET status=?,exit_code=?,finished=?,bytes=?,truncated=? WHERE id=?",
-                (
-                    status,
-                    proc.returncode,
-                    time.time(),
-                    state["bytes"],
-                    int(state["truncated"]),
-                    process_id,
-                ),
-            )
-            self.db.commit()
-            del self.active[process_id]
+            try:
+                with self.db:
+                    self.db.execute(
+                        "UPDATE processes SET status=?,exit_code=?,finished=?,bytes=?,truncated=? WHERE id=?",
+                        (
+                            status,
+                            proc.returncode,
+                            time.time(),
+                            state["bytes"],
+                            int(state["truncated"]),
+                            process_id,
+                        ),
+                    )
+            finally:
+                del self.active[process_id]
+            if output_error is not None:
+                logger.warning(
+                    "Output capture failed for process %s (%s)", process_id, output_error
+                )
 
     def read(self, process_id: str, task_id: str, cursor: int = 0, limit: int = 65536) -> dict:
         row = self.row(process_id, task_id)

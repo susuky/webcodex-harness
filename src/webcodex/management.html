@@ -291,6 +291,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const params = new URLSearchParams(location.search);
+  const pageSize = 60;
   const key = task => JSON.stringify([task.source_id, task.id]);
   const stateNames = {ready:'閒置',running:'執行中',waiting:'等待中',completed:'已完成',failed:'失敗',unknown:'狀態未知',queued:'排隊中',active:'處理中',interrupted:'已中斷',cancelled:'已取消',timed_out:'逾時',runner_offline:'執行環境離線',observing:'背景工作執行中',waiting_runner:'執行環境離線',waiting_operator:'等待回覆',pending_approval:'等待核准',needs_attention:'閒置',project_changed:'專案位置已變更',needs_confirmation:'待確認',unconfirmed:'待確認',pending:'待處理',in_progress:'進行中',succeeded:'成功'};
   const label = value => stateNames[value] || value || '—';
@@ -332,13 +333,14 @@
   const rawRunning = task => (task.processes || []).some(p=>p.status==='running') || Boolean(task.liveness?.work?.running_count);
   const taskSourceStale = task => sources.some(source=>source.id===task.source_id && sourceStale(source));
   const processState = (process,task) => process.status==='running' ? (!task.runner_online || !process.observed_at || Date.now()/1000-process.observed_at>90 || taskSourceStale(task)?'unconfirmed':'running') : process.display_status || process.status;
-  const isActive = task => task.status!=='completed' && (hasPending(task) && !taskSourceStale(task) || (task.processes || []).some(p=>processState(p,task)==='running'));
-  const hasUnconfirmed = task => task.status!=='completed' && (hasPending(task) && taskSourceStale(task) || (task.processes || []).some(p=>processState(p,task)==='unconfirmed') || Math.max(task.liveness?.work?.running_count || 0,task.liveness?.work?.unconfirmed_count || 0)>(task.processes || []).filter(p=>p.status==='running').length);
-  const needsAction = task => task.status!=='completed' && (['waiting_operator','pending_approval','project_changed'].includes(task.state) || (task.jobs || []).some(job=>job.status==='pending_approval'));
-  const rank = task => task.status==='completed' ? 3 : isActive(task) ? 0 : needsAction(task) ? 1 : 2;
+  const isActive = task => !task.archived && task.status!=='completed' && (hasPending(task) && !taskSourceStale(task) || (task.processes || []).some(p=>processState(p,task)==='running'));
+  const hasUnconfirmed = task => !task.archived && task.status!=='completed' && (hasPending(task) && taskSourceStale(task) || (task.processes || []).some(p=>processState(p,task)==='unconfirmed') || Math.max(task.liveness?.work?.running_count || 0,task.liveness?.work?.unconfirmed_count || 0)>(task.processes || []).filter(p=>p.status==='running').length);
+  const needsAction = task => !task.archived && task.status!=='completed' && (task.unanswered_operator_questions || ['waiting_operator','pending_approval','project_changed'].includes(task.state) || (task.jobs || []).some(job=>job.status==='pending_approval'));
+  const rank = task => task.archived ? 4 : task.status==='completed' ? 3 : isActive(task) ? 0 : needsAction(task) ? 1 : 2;
   function taskState(task) {
     if(task.status==='completed')return 'completed';
     if(['waiting_operator','project_changed'].includes(task.state))return task.state;
+    if(task.unanswered_operator_questions)return 'waiting_operator';
     if(hasPending(task) && taskSourceStale(task))return 'needs_confirmation';
     if(hasPending(task) && !task.runner_online)return 'waiting_runner';
     if((task.jobs || []).some(job=>job.status==='running') || (task.processes || []).some(process=>processState(process,task)==='running'))return 'running';
@@ -348,11 +350,11 @@
     return hasUnconfirmed(task) || ['needs_confirmation','observing','running'].includes(task.state)?'needs_confirmation':task.state;
   }
   const statusClass = task => needsAction(task)?'status attention':isActive(task)?'status active':'status';
-  const statusText = task => (task.archived?'已封存 · ':'')+label(taskState(task));
+  const statusText = task => task.archived ? (task.archive_pending?'封存待同步':'已封存') : label(taskState(task));
   let token='',authenticated=false,cookieSession=false,passwordEnabled=null,sources=[],selected=null,currentDetail=null,currentHandoff=null;
   const detailCache=new Map(),detailRequests=new Map(),observationRequests=new Map(),handoffCache=new Map(),handoffRequests=new Map(),archiveBusy=new Set(),statusBusy=new Set();
   let sessionVersion=0,queryVersion=0,selectionVersion=0,busy=null,paging=false,timer=null,clockTimer=null,queryTimer=null,connectionStale=false,connectionIncidents=[],connectionAvailability=[],connectionsLoaded=false,connectionsBusy=null;
-  let restoredPages=Math.max(1,Math.min(100,Number(params.get('pages')) || 1));
+  let restoredPages=Math.max(1,Math.min(100,Math.ceil(Number(params.get('pages')) || 1)));
   if(params.get('task'))selected={source_id:params.get('selected_source') || 'local',id:params.get('task')};
   $('query').value=params.get('q') || '';
   const restoredState=params.get('state')==='including_archived'?'all':params.get('state');
@@ -571,9 +573,14 @@
     }
     d.append(overview);
     const actions=node('div',undefined,'detail-actions');
-    for(const [id,text] of [['copy-prompt','複製接手指令'],['copy-summary','複製摘要']]){const b=node('button',text,id==='copy-prompt'?'primary':'');b.id=id;b.dataset.label=text;b.addEventListener('click',()=>copyHandoff(task,id));actions.append(b);}
-    if(source.can_update_tasks){const group=node('div',undefined,'status-action'),button=node('button',statusBusy.has(key(task))?'儲存中…':task.status==='completed'?'重新開啟':'標記完成');button.id='task-status';button.disabled=statusBusy.has(key(task));button.addEventListener('click',()=>updateTaskStatus(task));group.append(button);if(task.statusError){const error=node('span',task.statusError,'offline');error.setAttribute('role','alert');group.append(error);}actions.append(group);}
-    const archive=node('button',task.archived?'還原':'封存');archive.id='archive-task';archive.disabled=archiveBusy.has(key(task));archive.addEventListener('click',()=>archiveTask(task));actions.append(archive);d.append(actions);
+    for(const [id,text] of [['copy-prompt','複製接手指令'],['copy-summary','複製摘要']]){const b=node('button',text,id==='copy-prompt'?'primary':'');b.id=id;b.dataset.label=text;b.disabled=id==='copy-prompt' && (task.archived || archiveBusy.has(key(task)));b.addEventListener('click',()=>copyHandoff(task,id));actions.append(b);}
+    if(source.can_update_tasks){
+      const group=node('div',undefined,'status-action'),button=node('button',statusBusy.has(key(task))?'儲存中…':task.status==='completed'?'重新開啟':'標記完成');
+      button.id='task-status';button.disabled=task.archived || statusBusy.has(key(task)) || archiveBusy.has(key(task));button.addEventListener('click',()=>updateTaskStatus(task));group.append(button);
+      if(task.statusError){const error=node('span',task.statusError,'offline');error.setAttribute('role','alert');group.append(error);}actions.append(group);
+      const archive=node('button',task.archived?'還原':'封存');archive.id='archive-task';archive.disabled=archiveBusy.has(key(task)) || statusBusy.has(key(task));archive.addEventListener('click',()=>archiveTask(task));actions.append(archive);
+    }
+    d.append(actions);
     if(task.summary){const summary=unchangedSummary?node('div'):renderSummary(task.summary,sameTask && Boolean(openStates.get('summary-more')));summary.id='task-summary';d.append(node('h3','工作摘要'),summary);}
     const plan=task.plan || currentHandoff?.handoff?.plan || [];
     if(plan.length){
@@ -590,7 +597,10 @@
       return pre;
     }
     const handoffData=currentHandoff || handoffCache.get(key(task));
-    if(handoffData)handoff.append(node('h3','交接摘要'),readingPre('handoff-summary',handoffText(task,handoffData)),node('h3','貼到新的 ChatGPT 對話'),readingPre('handoff-prompt',handoffData.continuation_prompt || ''));
+    if(handoffData){
+      handoff.append(node('h3','交接摘要'),readingPre('handoff-summary',handoffText(task,handoffData)));
+      if(!task.archived && handoffData.continuation_prompt)handoff.append(node('h3','貼到新的 ChatGPT 對話'),readingPre('handoff-prompt',handoffData.continuation_prompt));
+    }
     else handoff.append(node('p',task.handoffError?'交接資料尚未取得。':'讀取中…','muted'));
     handoff.addEventListener('toggle',()=>{if(handoff.open && handoff.isConnected && currentDetail && !currentDetail.handoffError)loadHandoff(currentDetail).catch(()=>{});});d.append(handoff);
     if(previousHandoff){
@@ -628,35 +638,42 @@
     if(error.status>=400 && error.status<500 && ![401,403].includes(error.status))return;
     sourceFailed(source,error,version);
   }
+  function cachedHandoff(task) {
+    const cached=handoffCache.get(key(task));
+    return cached?.taskUpdated===task.updated && Boolean(cached.archived)===Boolean(task.archived)?cached:null;
+  }
   async function loadHandoff(task) {
-    const identity=key(task),cached=handoffCache.get(identity);
-    if(cached && cached.taskUpdated===task.updated)return cached;
+    const identity=key(task),cached=cachedHandoff(task);
+    if(cached)return cached;
     if(handoffRequests.has(identity))return handoffRequests.get(identity);
     const source=sources.find(s=>s.id===task.source_id),version=sessionVersion;
     const request=(async()=>{
       try{
-        const data=await api(scope(source)+'tasks/'+encodeURIComponent(task.id)+'/handoff',undefined,version);data.taskUpdated=task.updated;handoffCache.set(identity,data);
-        if(selected && key(selected)===identity){currentHandoff=data;delete currentDetail.handoffError;renderDetails();}return data;
+        const data=await api(scope(source)+'tasks/'+encodeURIComponent(task.id)+'/handoff',undefined,version);data.taskUpdated=task.updated;data.archived=data.archived ?? task.archived;handoffCache.set(identity,data);
+        if(currentDetail && selected && key(selected)===identity){currentHandoff=data;delete currentDetail.handoffError;renderDetails();}return data;
       }catch(error){
-        if(!error.staleSession && version===sessionVersion && selected && key(selected)===identity){currentDetail.handoffError=error.message;renderDetails();}throw error;
+        if(!error.staleSession && version===sessionVersion && currentDetail && selected && key(selected)===identity){currentDetail.handoffError=error.message;renderDetails();}throw error;
       }finally{if(handoffRequests.get(identity)===request)handoffRequests.delete(identity);}
     })();
     handoffRequests.set(identity,request);return request;
   }
   async function copyHandoff(task,id) {
-    const version=sessionVersion;$(id).disabled=true;
+    const version=sessionVersion,prompt=id==='copy-prompt';
+    if(prompt && (task.archived || archiveBusy.has(key(task))))return;
+    $(id).disabled=true;
     try{
-      const data=await loadHandoff(task);checkSession(version);if(!selected || key(selected)!==key(task))return;
+      const data=await loadHandoff(task);checkSession(version);
+      if(!currentDetail || !selected || key(selected)!==key(task) || prompt && (currentDetail.archived || data.archived || archiveBusy.has(key(task))))return;
       const text=id==='copy-summary'?handoffText(task,data):data.continuation_prompt;
       if(!text)throw new Error('來源未提供接手指令。');
       await copyText(text,$(id),$(id==='copy-summary'?'handoff-summary':'handoff-prompt'));
-    }catch(error){if(!error.staleSession && version===sessionVersion && selected && key(selected)===key(task)){currentDetail.handoffError=error.message;renderDetails();}}
-    finally{if(version===sessionVersion && $(id))$(id).disabled=false;}
+    }catch(error){if(!error.staleSession && version===sessionVersion && currentDetail && selected && key(selected)===key(task)){currentDetail.handoffError=error.message;renderDetails();}}
+    finally{if(version===sessionVersion && currentDetail && key(currentDetail)===key(task) && $(id))$(id).disabled=prompt && (currentDetail.archived || archiveBusy.has(key(task)));}
   }
   function preview(task) {
     const cached=currentDetail && key(currentDetail)===key(task)?currentDetail:detailCache.get(key(task));
     currentDetail={...cached,...task,created_at:task.created_at || cached?.created_at,started_at:task.started_at || cached?.started_at,detailLoading:true};delete currentDetail.detailError;
-    const handoff=handoffCache.get(key(task));currentHandoff=handoff?.taskUpdated===task.updated?handoff:null;renderDetails();
+    currentHandoff=cachedHandoff(task);renderDetails();
   }
   async function observe(source,body,version) {
     if(observationRequests.has(source.id))return observationRequests.get(source.id);
@@ -668,15 +685,22 @@
     let request=detailRequests.get(key(identity));if(!request){request=api(scope(source)+'tasks/'+encodeURIComponent(identity.id),undefined,version);detailRequests.set(key(identity),request);}
     try{
       const task=await request;checkSession(version);if(selection!==selectionVersion || !selected || key(identity)!==key(selected))return;
+      delete selected.unavailable;
       currentDetail=syncRunner(source,mergeObserved(mergeObserved(detailCache.get(key(identity)),source.tasks.find(task=>key(task)===key(identity))),task));detailCache.set(key(identity),currentDetail);
       for(const field of ['detailLoading','detailError','statusError','archiveError','handoffError'])delete currentDetail[field];
       if(source.tasks.some(task=>key(task)===key(identity)))source.tasks=source.tasks.map(task=>key(task)===key(identity)?currentDetail:task);
       else if(query===queryVersion)source.tasks.push(currentDetail);
       source.tasks=source.tasks.map(task=>syncRunner(source,task));
-      const cached=handoffCache.get(key(identity));currentHandoff=cached?.taskUpdated===currentDetail.updated?cached:null;renderSources();renderTasks();renderDetails();
+      currentHandoff=cachedHandoff(currentDetail);renderSources();renderTasks();renderDetails();
     }catch(error){
       if(error.staleSession || version!==sessionVersion || selection!==selectionVersion || !selected || key(identity)!==key(selected))return;
       taskFailed(source,error,version);
+      if(error.status===404){
+        selected.unavailable=true;currentDetail=null;currentHandoff=null;
+        detailCache.delete(key(identity));handoffCache.delete(key(identity));
+        source.tasks=source.tasks.filter(task=>key(task)!==key(identity));
+        delete $('detail').dataset.task;
+      }
       if(currentDetail && key(currentDetail)===key(identity)){currentDetail.detailLoading=false;currentDetail.detailError=error.message;renderDetails();}else $('detail').replaceChildren(node('h2','任務讀取失敗'),node('p',error.message,'offline'));
       renderSources();renderTasks();
     }finally{if(detailRequests.get(key(identity))===request)detailRequests.delete(key(identity));}
@@ -685,7 +709,7 @@
     selectionVersion++;selected={source_id:task.source_id,id:task.id};preview(task);saveView();renderTasks();
     const version=sessionVersion,source=sources.find(s=>s.id===task.source_id);
     const detail=details(version);
-    if(rawRunning(task) || hasPending(task))observe(source,{task_id:task.id},version).catch(error=>{if(!error.staleSession && version===sessionVersion && selected && key(selected)===key(task)){taskFailed(source,error,version);renderSources();renderTasks();renderDetails();}});
+    if(!task.archived && (rawRunning(task) || hasPending(task)))observe(source,{task_id:task.id},version).catch(error=>{if(!error.staleSession && version===sessionVersion && selected && key(selected)===key(task)){taskFailed(source,error,version);renderSources();renderTasks();renderDetails();}});
     await detail;
   }
   function confirmCompletion() {
@@ -699,7 +723,7 @@
   }
   async function updateTaskStatus(task) {
     const identity=key(task),version=sessionVersion,source=sources.find(source=>source.id===task.source_id),status=task.status==='completed'?'active':'completed';
-    if(statusBusy.has(identity) || !source.can_update_tasks || $('complete-dialog').open)return;
+    if(task.archived || statusBusy.has(identity) || archiveBusy.has(identity) || !source.can_update_tasks || $('complete-dialog').open)return;
     if(status==='completed' && (hasPending(task) || rawRunning(task)) && !await confirmCompletion())return;
     if(version!==sessionVersion || !authenticated)return;
     statusBusy.add(identity);delete task.statusError;renderDetails();
@@ -709,27 +733,27 @@
       for(const item of source.tasks)if(item.id===task.id)apply(item);
       if(detailCache.has(identity))apply(detailCache.get(identity));
       handoffCache.delete(identity);
-      if(selected && key(selected)===identity){selectionVersion++;detailRequests.delete(identity);apply(currentDetail);currentDetail.detailLoading=false;currentHandoff=null;renderDetails();}
+      if(currentDetail && selected && key(selected)===identity){selectionVersion++;detailRequests.delete(identity);apply(currentDetail);currentDetail.detailLoading=false;currentHandoff=null;renderDetails();}
       queryVersion++;saveView();renderTasks();await refresh(true);
     }catch(error){
-      if(!error.staleSession && version===sessionVersion){const message=(status==='completed'?'標記完成':'重新開啟')+'失敗：'+error.message;const cached=detailCache.get(identity);if(cached)cached.statusError=message;if(selected && key(selected)===identity){currentDetail.statusError=message;renderDetails();}}
+      if(!error.staleSession && version===sessionVersion){const message=(status==='completed'?'標記完成':'重新開啟')+'失敗：'+error.message;const cached=detailCache.get(identity);if(cached)cached.statusError=message;if(currentDetail && selected && key(selected)===identity){currentDetail.statusError=message;renderDetails();}}
     }finally{if(version===sessionVersion){statusBusy.delete(identity);if(selected && key(selected)===identity)renderDetails();}}
   }
   async function archiveTask(task) {
-    const identity=key(task),version=sessionVersion,source=sources.find(source=>source.id===task.source_id),archived=!task.archived;if(archiveBusy.has(identity))return;
+    const identity=key(task),version=sessionVersion,source=sources.find(source=>source.id===task.source_id),archived=!task.archived;if(archiveBusy.has(identity) || statusBusy.has(identity) || !source.can_update_tasks)return;
     archiveBusy.add(identity);delete task.archiveError;renderDetails();
     try{
       const result=await api(scope(source)+'tasks/'+encodeURIComponent(task.id)+'/archive',{archived},version);checkSession(version);
-      for(const item of source.tasks)if(item.id===task.id)item.archived=result.archived;
-      if(detailCache.has(identity))detailCache.get(identity).archived=result.archived;
+      for(const item of source.tasks)if(item.id===task.id)Object.assign(item,{archived:result.archived,archive_pending:false});
+      detailCache.delete(identity);handoffCache.delete(identity);
       if(selected && key(selected)===identity){selected=null;currentDetail=null;currentHandoff=null;$('detail').replaceChildren(node('h2','選擇任務'));delete $('detail').dataset.task;}
       queryVersion++;saveView();renderTasks();await refresh(true);
     }catch(error){
-      if(!error.staleSession && version===sessionVersion){const message=(archived?'封存':'還原')+'失敗：'+error.message;const cached=detailCache.get(identity);if(cached)cached.archiveError=message;if(selected && key(selected)===identity){currentDetail.archiveError=message;renderDetails();}else $('error').textContent=message;}
+      if(!error.staleSession && version===sessionVersion){const message=(archived?'封存':'還原')+'失敗：'+error.message;const cached=detailCache.get(identity);if(cached)cached.archiveError=message;if(currentDetail && selected && key(selected)===identity){currentDetail.archiveError=message;renderDetails();}else $('error').textContent=message;}
     }finally{if(version===sessionVersion){archiveBusy.delete(identity);if(selected && key(selected)===identity)renderDetails();}}
   }
-  function statePath(source,offset=0) {
-    const choice=$('state-filter').value,sourceFilter=tuple($('source-filter').value,2),project=tuple($('project-filter').value,3),params=new URLSearchParams({q:$('query').value.trim(),state:choice==='archived'?'all':choice,archived:archivedView(),offset:String(offset),limit:'60'});
+  function statePath(source,pages) {
+    const choice=$('state-filter').value,sourceFilter=tuple($('source-filter').value,2),project=tuple($('project-filter').value,3),params=new URLSearchParams({q:$('query').value.trim(),state:choice==='archived'?'all':choice,archived:archivedView(),window:String(pages*pageSize)});
     if(sourceFilter && sourceFilter[0]===source.id)params.set('environment',sourceFilter[1]);
     if(project && project[0]===source.id){params.set('runner',project[1]);params.set('project',project[2]);}
     return scope(source)+'state?'+params.toString();
@@ -737,14 +761,12 @@
   async function loadSource(source,version,query,pages) {
     const identity=selected?.source_id===source.id?key(selected):null,detailAtStart=identity?detailCache.get(identity):null;source.loading=true;
     try{
-      const data=await api(statePath(source),undefined,version);if(query!==queryVersion)return;
-      const loaded=[...data.tasks];let offset=data.next_offset,loadedPages=1;
-      while(offset!==null && loadedPages<pages){const page=await api(statePath(source,offset),undefined,version);if(query!==queryVersion)return;loaded.push(...page.tasks);offset=page.next_offset;loadedPages++;}
-      checkSession(version);if(query!==queryVersion)return;
+      const data=await api(statePath(source,pages),undefined,version);if(query!==queryVersion)return;
+      const loaded=data.tasks.filter(task=>!selected?.unavailable || key(task)!==key(selected));
       const latest=identity && detailCache.get(identity);
       if(latest && selected && key(selected)===identity && !currentDetail?.detailError && !loaded.some(task=>key(task)===identity) && (latest!==detailAtStart || workObserved(latest)>data.observed_at))loaded.push(latest);
       loadRunners(source,data.runners,data.observed_at);if(currentDetail?.source_id===source.id)currentDetail=syncRunner(source,currentDetail);
-      source.tasks=[...new Map(loaded.map(t=>[key(t),fromCatalog(source,t)])).values()];source.projects=data.projects;source.observed_at=data.observed_at;source.nextOffset=offset;source.online=true;source.error='';source.pages=loadedPages;
+      source.tasks=loaded.map(task=>fromCatalog(source,task));source.projects=data.projects;source.observed_at=data.observed_at;source.nextOffset=data.next_offset;source.online=true;source.error='';source.pages=Math.max(1,Math.ceil(data.tasks.length/pageSize));
       if(selected?.source_id===source.id && currentDetail){const task=source.tasks.find(task=>task.id===selected.id);if(task){currentDetail=mergeObserved(currentDetail,task);renderDetails();}}
       if(selected?.source_id===source.id && !currentDetail && detailRequests.has(key(selected))){const task=source.tasks.find(task=>task.id===selected.id);if(task)preview(task);}
     }catch(error){if(query===queryVersion)sourceFailed(source,error,version);}
@@ -755,7 +777,8 @@
     try{
       await Promise.all([details(version),...sources.map(async source=>{
         if(!reset){
-          const running=source.tasks.filter(task=>rawRunning(task) || hasPending(task)).sort((a,b)=>processStamp(a)-processStamp(b)),ids=[...new Set([...(selected?.source_id===source.id?[selected.id]:[]),...running.map(t=>t.id)])].slice(0,100);
+          const picked=currentDetail?.source_id===source.id && !currentDetail.archived?currentDetail:null;
+          const running=source.tasks.filter(task=>!task.archived && (rawRunning(task) || hasPending(task))).sort((a,b)=>processStamp(a)-processStamp(b)),ids=[...new Set([...(picked?[picked.id]:[]),...running.map(t=>t.id)])].slice(0,100);
           try{await observe(source,{task_ids:ids},version);}catch(error){if(error.staleSession)throw error;}
         }
         await loadSource(source,version,query,reset?1:source.pages || restoredPages);
@@ -831,14 +854,8 @@
   $('more').addEventListener('click',async()=>{
     if(paging || busy!==null)return;const version=sessionVersion,query=queryVersion;paging=true;$('more').disabled=true;
     try{
-      await Promise.all(activeSources().filter(s=>s.nextOffset!==null).map(async source=>{
-        try{
-          const data=await api(statePath(source,source.nextOffset),undefined,version);if(query!==queryVersion)return;
-          loadRunners(source,data.runners,data.observed_at);if(currentDetail?.source_id===source.id)currentDetail=syncRunner(source,currentDetail);
-          source.tasks=[...new Map([...source.tasks,...data.tasks].map(t=>[key(t),fromCatalog(source,t)])).values()];source.projects=data.projects;source.nextOffset=data.next_offset;source.pages++;source.observed_at=data.observed_at;source.online=true;source.error='';
-          if(selected?.source_id===source.id && currentDetail){const task=source.tasks.find(task=>task.id===selected.id);if(task){currentDetail=mergeObserved(currentDetail,task);renderDetails();}}
-        }catch(error){if(query===queryVersion)sourceFailed(source,error,version);}
-      }));checkSession(version);if(query!==queryVersion)return;renderSources();saveView();
+      await Promise.all(activeSources().filter(source=>source.nextOffset!==null).map(source=>loadSource(source,version,query,source.pages+1)));
+      checkSession(version);if(query!==queryVersion)return;saveView();
     }catch(error){if(!error.staleSession && version===sessionVersion)$('error').textContent=error.message;}
     finally{if(version===sessionVersion){paging=false;renderTasks();if(query!==queryVersion)refresh(true);}}
   });

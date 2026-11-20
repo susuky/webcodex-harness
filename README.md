@@ -60,7 +60,7 @@ Open `http://127.0.0.1:8765/manage` and sign in with your configured username an
 
 The task center brings Windows, WSL and Ubuntu tasks into one page. Search by task name, project or ID; filter by source, project and status. Select a task to read its summary, start and last-operation times, work steps and command output, or copy instructions for continuing in another conversation.
 
-The default view shows unfinished tasks. Status filters also cover running or queued work, tasks needing attention, unconfirmed execution status, completed tasks and archived tasks. With write permission, you can mark a task complete or reopen it. Archiving hides a task from your default view and can be undone; it keeps the task's records and running processes.
+The default view shows unfinished tasks. Status filters also cover running or queued work, tasks needing attention, unconfirmed execution status, completed tasks and archived tasks. With write permission, you can mark a task complete, reopen it, archive it or restore it. Archiving pauses new work and dispatch from the task queue. Already dispatched work can finish. Restore the task to resume work or dispatch its queued jobs.
 
 Multiple Servers can appear in one task center through configured sources. See [Task center setup](docs/INSTALLATION.md#統一任務中心). The task center and task card interfaces use Traditional Chinese.
 
@@ -81,9 +81,9 @@ For long commands, keep using `job_get` and `read_process` in the same turn unti
 
 A `task_id` identifies the goal, progress, jobs, processes and results saved by the Server. It persists independently of a conversation. Start new work with a new task ID; use the original ID to continue existing work.
 
-1. Find the task with `task_list` and read its current progress with `task_get(task_id)`.
-2. Call `task_takeover(task_id)` or use the task card's takeover button.
-3. Continue with `work_on_project(task_id=...)`, keeping the original job and process IDs. Use `job_get` and `read_process` to read commands already running.
+1. Use the original task ID, or find it with `task_list`.
+2. Call `task_takeover(task_id)` for the current progress and handoff, then follow `next_action` to show the card.
+3. Follow the returned progress and keep the original job and process IDs. Use `job_get` and `read_process` to observe commands already running.
 
 Resuming requires the same WebCodex client identity (owner) and authorization for the task's project. Each task has one active card controller; takeover transfers card messaging authority to the new conversation. See [the handoff workflow](docs/CHATGPT.md#跨對話接棒).
 

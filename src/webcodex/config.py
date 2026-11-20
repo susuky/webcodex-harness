@@ -216,7 +216,7 @@ class RunnerConfig(StrictModel):
     max_concurrent_jobs: int = Field(default=4, ge=1, le=32)
     max_processes: int = Field(default=16, ge=1, le=128)
     max_output_bytes: int = Field(default=8 * 1024 * 1024, ge=4096, le=128 * 1024 * 1024)
-    max_process_seconds: int = Field(default=3600, ge=1, le=86400)
+    max_process_seconds: int | None = Field(default=None, ge=1)
     environment: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
@@ -395,7 +395,9 @@ def initialize(
     if project_root:
         runner_config.permissions.add("projects")
     write_private(directory / "server.json", server.model_dump(mode="json"))
-    write_private(directory / "runner.json", runner_config.model_dump(mode="json"))
+    write_private(
+        directory / "runner.json", runner_config.model_dump(mode="json", exclude_none=True)
+    )
     write_private(directory / "client.json", {"server_url": url, "token": client})
     return {
         "config_dir": str(directory),

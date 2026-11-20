@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def text(response):
-    return "\n".join(block.text for block in response.content[1:] if block.type == "text")
+    return "\n".join(block.text for block in response.content if block.type == "text")
 
 
 def result(response):

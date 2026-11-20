@@ -22,7 +22,7 @@ WebCodex 在驗證用戶端身分、專案範圍與工具權限後直接執行�
 
 ## 恢復任務時先讀取目前進度
 
-使用 `task_get` 的 `progress` 判斷待處理工作與最新程序結果。`summary`、`status` 與 `plan` 是先前保存的交接紀錄，可能早於目前執行狀態。
+使用 `task_takeover` 回傳的 `progress` 判斷待處理工作與最新程序結果。需要單獨查詢狀態時用 `task_get`。`summary`、`status` 與 `plan` 是先前保存的交接紀錄，可能早於目前執行狀態。
 
 - 依 `next_action`／`next_actions` 觀察同一 job 或 process，不重新啟動命令。
 - 程序尚未結束時，使用 `read_process` 與回傳的 byte cursor 讀取新增輸出。

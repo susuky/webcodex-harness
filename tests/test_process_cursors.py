@@ -1,8 +1,45 @@
+import sys
 from pathlib import Path
 
 import pytest
+from test_harness import call
 
 from webcodex.store import Store
+
+pytest_plugins = ["test_harness"]
+
+
+async def test_read_process_accepts_its_own_cursor_past_ten_million_bytes(harness):
+    harness.runner.config.max_output_bytes = 12_000_000
+    async with harness.mcp() as client:
+        task = await call(client, "task_create", {"project": "local/project", "title": "Large log"})
+        command = await call(
+            client,
+            "exec_command",
+            {
+                "task_id": task["id"],
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(b'x' * 10000003 + b'end')",
+                ],
+            },
+        )
+        args = {"task_id": task["id"], "process_id": command["result"]["process_id"]}
+        first = await call(
+            client,
+            "read_process",
+            {**args, "cursor": 10_000_000, "max_bytes": 3, "wait_seconds": 10},
+        )
+        assert first["result"]["output"] == "xxx"
+        assert first["result"]["next_cursor"] > 10_000_000
+        final = await call(
+            client,
+            "read_process",
+            {**args, "cursor": first["result"]["next_cursor"]},
+        )
+        assert final["result"]["output"] == "end"
+        assert final["result"]["has_more"] is False
 
 
 @pytest.fixture

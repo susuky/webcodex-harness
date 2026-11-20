@@ -105,6 +105,10 @@ Server 的 Bearer 驗證由 bridge 處理，接入後仍保持啟用。
 
 連線中斷時沿用同一 `request_id` 查原工作，成功的匯入不會再次下載；確認原工作失敗且下載網址已過期後，重新取得檔案參照並用新 `request_id` 匯入。
 
+## 批次預覽專案圖片
+
+用 `view_images(task_id, paths)` 讓 Runner 將最多 20 個指定路徑製成一張編號縮圖。依回傳的路徑對照選出需要細看的圖片，再用 `view_image` 讀取選定的原圖。
+
 ## 換帳號與換電腦
 
 ### 連線名稱與執行位置
@@ -143,8 +147,8 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 新帳號完成連線後：
 
 1. 呼叫 `projects_list`，確認連到預期的專案與 Runner。
-2. 呼叫 `task_list` 找出原任務，或直接以已保存的任務 ID 呼叫 `task_get`。
-3. 依目前進度接續原任務，並以 `task_present` 顯示卡片。卡片控制權規則見 [任務卡片與跨回合續接](#任務卡片與跨回合續接)。
+2. 使用已保存的任務 ID，或以 `task_list` 找出原任務。
+3. 呼叫 `task_takeover` 取得交接資料，依 `next_action` 顯示卡片。卡片控制權規則見 [任務卡片與跨回合續接](#任務卡片與跨回合續接)。
 
 將 `TASK_ID` 換成原任務 ID，在新對話輸入：
 
@@ -168,9 +172,9 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 > 請列出 WebCodex 專案，選擇我指定的專案建立任務。先讀取專案規則與 Git 狀態，執行相關測試；需要修改時保留其他變更，最後顯示 diff 與真實測試結果。把任務 ID、摘要與下一步保存，讓下一次對話可以延續。
 
-下次對話先使用 `task_list` 和 `task_get` 讀取同一個任務，從 Server 保存的工作摘要與證據接續。
+下次對話以 `task_takeover` 接續同一個任務。需要查找原任務 ID 時使用 `task_list`。
 
-恢復時以 `task_get.progress` 的待處理工作與最新執行結果判斷下一步。`summary_stale: true` 表示摘要後又有工作更新，應讀取最新工作狀態。`status: succeeded` 的工作若同時回傳 `outcome: failed`，代表命令失敗，應查看輸出處理錯誤。依 `next_action`／`next_actions` 使用 `job_get`／`read_process`，在原回合取得命令結果後繼續；命令執行期間可先做其他獨立工作。欄位與範例見 [授權與執行](EXECUTION.md#恢復任務時先讀取目前進度)。
+恢復時以回傳的 `progress` 判斷待處理工作與最新執行結果。`summary_stale: true` 表示摘要後又有工作更新，應讀取最新工作狀態。`status: succeeded` 的工作若同時回傳 `outcome: failed`，代表命令失敗，應查看輸出處理錯誤。依 `next_action`／`next_actions` 使用 `job_get`／`read_process`，在原回合取得命令結果後繼續；命令執行期間可先做其他獨立工作。欄位與範例見 [授權與執行](EXECUTION.md#恢復任務時先讀取目前進度)。
 
 ## 等待中的進度回報
 
@@ -184,7 +188,7 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 一般長命令留在原回合等待。Server 指引、工具描述與 `next_action` 都使用 `job_get`／`read_process` 觀察原 job／process；收到結果後繼續工作。`task_wait` 用於明確選擇的工作監看，呼叫它不會開啟自動發訊，也不要求模型結束回合。
 
-`work_on_project(project, title, request_id)` 建立任務並讀取工作目錄；接續時傳入原 `task_id`。每個使用者發起、開始或恢復長工作的回合，依回傳動作呼叫一次 `task_present(task_id)` 顯示任務卡片。同回合及 `task_resume` 自動接續沿用已有卡片。
+`work_on_project(project, title, request_id)` 建立任務並讀取工作目錄。跨對話時用 `task_takeover` 接續。每個使用者發起、開始或恢復長工作的回合，依回傳動作呼叫一次 `task_present(task_id)` 顯示任務卡片。同回合及 `task_resume` 自動接續沿用已有卡片。
 
 ### 監看與發訊
 
@@ -207,9 +211,9 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 在新對話接續時：
 
-1. 用 `task_list` 找到原任務，以 `task_get(task_id)` 確認目標、目前進度與執行結果。
-2. 呼叫 `task_takeover(task_id)` 或在卡片按「在此接手」，取得接棒資料與卡片控制權。
-3. 以 `work_on_project(task_id=...)` 載入原任務的工作目錄，沿用原 job 與 process ID。仍在執行的命令使用 `job_get`／`read_process` 查詢；接棒不需另建任務或重跑原命令。
+1. 沿用原任務 ID。需要查找時用 `task_list`。
+2. 呼叫 `task_takeover(task_id)` 取得進度、交接資料與卡片控制權，依 `next_action` 顯示卡片。已開啟卡片時可用「在此接手」移交卡片控制權。
+3. 依回傳的 `progress` 與 `handoff` 接續。使用原 job 和 process ID 查詢 `job_get` 或 `read_process`。
 
 接棒資料包含目標、修改檔案、驗證結果、未讀輸出、待處理問題與下一步。`task_update` 可保存 `handoff` 的 `changed_files`、`validation`、`issues`、`next_steps` 四個字串陣列。
 
@@ -227,7 +231,9 @@ Runner 連線、工作狀態、本對話工具呼叫及卡片控制權各自顯�
 
 卡片資源位址含 HTML 內容雜湊，Server 更新後會產生新位址。ChatGPT 連線設定按 Refresh／Reload，重新開啟卡片即可載入新版。bridge 在啟動時載入初始化指引；修改指引時重啟 bridge／tunnel 並重新整理用戶端 metadata。[OpenAI 更新流程](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata)
 
-Server、bridge 可獨立更新。Runner 更新前執行 `webcodex update-check`；仍有命令時保留 Runner。新對話可透過原任務 ID 取得輸出。Runner 的 `max_process_seconds` 預設 3600 秒，限制單一命令的執行時間。
+Server、bridge 可獨立更新。Runner 更新前執行 `webcodex update-check`；仍有命令時保留 Runner。新對話可透過原任務 ID 取得輸出。
+
+`exec_command` 可用 `timeout_seconds` 指定單一命令的時限。省略時預設不限時。若在 Runner 設定 `max_process_seconds`，該值會限制單一命令的最長時間。舊設定檔若帶有 `max_process_seconds: 3600`，移除此欄位即可取消一小時上限。
 
 ## ChatGPT 平台已知限制：再次詢問工具授權
 

@@ -5,6 +5,7 @@ import sys
 import time
 
 import pytest
+from test_harness import call as mcp_call
 
 from webcodex.config import Client, ServerConfig
 from webcodex.server import Service
@@ -73,8 +74,93 @@ async def test_mcp_handoff_is_explicit_and_resumes_the_same_execution_once(harne
         resumed = await call("task_resume", resume)
         assert resumed["already_consumed"] is False
         assert resumed["task"]["continuation"]["handoff"]["state"] == "consumed"
-        assert (await call("task_resume", resume))["already_consumed"] is True
+        duplicate = await call("task_resume", resume)
+        assert duplicate["already_consumed"] is True
+        assert "task" not in duplicate
         assert len(harness.runner.processes.list(task)) == 1
+
+
+async def test_mcp_takeover_uses_one_snapshot_of_running_work(harness):
+    async with harness.mcp() as client:
+        task = (
+            await client.call_tool("task_create", {"project": "local/project", "title": "Live job"})
+        ).structuredContent["id"]
+        started = await client.call_tool(
+            "exec_command",
+            {
+                "task_id": task,
+                "argv": [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "import time\nfrom pathlib import Path\nprint('before')\n"
+                    "while not Path('takeover-release').exists(): time.sleep(0.01)\nprint('after')",
+                ],
+                "yield_time_ms": 250,
+            },
+        )
+        job = started.structuredContent
+        if job["status"] != "succeeded":
+            job = (
+                await client.call_tool("job_get", {"job_id": job["job_id"], "wait_seconds": 5})
+            ).structuredContent
+        process = job["result"]["process_id"]
+        assert job["result"]["status"] == "running"
+        try:
+            old_view = {"task_id": task, "view_id": "1" * 32, "action": "bind"}
+            old = await client.call_tool(
+                "task_app", old_view, meta={"openai/session": "old-window"}
+            )
+            assert old.structuredContent["control"]["bound"]
+
+            db = harness.app.state.service.store.db
+            queries = []
+            db.set_trace_callback(queries.append)
+            try:
+                new_window = {"openai/session": "new-window"}
+                taken = await client.call_tool("task_takeover", {"task_id": task}, meta=new_window)
+                assert not taken.isError and taken.content == []
+                snapshot = taken.structuredContent
+                action = snapshot["next_action"]
+                card = await client.call_tool(action["tool"], action["arguments"], meta=new_window)
+            finally:
+                db.set_trace_callback(None)
+
+            assert snapshot["handoff"]["goal"] == "Live job"
+            assert "jobs" not in snapshot and "questions" not in snapshot
+            assert card.structuredContent["task"]["id"] == task
+            assert "handoff" not in card.structuredContent
+            assert sum("SELECT snapshot,updated FROM task_handoffs" in q for q in queries) == 1
+            assert not any("tool,status,created,updated FROM jobs" in q for q in queries)
+            execution = snapshot["progress"]["latest_execution"]
+            assert execution["job_id"] == job["job_id"]
+            assert execution["result"]["process_id"] == process
+            assert execution["next_action"]["arguments"]["cursor"] == job["result"]["next_cursor"]
+            assert (
+                sum(
+                    "SELECT id,task_id,owner,runner,project,tool,status,result,approved,request_id"
+                    in q
+                    and job["job_id"] in q
+                    for q in queries
+                )
+                == 1
+            )
+            old = await client.call_tool(
+                "task_app", old_view, meta={"openai/session": "old-window"}
+            )
+            assert old.structuredContent["control"]["bound"] is False
+            assert [p["process_id"] for p in harness.runner.processes.list(task)] == [process]
+        finally:
+            (harness.repo / "takeover-release").touch()
+
+        read = execution["next_action"]
+        finished = await mcp_call(client, read["tool"], read["arguments"])
+        assert finished["result"]["process_id"] == process
+        assert finished["result"]["status"] == "completed"
+        assert (job["result"]["output"] + finished["result"]["output"]).splitlines() == [
+            "before",
+            "after",
+        ]
 
 
 @pytest.fixture
