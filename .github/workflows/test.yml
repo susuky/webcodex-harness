@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 20
     env:
       WEBCODEX_TEST_SKILL_COMMIT: 41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f
+      FULL_PYTEST: ${{ matrix.python == '3.11' || github.event_name != 'push' || github.ref_type == 'tag' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -60,8 +61,12 @@ jobs:
       - run: cargo --version
       - run: rg --version
       - run: uv run pytest -q -ra
+        if: env.FULL_PYTEST == 'true'
         env:
           WEBCODEX_TEST_BROWSER_MCP: '${{ runner.temp }}/webcodex-browser/node_modules/@playwright/mcp/cli.js'
+      - name: Verify workspace boundaries
+        if: env.FULL_PYTEST == 'false'
+        run: uv run pytest -q tests/test_boundaries.py
       - name: Verify computer use on an isolated X11 desktop
         if: runner.os == 'Linux'
         env:

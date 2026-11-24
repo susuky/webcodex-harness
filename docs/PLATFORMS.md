@@ -119,6 +119,8 @@ uv build
 
 [CI 設定](../.github/workflows/test.yml) 安裝選用桌面依賴，並在 Ubuntu 的獨立 Xvfb 執行實際桌面測試。Windows CI 執行原生 API 測試，互動桌面測試保留明確啟用，避免操作非測試桌面。
 
+分支 push 時，Ubuntu 和 Windows 的 Python 3.11 跑完整 pytest，Python 3.12 跑工作區邊界測試。Pull request、tag 和手動觸發在兩個 Python 版本都跑完整 pytest。四組都執行套件安裝及 CLI、Server、Runner 操作驗證。
+
 ## 歷史證據
 
 基準版本 `b3c9230` 的 coding 功能曾在 Ubuntu 24.04、Windows 11 Enterprise 10.0.26200 及 WSL2 Ubuntu 22.04 驗收，涵蓋檔案、命令、ConPTY／PTY、Git、擴充與任務延續。完整版本、結果及測試副本位置保留於 [歷史紀錄](archive/PLATFORMS-2026-09-11-b3c9230.md)；新增桌面操作的驗證結果見上方「本次驗證」。

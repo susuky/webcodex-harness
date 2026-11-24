@@ -38,17 +38,18 @@ def test_file_operations_and_directory_boundaries(tmp_path):
     outside = tmp_path / "private.txt"
     outside.write_text("outside", encoding="utf-8", newline="\n")
     directory_link(root / "escape", tmp_path)
-    if os.name != "nt":
-        (root / "linked.txt").symlink_to(outside)
     os.link(outside, root / "hardlink.txt")
-    for path in [
+    blocked_paths = [
         "../private.txt",
         str(outside),
         ".git/config",
         "escape/private.txt",
-        "linked.txt",
         "hardlink.txt",
-    ]:
+    ]
+    if os.name != "nt":
+        (root / "linked.txt").symlink_to(outside)
+        blocked_paths.append("linked.txt")
+    for path in blocked_paths:
         with pytest.raises((ValueError, OSError)):
             workspace.read(path)
         with pytest.raises((ValueError, OSError)):
