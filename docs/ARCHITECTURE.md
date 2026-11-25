@@ -106,4 +106,4 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 
 ChatGPT 帳號、Secure MCP Tunnel、公開 TLS、反向代理與第三方 MCP provider 的連線，需以實際帳號、目標與執行環境逐一驗證。
 
-原有 coding 功能曾在 Windows 11、WSL2 Ubuntu 22.04 與 Ubuntu 24.04 驗收；新增桌面功能的當次測試結果、平台版本與待驗證項目見 [平台驗證紀錄](PLATFORMS.md)。
+原有 coding 功能已在 Windows 11、WSL2 Ubuntu 22.04 與 Ubuntu 24.04 驗證；各平台支援能力與測試重現方式見 [平台支援](PLATFORMS.md)。

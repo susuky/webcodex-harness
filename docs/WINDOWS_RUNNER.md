@@ -1,25 +1,5 @@
 # Windows 獨立執行 Server 與 Runner
 
-## 已匯入的教材技能
-
-2026-10-23 已將本機 20 個教材製作技能完整匯入 Windows Runner 的 `local/tobi-benchpress` 與 `local/seminar`。每個專案保存 302 個來源檔案，安裝位置為 Runner `state_dir/extensions/<project>/skill/<name>`，與教材工作樹分開。使用既有擴充安裝器複製技能包，沒有執行安裝 hooks。
-
-ChatGPT 在指定專案建立或續接任務後，先呼叫 `skills_list(task_id)`，再以回傳的完整名稱讀取。已從實際 Windows 外掛驗證兩份 20 項清單、40 次主文件及 6 次支援文件讀取，全部成功、內容雜湊一致，讀取核准次數為 0。
-
-`skill_read` 影片技能的參數：
-
-```json
-{
-  "task_id": "TASK_ID",
-  "name": "installed:video-to-illustrated-lesson",
-  "path": "SKILL.md"
-}
-```
-
-簡報技能使用 `installed:Presentations`（大寫 P）；支援文件可指定 `path="references/template_following.md"`。其他教材技能包含文字編輯、HTML／PPTX、前端驗證、版面調整、PDF、程式審查及依情境使用的桌面操作、影像與手機存取指引。依專案工作計畫選讀；已授權的腳本與桌面工具直接執行。
-
-匯入與雲端驗證紀錄保存在本次安裝的 `windows-teaching-skills/installation.json`、`manifest.json` 與 `verification.json`。
-
 ## 安裝與啟動
 
 主流程將 **Server 與 Runner 都放在 Windows**，讓 MCP 用戶端操作這台 Windows 的桌面與軟體。安裝完成後，執行環境不依賴 Linux Server。在 Windows 已登入、解鎖的桌面開啟 PowerShell，依序貼上各段。
@@ -295,33 +275,6 @@ finally {
 ```
 
 `WEBCODEX_TEST_MONITOR_ID` 填入 `computer_status.monitors` 回傳的 `id`。省略時自動選副螢幕；填入主螢幕 ID 也可驗證。逐一更換 ID，並為截圖指定不同檔名，即可驗收每個螢幕。少於兩個螢幕時測試會顯示 `skipped`。
-
-2026-10-22 已完成以下驗證：
-
-| 項目 | 結果 |
-| --- | --- |
-| Windows 桌面後端與輸入回歸 | 68 passed |
-| Windows 螢幕選取與截圖相關測試 | 5 passed，包含 layered window 擷取旗標 |
-| Linux 指定測試集 | 67 passed、1 skipped |
-| Xvfb 桌面測試 | 1 passed、1 skipped |
-| Windows 完全本機 Server／Runner | CLI、REST、MCP 的查詢、讀檔、命令執行與桌面狀態通過 |
-| Windows 螢幕列舉 | 3 個螢幕，DPI 為 144／96／96 |
-| Windows 真實三螢幕 MCP 操作 | 3 passed；截圖、點擊、拖曳、Unicode／快捷鍵與滾輪全部通過 |
-| 官方 Windows Tunnel 執行檔 | 下載 SHA-256 驗證、`help quickstart` 與 `init`／`doctor`／`run` 參數檢查通過；帳戶連線驗證見下方 2026-10-23 紀錄 |
-
-本次在主螢幕 150%、左側副螢幕 100% 與右側直向副螢幕 100% 各執行一次實測。每個螢幕均核對截圖標記像素、按鈕收件、拖曳按下／釋放的全域座標、游標終點及左鍵已放開。詳細結果見[平台驗證](PLATFORMS.md)。
-
-2026-10-23 已完成實際 ChatGPT 雲端外掛驗收：Windows 本機 Server／Runner 經官方 `tunnel-client` 0.0.17 連線，`healthy=true`、`ready=true`。三個螢幕各取得操作前、點擊後與拖曳後的原生 JPEG，共 9 張；每個測試視窗均收到一次點擊及一次 200 像素拖曳。這輪使用舊版逐筆核准流程；新版執行方式見[授權與執行](EXECUTION.md)。
-
-早期驗收曾出現 Tunnel MCP 初始化錯誤 409。已用原生 Tunnel 對照測試定位到 `initialize` 回覆與 `notifications/initialized` 之間的空窗，並在 Windows 啟動程式啟用上述官方通知設定。修正後 12 輪初始化、4 路並行，共 60 次本機工具呼叫成功；ChatGPT 端 34 次實際呼叫全部成功，0 失敗、0 工具重試。停止 Server、Runner、Tunnel 後，以登入捷徑冷啟動，再從 ChatGPT 查詢、讀檔、讀取桌面狀態與回傳三個原生 JPEG 均成功。16 筆工作紀錄皆成功且無重複。
-
-2026-10-23 15:32–15:36（台北時間）解鎖 Windows 後，再經 ChatGPT 外掛完成三螢幕截圖、點擊及拖曳重驗。9 張原生 JPEG 均通過尺寸與標記像素核對；每個視窗收到一次點擊、16 次拖曳移動及一次釋放，方塊位移 200 像素。左側負座標、主螢幕 150% 與副螢幕 100% 的座標及視窗 DPI 均正確。本輪 25 次雲端呼叫，0 失敗、0 重試、0 次 409；17 筆工作紀錄成功且無重複。6 筆輸入逐筆核准後觀察同一 job，沒有放寬核准政策。測試視窗已關閉，三個服務保持執行。詳細證據位置見[平台驗證](PLATFORMS.md)。本輪未測跨螢幕拖曳。
-
-同日另完成左側 100% 與主螢幕 150% 之間的兩輪來回拖曳，共 4 次。先以 `computer_status.desktop_monitor_id`（`desktop`）擷取整個 Windows 桌面，再將兩端位置換算為這張截圖的來源像素，交給既有 `computer_drag`。兩端皆使用實體像素，不額外乘上螢幕縮放比例，也不把桌面原點加進輸入座標；螢幕間的空白區域不能當作端點。
-
-4 次拖曳的游標終點與標題列抓取點誤差均為 0 像素，DPI 正確切換 96／144，左鍵均已放開；拖曳後 4 次按鈕點擊全數收到。完整驗收段 25 次雲端呼叫成功；含試跑與服務冷啟動後檢查共 46 次呼叫，0 次 409。Windows 79 項回歸與新增跨螢幕實機案例均通過（實機案例 1 passed、1 deselected）。上方多螢幕實機命令現在也會執行跨螢幕往返，詳細證據見[平台驗證](PLATFORMS.md)。
-
-2026-10-23 14:32 已為本次 Windows 安裝保存 DPAPI 加密金鑰，並建立目前使用者的 `Startup\WebCodex Windows.lnk`。登入 Windows 後自動啟動本機 Server、Runner 與 Tunnel，執行時使用 Windows 本機金鑰，不需要 Linux Server。已在 Windows PowerShell 5.1 停止三個程序後，以同一捷徑重新啟動，全程無金鑰輸入；重複啟動沒有新增程序，ChatGPT 雲端 `projects_list` 與 `computer_status` 成功。Server、Runner、client 設定及核准政策均保持原值。尚未實際重開 Windows 驗證。
 
 ### 已安裝環境的常駐與自動恢復
 

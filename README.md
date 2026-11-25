@@ -113,7 +113,7 @@ uv run webcodex retention --days 30 --max-mib 1024 --save-policy
 Detailed guides are in Traditional Chinese:
 
 - Usage: [Installation and management](docs/INSTALLATION.md) · [Walkthrough](docs/DEMO.md) · [Operations](docs/OPERATIONS.md) · [Computer use](docs/COMPUTER_USE.md) · [Browser use](docs/BROWSER_USE.md) · [Connections](docs/CHATGPT.md) · [Extensions](docs/EXTENSIONS.md)
-- Project: [Architecture](docs/ARCHITECTURE.md) · [Platform support](docs/PLATFORMS.md) · [Roadmap](docs/ROADMAP.md)
+- Project: [Architecture](docs/ARCHITECTURE.md) · [Platform support](docs/PLATFORMS.md)
 - Development: [Contributing](CONTRIBUTING.md) · [Security reporting](.github/SECURITY.md) · [Releases](docs/RELEASING.md)
 
 An independent Python implementation inspired by [yyjeqhc/webcodex](https://github.com/yyjeqhc/webcodex). Your MCP client provides the reasoning and conversation.

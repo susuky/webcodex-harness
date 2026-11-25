@@ -49,7 +49,7 @@ Windows 用戶端要連到 WSL2 裡的 Harness，可以讓它啟動 `wsl.exe`：
 }
 ```
 
-WSL2 範例要求 Server、Runner 與 client 設定都在相同 Ubuntu 發行版內。這些設定供支援 stdio 的本機 MCP 用戶端使用；ChatGPT 遠端連線使用下方的 Secure MCP Tunnel 或 HTTPS 入口。Windows 原生及 WSL2 內的 stdio bridge 均已通過實機測試；Windows 用戶端透過 `wsl.exe` 啟動的組合仍待驗證。2026-10-23 已透過實際 ChatGPT 外掛完成 Windows 原生 Tunnel 連線與三螢幕桌面操作，結果見[平台驗證](PLATFORMS.md)。
+WSL2 範例要求 Server、Runner 與 client 設定都在相同 Ubuntu 發行版內。這些設定供支援 stdio 的本機 MCP 用戶端使用；ChatGPT 遠端連線使用下方的 Secure MCP Tunnel 或 HTTPS 入口。Windows 原生及 WSL2 內的 stdio bridge 可在本機直接使用，跨系統啟動 `wsl.exe` 需依環境確認路徑。桌面與多螢幕支援詳見[平台支援](PLATFORMS.md)。
 
 ## ChatGPT：Secure MCP Tunnel
 
@@ -237,9 +237,7 @@ Server、bridge 可獨立更新。Runner 更新前執行 `webcodex update-check`
 
 ## ChatGPT 平台已知限制：再次詢問工具授權
 
-長時間對話可能再次要求「允許一次／一律允許」。這是 ChatGPT 在執行工具前的確認；本專案將此情況列為平台端已知限制。
-
-2026/10/25 查核時，兩個 WebCodex 外掛的每個外掛設定均為 `Allow all actions`；使用者仍回報夜間三個對話曾再次詢問。Linux 與 Windows 的 Server、Runner、bridge 在夜間持續執行，保留的日誌沒有 401／403 驗證錯誤。WebCodex 以固定憑證驗證，沒有數小時後取消授權的機制。
+長時間對話可能再次要求「允許一次／一律允許」。這是 ChatGPT 在執行工具前的確認；本專案將此情況列為平台端已知限制。WebCodex 以固定憑證驗證，沒有在數小時後取消授權的機制。
 
 官方文件說明，記住某工具在某段對話中的允許，可能在新對話或重新整理後的後續回合再次詢問。[對話內的工具確認](https://developers.openai.com/api/docs/guides/custom-mcp-server)
 
@@ -294,12 +292,6 @@ bridge 對每筆 MCP 回覆設定 60 秒等待上限。回覆串流提早結束�
 ChatGPT 出現「訊息傳送逾時」或 `/backend-api/ecosystem/call_mcp` 的 HTTP 400 時，分別保存瀏覽器請求的時間、狀態碼與回應內容，再對照 Server／bridge 的完成紀錄。HTTP 狀態碼與 MCP 回覆中的 `isError` 屬於不同層；回應內含正常任務資料時，仍需保留瀏覽器顯示的 HTTP 錯誤供追查。
 
 這些紀錄由長駐程序載入，更新後需重啟 Server 與 bridge 才會啟用；Runner 可繼續運行。新版卡片仍依前述連線 metadata 更新流程載入。
-
-## 升級後接續舊版等待工作
-
-新版已移除逐筆核准與專案信任設定。Server 啟動時會重新檢查舊版 `pending_approval` 工作的用戶端、專案與工具權限；仍有權限且任務尚未結束的工作會沿用原 job 排入佇列，其他工作會取消。
-
-先用 `task_get` 確認原工作，再依回傳的 `next_actions` 接續。`projects_list` 的相容欄位 `approval_mode` 固定為 `automatic`，無須另外設定。完整流程見 [授權與執行](EXECUTION.md)。
 
 ## 工具看得到，但無法執行
 

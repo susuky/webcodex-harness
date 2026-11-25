@@ -182,7 +182,9 @@ update-check 讀取現有 process／delivery journal，列出仍在執行的 pro
 uv run webcodex backup
 ```
 
-backup 依要求複製設定與 SQLite 資料庫。日常工具、專案授權與程式更新不會自動備份整份工作歷史。回復程式版本時依該版本的 state schema 處理，服務停止後再進行資料結構轉換或資料還原。本次 `process_states` 換版只允許一個 Server 寫入同一 state；往返舊版本所需的 legacy 狀態轉換見 [2026-11-17 修整紀錄](reviews/2026-11-17-simplification.md#換版與回復)。
+backup 依要求複製設定與 SQLite 資料庫。日常工具、專案授權與程式更新不會自動備份整份工作歷史。回復程式版本時依該版本的 state schema 處理，服務停止後再進行資料結構轉換或資料還原。`process_states` 只允許一個 Server 寫入同一 state。
+
+若需回復到使用 `agent_observations` 的舊版，或從該版再次升級，先停止 Server 並依對應方向轉換狀態表。[舊版狀態表轉換步驟](https://github.com/susuky/webcodex-harness/blob/c1d537c06013e4c9e1a20ef56320a8b84064328e/docs/reviews/2026-11-17-simplification.md#換版與回復)
 
 ## 容量與保留期限
 

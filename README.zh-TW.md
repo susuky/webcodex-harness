@@ -113,7 +113,7 @@ uv run webcodex retention --days 30 --max-mib 1024 --save-policy
 詳細指南使用繁體中文：
 
 - 使用：[安裝與管理](docs/INSTALLATION.md) · [操作展示](docs/DEMO.md) · [操作教學](docs/OPERATIONS.md) · [桌面操作](docs/COMPUTER_USE.md) · [瀏覽器操作](docs/BROWSER_USE.md) · [連線設定](docs/CHATGPT.md) · [擴充套件](docs/EXTENSIONS.md)
-- 專案：[架構](docs/ARCHITECTURE.md) · [平台支援](docs/PLATFORMS.md) · [功能規劃](docs/ROADMAP.md)
+- 專案：[架構](docs/ARCHITECTURE.md) · [平台支援](docs/PLATFORMS.md)
 - 開發：[參與開發](CONTRIBUTING.md) · [安全回報](.github/SECURITY.md) · [發布](docs/RELEASING.md)
 
 這是參考 [yyjeqhc/webcodex](https://github.com/yyjeqhc/webcodex) 的獨立 Python 實作。推理與對話由 MCP 用戶端負責。

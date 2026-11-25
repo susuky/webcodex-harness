@@ -1,6 +1,6 @@
 # 瀏覽器操作
 
-選用的 `examples/plugins/browser-tools` 使用固定版本的 [Microsoft Playwright MCP](https://github.com/microsoft/playwright-mcp)，提供網頁元素、表單、分頁、截圖與資料擷取。功能方向參考 [Browser Use 評估](ROADMAP.md#browser-use-比對)，實作沿用既有 plugin 連線與用戶端推理。
+選用的 `examples/plugins/browser-tools` 使用固定版本的 [Microsoft Playwright MCP](https://github.com/microsoft/playwright-mcp)，提供網頁元素、表單、分頁、截圖與資料擷取，沿用既有 plugin 連線與用戶端推理。
 
 ## 選擇操作方式
 
@@ -128,7 +128,7 @@ Playwright 的 `allowed-origins` 會阻擋不符合設定的直接請求，但�
 
 `tests/test_browser_live.py` 透過真正的 Client → Server → Runner → provider 驗證填表、JavaScript 延遲更新、資料擷取、圖片回傳、分頁、過期元素、請求去重、網站限制、跨任務隔離及選用的狀態保存。設定 `WEBCODEX_TEST_BROWSER_MCP` 為已安裝的 `cli.js` 絕對路徑，再執行 `uv run pytest -q tests/test_extensions.py tests/test_browser_live.py`；未設定時瀏覽器測試會跳過。
 
-目前已在 Ubuntu 與 Windows 原生的 headless Chrome 實測。Windows 於 2026-10-28 通過完整瀏覽器整合，包含繁中填表、動態更新、頁面擷取、MCP 圖片、分頁、請求去重、網站限制、任務隔離及登入狀態保存；CI 亦有兩平台的執行設定。
+目前已在 Ubuntu 與 Windows 原生的 headless Chrome 驗證完整瀏覽器整合，包含繁中填表、動態更新、頁面擷取、MCP 圖片、分頁、請求去重、網站限制、任務隔離及登入狀態保存；CI 亦有兩平台的執行設定。
 
 
 ## Profile、重連與檔案操作盤點
