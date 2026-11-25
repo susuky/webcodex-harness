@@ -517,6 +517,106 @@ async def test_source_pages_follow_displayed_external_activity(
     ] == [now - 5, now - 10, None, now - 60]
 
 
+async def test_task_center_window_retries_and_only_reads_matching_work(harness, tmp_path):
+    store = harness.app.state.service.store
+    harness.config.clients["owner"].projects.extend(["course-hub/project", "wsl/project"])
+    for runner in ("course-hub", "wsl"):
+        store.register(runner, "test-instance", {"project": "b" * 64})
+    native = store.create_task("owner", "local/project", "Native")
+    course = store.create_task("owner", "course-hub/project", "Course")
+    wsl = store.create_task("owner", "wsl/project", "Linux")
+    archived = store.create_task("owner", "local/project", "Archived")
+    harness.app.state.service.set_task_archive("owner", archived["id"], time.time())
+
+    source = ManagementSource(
+        url=harness.url, token="c" * 40, label="Windows", runner_labels={"wsl": "Windows · WSL"}
+    )
+    portal = create_app(portal_config(tmp_path / "portal", {"windows": source}))
+    manager = portal.state.management_sources
+    requests = []
+
+    async def track(request):
+        requests.append(request)
+        if len(requests) == 1:
+            raise httpx.RemoteProtocolError("peer closed the response", request=request)
+
+    manager.clients[("owner", "windows", source.url, source.token)] = httpx.AsyncClient(
+        base_url=source.url,
+        headers={"Authorization": "Bearer " + source.token},
+        event_hooks={"request": [track]},
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=portal),
+            base_url="http://127.0.0.1",
+            headers={"Authorization": "Bearer " + "portal" * 8},
+        ) as client:
+            path = "/api/manage/sources/windows/state"
+            first = (await client.get(path, params={"window": 1, "state": "unfinished"})).json()
+            assert first["total_count"] == 3 and first["next_offset"] == 1
+            assert len(first["tasks"]) == 1 and first["tasks"][0]["source_id"] == "windows"
+            assert requests[0].url == requests[1].url
+            assert requests[1].headers["connection"] == "close"
+            assert first["projects"] == [
+                {"runner": "course-hub", "project": "project", "environment_label": "Windows"},
+                {"runner": "local", "project": "project", "environment_label": "Windows"},
+                {"runner": "wsl", "project": "project", "environment_label": "Windows · WSL"},
+            ]
+
+            windows = (
+                await client.get(path, params={"window": 60, "environment": "Windows"})
+            ).json()
+            assert windows["total_count"] == 2 and windows["next_offset"] is None
+            assert {row["id"] for row in windows["tasks"]} == {native["id"], course["id"]}
+            linux = (
+                await client.get(path, params={"window": 1, "environment": "Windows · WSL"})
+            ).json()
+            assert [row["id"] for row in linux["tasks"]] == [wsl["id"]]
+            assert requests[-1].url.params["runner"] == "wsl"
+            history = (await client.get(path, params={"window": 1, "archived": "archived"})).json()
+            assert [row["id"] for row in history["tasks"]] == [archived["id"]]
+            assert history["tasks"][0]["archived"] is True
+            assert [request.url.path for request in requests] == [
+                "/api/manage/sources/local/state"
+            ] * 5
+    finally:
+        await manager.close()
+        portal.state.service.store.close()
+        portal.state.service.diagnostics.close()
+
+
+async def test_task_center_window_falls_back_for_older_source(activity_service, monkeypatch):
+    service, task = activity_service
+    source = ManagementSource(url="https://windows.example", token="s" * 40)
+    service.config.clients["owner"].management_sources = {"windows": source}
+    manager = Sources(Management(service))
+    requests = []
+
+    async def legacy_source(request):
+        requests.append(request.url.path)
+        if request.url.path == "/api/manage/sources/local/state":
+            return httpx.Response(400, json={"error": "Unknown management query parameter"})
+        return httpx.Response(
+            200,
+            json={
+                "tasks": [manager.management.describe(task)],
+                "runners": manager.management.runners("owner"),
+                "observed_at": time.time(),
+            },
+        )
+
+    monkeypatch.setattr(
+        manager,
+        "remote_client",
+        lambda *_: httpx.AsyncClient(
+            base_url=source.url, transport=httpx.MockTransport(legacy_source)
+        ),
+    )
+    data = json.loads((await manager.state(scoped_request("windows", "window=60"))).body)
+    assert [row["id"] for row in data["tasks"]] == [task["id"]]
+    assert requests == ["/api/manage/sources/local/state", "/api/manage/state"]
+
+
 async def test_remote_catalog_legacy_paging_source_collisions_and_failures(
     activity_service, monkeypatch
 ):

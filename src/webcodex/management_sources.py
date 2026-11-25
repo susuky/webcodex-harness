@@ -313,7 +313,6 @@ class Sources:
                 async with self.remote_client(owner, source_id) as client:
                     response = await client.get(
                         "/api/manage/sources/local/connections",
-                        timeout=2,
                         params={"evidence": "1"} if include_evidence else None,
                     )
                 if response.status_code == 404:
@@ -525,9 +524,19 @@ class Sources:
             )
         return tasks
 
-    async def remote_request(self, client, method: str, path: str, **kwargs) -> dict:
+    async def remote_request(self, client, method: str, path: str, **kwargs) -> dict | None:
         try:
             response = await client.request(method, "/api/manage/" + path, **kwargs)
+            if (
+                method == "GET"
+                and path == "sources/local/state"
+                and (
+                    response.status_code == 404
+                    or response.status_code == 400
+                    and response.json() == {"error": "Unknown management query parameter"}
+                )
+            ):
+                return None  # Older sources need the unfiltered catalog route.
             if response.status_code in {401, 403}:
                 raise SourceUnavailable(
                     "來源驗證失敗或權限已撤銷",
@@ -693,6 +702,92 @@ class Sources:
             ):
                 raise SourceUnavailable("來源回傳了無效的任務時間")
 
+    async def remote_window(self, owner, source_id, params, window):
+        source = self.source(owner, source_id)
+        params = dict(params)
+        environment = params.pop("environment", "")
+        if environment and not params.get("runner") and environment != self.label(owner, source_id):
+            matching = [key for key, label in source.runner_labels.items() if label == environment]
+            if len(matching) == 1:
+                params["runner"] = matching[0]
+
+        try:
+            async with asyncio.timeout(30), self.remote_client(owner, source_id) as client:
+                path = "sources/local/state"
+                try:
+                    data = await self.remote_request(client, "GET", path, params=params)
+                except SourceUnavailable as error:
+                    if (
+                        error.reason
+                        not in {
+                            "source_connect_timeout",
+                            "source_read_timeout",
+                            "source_unreachable",
+                        }
+                        and error.details.get("exception_type") != "RemoteProtocolError"
+                    ):
+                        raise
+                    data = await self.remote_request(
+                        client, "GET", path, params=params, headers={"Connection": "close"}
+                    )
+        except TimeoutError:
+            raise SourceUnavailable(
+                "讀取來源任務逾時", "source_timeout", timeout_seconds=30
+            ) from None
+        if data is None:
+            return None
+
+        total, observed = data.get("total_count"), data.get("observed_at")
+        if (
+            type(total) is not int
+            or total < 0
+            or type(observed) not in {int, float}
+            or not math.isfinite(observed)
+            or not isinstance(data.get("tasks"), list)
+            or len(data["tasks"]) != min(window, total)
+            or data.get("next_offset") != (window if window < total else None)
+            or not isinstance(data.get("runners"), list)
+            or any(not isinstance(row, dict) for row in data["runners"])
+            or not isinstance(data.get("projects"), list)
+            or any(
+                not isinstance(row, dict)
+                or not isinstance(row.get("runner"), str)
+                or not isinstance(row.get("project"), str)
+                for row in data["projects"]
+            )
+        ):
+            raise SourceUnavailable("來源回傳了無效的任務清單")
+        for task in data["tasks"]:
+            self.validate_remote_task(task)
+        if len({task["id"] for task in data["tasks"]}) != len(data["tasks"]):
+            raise SourceUnavailable("來源回傳了無效的任務清單")
+        projects = [
+            {**row, "environment_label": self.environment_label(owner, source_id, row["runner"])}
+            for row in data["projects"]
+        ]
+        tasks = [self.tag(owner, source_id, task) for task in data["tasks"]]
+        if environment and any(
+            row["environment_label"] != environment
+            for row in projects
+            if (not params.get("runner") or params["runner"] == row["runner"])
+            and (not params.get("project") or params["project"] == row["project"])
+        ):
+            if len(tasks) < total:
+                return None  # An environment can combine multiple Runners into one page.
+            tasks = [task for task in tasks if task["environment_label"] == environment]
+            total = len(tasks)
+        await self.source_recovered(owner, source_id, "state")
+        return {
+            "source_id": source_id,
+            "source_label": self.label(owner, source_id),
+            "tasks": tasks,
+            "projects": projects,
+            "runners": [self.tag(owner, source_id, runner) for runner in data["runners"]],
+            "next_offset": data.get("next_offset"),
+            "total_count": total,
+            "observed_at": observed,
+        }
+
     async def remote_catalog(self, owner: str, source_id: str) -> dict:
         key = (owner, source_id)
         lock = self.locks.setdefault(key, asyncio.Lock())
@@ -701,8 +796,12 @@ class Sources:
             if cached and time.monotonic() - cached[0] < 3:
                 return cached[1]
             tasks, seen, offset = [], set(), 0
+            catalog_timeout = 30
             try:
-                async with asyncio.timeout(15), self.remote_client(owner, source_id) as client:
+                async with (
+                    asyncio.timeout(catalog_timeout),
+                    self.remote_client(owner, source_id) as client,
+                ):
                     # New sources keep catalog order stable across updates. Older ones ignore the flag.
                     for _ in range(100):
                         page = await self.remote_request(
@@ -737,7 +836,7 @@ class Sources:
                         offset = next_offset
             except TimeoutError:
                 raise SourceUnavailable(
-                    "讀取來源任務逾時", "source_timeout", timeout_seconds=15
+                    "讀取來源任務逾時", "source_timeout", timeout_seconds=catalog_timeout
                 ) from None
             raise SourceUnavailable("來源任務過多，無法完整載入")
 
@@ -786,6 +885,11 @@ class Sources:
             raise ValueError("Invalid environment filter")
         started = time.monotonic()
         try:
+            if source and window is not None and not self.archived_ids(owner, source_id):
+                # Let the source filter and describe just the task center's visible window.
+                page = await self.remote_window(owner, source_id, params, window)
+                if page is not None:
+                    return self.response(page)
             data = (
                 await self.remote_catalog(owner, source_id)
                 if source
