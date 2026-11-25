@@ -225,7 +225,12 @@ class Diagnostics:
                     and re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]{0,127}", value)
                 ):
                     record[key] = value
-                elif key in {"is_error", "disconnected", "control_bound"} and type(value) is bool:
+                elif (
+                    key in {"is_error", "disconnected", "control_bound", "source_transport_error"}
+                    and type(value) is bool
+                ):
+                    record[key] = value
+                elif key == "source_loopback_port" and type(value) is int and 1 <= value <= 65535:
                     record[key] = value
                 elif (
                     key == "controller_generation"

@@ -61,7 +61,7 @@ ChatGPT 的連線入口、Bearer token 與 tunnel 設定見[連線指南](CHATGP
 
 具 `write` 權限的檢視者可「標記完成」或「重新開啟」，由來源的狀態端點呼叫既有 `task_update` 保存原任務狀態，保留摘要、計畫與歷史；來源 Token 也須允許 `write`，並已更新至支援狀態端點的版本。標記完成會停用原任務的自動續接通知，已啟動的工具與背景命令繼續執行。只有 `read` 權限時不顯示狀態修改按鈕。
 
-具寫入權限時，可在任務詳情封存或還原。來源 Server 保存封存狀態，停止接手、新工具呼叫、自動續接與排隊工作的派送。已派送的工作可以完成並回寫結果。從「已封存」可查閱歷史和還原，還原後原有排隊工作會恢復派送。MCP 可用 `task_list(include_archived=true)` 查找封存歷史。
+具寫入權限時，可在任務詳情封存已放棄的工作。任務會歸入「已封存」，保留原本的完成狀態。封存會停止接手、新工具呼叫、自動續接與排隊派送。已派送的工作可以完成並回寫結果。從「已封存」可查閱歷史，明確還原後原有排隊工作才會恢復派送。MCP 可用 `task_list(include_archived=true)` 查找封存歷史。
 
 從舊版升級時，本機封存偏好會匯入原任務。跨來源的舊偏好會在任務中心讀到新版來源時同步，來源 Token 須具備寫入權限。等待同步的舊項目顯示「封存待同步」。
 
@@ -198,10 +198,10 @@ uv run webcodex retention --days 30 --max-mib 1024 --save-policy
 uv run webcodex retention --apply
 ```
 
-政策保存在設定目錄的 `retention.json`；每次呼叫依天數與容量挑選最舊資料。清理範圍為已結束 process log、已完成 task 的 browser artifacts、Server job payload 中的輸出與截圖，以及 Runner 已確認送達的副本。正在執行、結果未知、待處理工作、browser profile 與安裝檔都保留；task／job ID、owner、狀態、結束碼與時間也保留。
+政策保存在設定目錄的 `retention.json`，每次呼叫依天數與容量挑選最舊資料。任務已完成或已封存，且沒有待處理工作時，清理範圍包含已結束的程序記錄、瀏覽器附件、Server job 的輸出與截圖，以及 Runner 已確認送達的副本。正在執行、結果未知、待處理工作、瀏覽器設定檔與安裝檔都保留，task／job ID、owner、狀態、結束碼與時間也保留。
 
 容量統計針對可清理的 payload、log 與 artifact。保護中的資料與 SQLite metadata 持續保留；保護資料超過目標時，結果顯示 `capacity_blocked_by_protected_data`。`removed_file_bytes` 是已刪除檔案的容量，`reclaimed_payload_bytes` 是 SQLite 可重用的空間。若要縮小 SQLite 實體檔案，在服務停止的維護時段備份後執行 `VACUUM`。
 
-Runner 分機部署時，只能清理本機可驗證的紀錄；完成 task 的附件與 Server payload 清理需可讀取對應 Server state。政策只在執行 `retention` 時套用。
+Runner 分機部署時，只能清理本機可驗證的紀錄。清理任務附件與 Server job 輸出時需要讀取對應的 Server state。政策只在執行 `retention` 時套用。
 
 `retention` 目前要求設定目錄內有 `runner.json`；只有 Server 的部署需提供對應的 Runner 設定與可讀取的 state 路徑，才可使用這個清理命令。

@@ -46,8 +46,9 @@ async def test_mcp_handoff_is_explicit_and_resumes_the_same_execution_once(harne
             while job["status"] in {"queued", "running"}:
                 job = await call("job_get", {"job_id": job["job_id"], "wait_seconds": 2})
         assert job["next_action"]["tool"] == "read_process"
-        assert "next_action" not in job["continuation"]["handoff"]
+        assert "continuation" not in job
         restored = await call("task_get", {"task_id": task})
+        assert "next_action" not in restored["continuation"]["handoff"]
         assert restored["progress"]["next_actions"][0]["tool"] == "read_process"
         assert "this turn" in restored["progress"]["next_step"]
         assert harness.app.state.service.continuations.current(task) is None
@@ -213,17 +214,19 @@ async def test_handoff_requires_the_current_enabled_writable_view(
     elif case == "expired":
         service.store.db.execute("UPDATE task_controllers SET lease_until=0")
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window=window)
-    handoff = result["continuation"]["handoff"]
-    assert handoff["condition"] == "explicit_user_request"
+    assert "continuation" not in result
     assert result["next_action"]["tool"] == "job_get"
+    task_state = await service.call("owner", "task_get", {"task_id": task["id"]}, window=window)
+    handoff = task_state["continuation"]["handoff"]
+    assert handoff["condition"] == "explicit_user_request"
     assert "next_action" not in handoff
-    assert result["continuation"]["auto_enabled"] is False
+    assert task_state["continuation"]["auto_enabled"] is False
     if case == "read_only":
         assert handoff["reason"] == "read_only"
     if case == "expired":
-        assert result["continuation"]["controller"]["state"] == "expired"
+        assert task_state["continuation"]["controller"]["state"] == "expired"
     if existing_wait:
-        assert result["continuation"]["wait"] == {"id": wait["id"], "state": "watching"}
+        assert task_state["continuation"]["wait"] == {"id": wait["id"], "state": "watching"}
         assert service.continuations.current(task["id"])["state"] == "watching"
     else:
         assert service.continuations.current(task["id"]) is None
@@ -282,7 +285,9 @@ async def test_handoff_never_replaces_an_uncertain_delivery(waiting_service, sta
     wait = service.continuations.arm(task["id"], [job["job_id"]], "explicit")
     service.store.db.execute("UPDATE task_waits SET state=? WHERE id=?", (state, wait["id"]))
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
-    assert result["continuation"]["handoff"] == {
+    assert "continuation" not in result
+    task_state = await service.call("owner", "task_get", {"task_id": task["id"]}, window="window")
+    assert task_state["continuation"]["handoff"] == {
         "state": state,
         "condition": "explicit_user_request",
     }
@@ -295,7 +300,7 @@ async def test_workspace_handoff_uses_the_same_window_as_the_task(waiting_servic
     result = await service.call(
         "owner", "work_on_project", {"task_id": task["id"]}, window="window"
     )
-    assert result["workspace"]["continuation"]["controller"]["state"] == "owned"
+    assert "continuation" not in result["workspace"]
     assert result["task"]["continuation"]["controller"]["state"] == "owned"
     assert result["workspace"]["next_action"]["tool"] == "job_get"
     assert result["workspace"]["observation_action"]["tool"] == "job_get"
@@ -309,13 +314,17 @@ async def test_expired_card_has_an_executable_repair_action_before_handoff(waiti
         service.store.db.execute("UPDATE task_controllers SET lease_until=0")
     observed = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
     assert observed["next_action"]["tool"] == "job_get"
-    assert observed["continuation"]["controller"]["state"] == "expired"
+    assert "continuation" not in observed
+    task_state = await service.call("owner", "task_get", {"task_id": task["id"]}, window="window")
+    assert task_state["continuation"]["controller"]["state"] == "expired"
     assert service.continuations.current(task["id"]) is None
     service.continuations.bind(task["id"], "2" * 32, "window")
     observed = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
     assert observed["next_action"]["tool"] == "job_get"
-    assert observed["continuation"]["controller"]["state"] == "owned"
-    assert not observed["continuation"]["auto_enabled"]
+    assert "continuation" not in observed
+    task_state = await service.call("owner", "task_get", {"task_id": task["id"]}, window="window")
+    assert task_state["continuation"]["controller"]["state"] == "owned"
+    assert not task_state["continuation"]["auto_enabled"]
 
 
 @pytest.mark.parametrize("status", ["running", "completed"])
@@ -393,7 +402,7 @@ async def test_completed_result_is_not_replaced_by_waiting_for_another_job(waiti
     )
     service.store.enqueue(task, "workspace_info", {}, "pending", 100)
     result = await service.call("owner", "job_get", {"job_id": job["job_id"]}, window="window")
-    assert result["continuation"]["handoff"]["state"] == "not_armed"
+    assert "continuation" not in result
     assert "next_action" not in result and result["result"]["exit_code"] == 0
 
 

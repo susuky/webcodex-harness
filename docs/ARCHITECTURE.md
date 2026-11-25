@@ -82,7 +82,7 @@ Runner 重啟不嘗試根據舊 PID 接管程序，以免誤操作已被重用�
 
 ## 模組
 
-桌面工具由同一 Runner 共用一把 thread lock，避免不同專案的輸入互相穿插；等待中的 coroutine 取消不會提早釋放正在執行原生呼叫的鎖。截圖 ID 綁定 task、最新觀察、畫面尺寸及五分鐘期限，一次輸入即消耗；可能已送出輸入的例外使用既有 `OutcomeUnknown`，不自動重送。此機制不隔離人為操作或另一個 Runner。完整契約與平台限制見 [Computer use](COMPUTER_USE.md)。
+桌面工具由同一 Runner 共用一把 thread lock，避免不同專案的輸入互相穿插。等待中的 coroutine 取消不會提早釋放原生呼叫持有的鎖。截圖 ID 綁定 task、最新觀察、螢幕配置及五分鐘期限，每張截圖限一次輸入。若輸入可能已送出，工具回報 `OutcomeUnknown`，呼叫端需重新觀察。完整契約與平台限制見 [Computer use](COMPUTER_USE.md)。
 
 | 檔案 | 職責 |
 | --- | --- |

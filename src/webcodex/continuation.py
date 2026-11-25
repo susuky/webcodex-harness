@@ -562,7 +562,14 @@ class Continuations:
             (now, task_id),
         )
 
-    def public(self, task_id: str, window: str | None = None) -> dict:
+    def public(
+        self,
+        task_id: str,
+        window: str | None = None,
+        *,
+        include_deliveries: bool = True,
+        delivery_limit: int = 20,
+    ) -> dict:
         wait = self.current(task_id)
         controller = self.store.one("SELECT * FROM task_controllers WHERE task_id=?", (task_id,))
         live = bool(controller and controller["lease_until"] > time.time())
@@ -577,7 +584,7 @@ class Continuations:
         )
         policy = self.policy(task_id)
         policy["auto_blocked_reason"] = self.auto_blocked_reason(task_id, controller, wait)
-        return {
+        result = {
             "paused": bool(controller and controller["paused"]),
             "auto_enabled": bool(live and controller["auto_enabled"]),
             "wait": {"id": wait["id"], "state": wait["state"]} if wait else None,
@@ -588,9 +595,11 @@ class Continuations:
                 "lease_until": controller["lease_until"] if controller else None,
                 "generation": controller["generation"] if controller else None,
             },
-            "deliveries": self.store.rows(
-                "SELECT id,wait_id,mode,reason,content,status,created,updated,sent_at FROM task_deliveries "
-                "WHERE task_id=? ORDER BY created DESC LIMIT 50",
-                (task_id,),
-            ),
         }
+        if include_deliveries:
+            result["deliveries"] = self.store.rows(
+                "SELECT id,wait_id,mode,reason,content,status,created,updated,sent_at FROM task_deliveries "
+                "WHERE task_id=? ORDER BY created DESC LIMIT ?",
+                (task_id, delivery_limit),
+            )
+        return result

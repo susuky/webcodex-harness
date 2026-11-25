@@ -303,6 +303,7 @@ class Runner:
                             json={
                                 "instance": self.instance,
                                 "limit": free,
+                                "supports_long_exec_yield": True,
                             },
                         )
                         response.raise_for_status()

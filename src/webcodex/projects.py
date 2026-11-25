@@ -157,7 +157,7 @@ class ProjectOperations:
     async def project_create(
         self, root: str, name: Name, request_id: RequestID, git_init: bool = False
     ) -> dict:
-        """Create a new directory and persistently register it on the Runner under an exact root ID from project_roots_list. No existing task or project is needed. name is both the new project ID and a direct child directory; existing paths are never adopted or overwritten. git_init is an explicit optional action and creates no commit. Reuse request_id for the same request within this root; poll the returned job_id, then use the resulting project ID with task_create. Creation requires projects permission."""
+        """Create and register a new directory under a root ID from project_roots_list. Reuse request_id on retries."""
         key, workspace = self.parent(root, name)
         binding = workspace.binding
         with workspace.parent(name) as (parent, child):
@@ -217,7 +217,7 @@ class ProjectOperations:
         path: Annotated[str, Field(min_length=1, max_length=4096)],
         request_id: RequestID,
     ) -> dict:
-        """Persistently register an existing directory beneath an exact root ID from project_roots_list. path is relative to that root; traversal, symlinks and registering the root itself are rejected. Does not modify project files or initialize Git. No existing task is needed. Reuse request_id within this root and poll the returned job_id before using the resulting project ID with task_create. Requires projects permission."""
+        """Register an existing directory (relative POSIX path) under a root ID from project_roots_list."""
         key, workspace = self.parent(root, name)
         workspace.parts(path)
         return {

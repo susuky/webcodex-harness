@@ -103,6 +103,39 @@ async def test_source_connections_are_reused_per_grant_and_closed_at_shutdown(tm
         await asyncio.gather(*(writer.wait_closed() for writer in writers))
 
 
+async def test_connection_history_does_not_wait_for_an_unresponsive_source(tmp_path):
+    received = asyncio.Event()
+
+    async def upstream(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            received.set()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    app = create_app(
+        portal_config(tmp_path, {"windows": ManagementSource(url=url, token="windows" * 8)})
+    )
+    async with (
+        server,
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1",
+            headers={"Authorization": "Bearer " + "portal" * 8},
+        ) as client,
+    ):
+        async with asyncio.timeout(4):
+            response = await client.get("/api/manage/sources/windows/connections")
+        assert received.is_set()
+        assert response.status_code == 200
+        assert response.json()["sources"][0]["reason"] == "source_timeout"
+
+
 @pytest.mark.parametrize(
     "error,message",
     [

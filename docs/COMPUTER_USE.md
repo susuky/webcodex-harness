@@ -63,7 +63,7 @@ uv run --extra computer webcodex runner
 | 工具 | 參數（另需 `task_id`） | 效果 |
 | --- | --- | --- |
 | `computer_status` | 無 | 檢查後端、畫面尺寸及文字輸入依賴；Windows 另列 `monitors`；不截圖 |
-| `computer_screenshot` | `max_dimension`，預設 1600；可選 `monitor_id` | 回傳所選螢幕的原生 MCP JPEG（最多 1 MiB）與 `snapshot_id`；省略 ID 時使用主螢幕 |
+| `computer_screenshot` | `max_dimension`，預設 1280；可選 `monitor_id` | 回傳所選螢幕的原生 MCP JPEG（最多 1 MiB）與 `snapshot_id`；省略 ID 時使用主螢幕 |
 | `computer_move` | `snapshot_id`、`x`、`y` | 移動游標 |
 | `computer_click` | `snapshot_id`、`x`、`y`、`button`、`clicks` | 左／右／中鍵；一次或雙擊 |
 | `computer_scroll` | `snapshot_id`、`x`、`y`、`clicks` | 指定位置垂直捲動，正數向上、負數向下 |
@@ -71,15 +71,15 @@ uv run --extra computer webcodex runner
 | `computer_key` | `snapshot_id`、`keys` | 單鍵或最多四鍵組合，如 `["ctrl","a"]`、`["enter"]` |
 | `computer_type` | `snapshot_id`、`text` | 輸入最多 4096 字元的可列印 Unicode，不讀寫剪貼簿 |
 
-狀態與截圖需要 `computer_observe`，六種輸入需要 `computer_control`。輸入工具均使用新的截圖 ID；`computer_key` 使用 PyAutoGUI 小寫鍵名。macOS 快捷鍵使用 `command`，例如 `["command","a"]`。換行與 Tab 請明確呼叫按鍵工具，不混入文字。`computer_type` 在 Ubuntu 約每字 12 ms，最長 60 秒逾時；應用程式須持續處理事件。
+狀態與截圖需要 `computer_observe`，六種輸入需要 `computer_control`。`computer_key` 使用 PyAutoGUI 小寫鍵名。macOS 快捷鍵使用 `command`，例如 `["command","a"]`。換行與 Tab 請呼叫按鍵工具。`computer_type` 在 Ubuntu 約每字 12 ms，最長 60 秒逾時，應用程式須持續處理事件。
 
-標準流程為：**截圖 → 一次操作 → 新截圖確認**。`snapshot_id` 綁定 task、畫面尺寸及 Runner 記憶體中的最新截圖，五分鐘後失效。任何 task 取得新截圖、已送出輸入或 Runner 重啟，都會讓舊 ID 失效。超過期限時，需重新觀察並建立新操作。
+截圖後執行一次操作，再用新截圖確認結果。`snapshot_id` 綁定 task、螢幕配置與 Runner 的最新截圖，有效期限最長五分鐘。送出輸入或回報 `OutcomeUnknown` 後都需要新截圖。任何 task 取得新截圖、螢幕配置改變或 Runner 重啟，也會讓舊 ID 失效。
 
 座標採所選螢幕的 `source_width`／`source_height`；若圖片縮小，換算為 `x = 圖片上的 x × source_width / width`，`y` 同理，再取整數。Ubuntu 觀察整個 X11 screen；macOS 使用主螢幕的邏輯尺寸，Retina 截圖先轉為同一尺寸，再依 `max_dimension` 縮小。
 
 Windows 透過 `computer_status.monitors` 取得螢幕的 `id`、`primary`、`x`、`y`、`width`、`height`、`dpi_x`、`dpi_y`，再把 `id` 傳給 `computer_screenshot.monitor_id`。截圖另回傳 `monitor_id`、`origin_x`、`origin_y`。所有滑鼠輸入仍使用該截圖左上角起算的非負座標；後端轉換成 Windows 實體桌面座標，因此副螢幕可位於主螢幕左方或上方。呼叫端不另外加上 `origin_x/origin_y`。
 
-跨螢幕拖曳時，使用 `computer_status.desktop_monitor_id`（`desktop`）擷取 Windows 整個虛擬桌面，再以這張截圖的 `source_width/source_height` 換算起點與終點。兩端可落在不同 DPI 的螢幕，皆以實體像素定位；螢幕間的空白區域不能當作輸入端點。一般單螢幕截圖仍將輸入限制在所選螢幕。整個桌面模式沿用截圖一次有效、五分鐘期限、排列／DPI 變更失效及拖曳例外時釋放左鍵的檢查。
+跨螢幕拖曳時，使用 `computer_status.desktop_monitor_id`（`desktop`）擷取 Windows 整個虛擬桌面，再以這張截圖的 `source_width/source_height` 換算起點與終點。兩端可落在不同 DPI 的螢幕，皆以實體像素定位；螢幕間的空白區域不能當作輸入端點。一般單螢幕截圖仍將輸入限制在所選螢幕。整個桌面模式同樣使用一次性截圖，拖曳遇到例外時會釋放左鍵。
 
 截圖綁定當時完整的螢幕排列、解析度、主螢幕與 DPI；任何一項改變，先前截圖便失效。工具尚未提供指定視窗或自動判讀控制項。
 

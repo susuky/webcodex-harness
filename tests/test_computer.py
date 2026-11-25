@@ -276,9 +276,9 @@ def test_snapshot_coordinates_freshness_and_input_cleanup(monkeypatch):
         computer.perform("task", snapshot_id, "text", text="do not submit\n")
     api.moveTo.assert_not_called()
     computer.perform("task", snapshot_id, "move", x=1500, y=100)
-    api.moveTo.assert_called_once_with(1500, 100, duration=0.2)
     with pytest.raises(ValueError, match="Stale"):
         computer.perform("task", snapshot_id, "move", x=100, y=100)
+    api.moveTo.assert_called_once_with(1500, 100, duration=0.2)
     snapshot_id = computer.screenshot("task", 960)["snapshot_id"]
     computer.screenshot("another-task", 960)
     with pytest.raises(ValueError, match="Stale"):
@@ -382,11 +382,11 @@ async def test_mcp_computer_permissions_direct_execution_dedup_and_native_image(
             assert result["status"] == "succeeded"
             replay = await call(client, "computer_click", click_args)
             assert replay["job_id"] == pending["job_id"]
-            api.click.assert_called_once()
             stale = await call(
                 client, "computer_click", {**click_args, "request_id": "stale"}, error=True
             )
             assert stale["status"] == "failed" and "Stale" in stale["result"]["error"]
+            api.click.assert_called_once()
             shot = await call(client, "computer_screenshot", args)
             api.click.side_effect = OSError("after input dispatch")
             uncertain = await call(

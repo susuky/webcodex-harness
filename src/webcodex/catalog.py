@@ -20,6 +20,18 @@ def tool(permission: str = "read"):
     return decorate
 
 
+def _strip_schema_titles(obj):
+    if isinstance(obj, dict):
+        return {
+            key: _strip_schema_titles(value)
+            for key, value in obj.items()
+            if not (key == "title" and isinstance(value, str))
+        }
+    if isinstance(obj, list):
+        return [_strip_schema_titles(item) for item in obj]
+    return obj
+
+
 @dataclass
 class Definition:
     name: str
@@ -31,7 +43,7 @@ class Definition:
         return types.Tool(
             name=self.name,
             description=self.description,
-            inputSchema=self.model.model_json_schema(),
+            inputSchema=_strip_schema_titles(self.model.model_json_schema()),
             annotations=types.ToolAnnotations(
                 readOnlyHint=self.permission in {"read", "computer_observe"},
                 destructiveHint=self.permission not in {"read", "computer_observe"},
@@ -58,16 +70,5 @@ def definitions(cls, *, remote: bool) -> dict[str, Definition]:
             fields["request_id"] = (str | None, None)
         model = create_model(name + "Arguments", __config__=ConfigDict(extra="forbid"), **fields)
         description = inspect.getdoc(fn) or name
-        if remote:
-            description += (
-                " Requires an existing task_id. Returns a durable job_id; "
-                "follow job_get/read_process for the same execution in the current turn. "
-                "Continue independent work while commands run, then collect their result without "
-                "ending the turn. Drain remaining output and continue the authorized task. "
-                "Task monitoring and optional later messages are separate user choices. "
-                "Authorized tools execute directly. Check outcome/exit_code for the command result. "
-                "Supply a stable request_id when retrying the same call to avoid duplicate effects. "
-                "An unknown result must be investigated before retrying with a new request_id."
-            )
         result[name] = Definition(name, fn.permission, model, description)
     return result

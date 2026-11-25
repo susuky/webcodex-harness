@@ -415,7 +415,7 @@ class Computer:
             picture.thumbnail((max_dimension, max_dimension))
             while True:
                 buffer = io.BytesIO()
-                picture.save(buffer, format="JPEG", quality=80)
+                picture.save(buffer, format="JPEG", quality=75)
                 data = buffer.getvalue()
                 if len(data) <= 1024 * 1024:
                     break
@@ -502,7 +502,7 @@ class Computer:
             if sys.platform == "darwin":
                 macos_desktop(control=True)
             api.failSafeCheck()
-            self.snapshot = None  # One observed state authorizes at most one input operation.
+            self.snapshot = None  # Input can change the observed controls or focus.
             try:
                 if action == "move":
                     api.moveTo(args["x"], args["y"], duration=0.2)

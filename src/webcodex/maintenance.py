@@ -341,7 +341,7 @@ def backup(directory: Path, destination: Path | None = None) -> dict:
     return {"backup": str(destination), **manifest}
 
 
-def _completed_tasks(db) -> set[str]:
+def _retention_task_ids(db) -> set[str]:
     if db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='process_states'"
     ).fetchone():
@@ -354,10 +354,16 @@ def _completed_tasks(db) -> set[str]:
             "AND NOT EXISTS (SELECT 1 FROM jobs n WHERE n.task_id=p.task_id "
             "AND n.process_id=p.process_id AND n.status='succeeded' AND n.process_status!='running')"
         )
+    has_archived = any(row[1] == "archived_at" for row in db.execute("PRAGMA table_info(tasks)"))
+    scope = (
+        "(t.status='completed' OR t.archived_at IS NOT NULL)"
+        if has_archived
+        else "t.status='completed'"
+    )
     return {
         r[0]
         for r in db.execute(
-            "SELECT t.id FROM tasks t WHERE t.status='completed' "
+            f"SELECT t.id FROM tasks t WHERE {scope} "
             "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.task_id=t.id AND j.status IN ('queued','running','pending_approval','unknown')) "
             f"AND NOT EXISTS ({running})"
         )
@@ -442,19 +448,28 @@ def retention(
         if server_config.exists()
         else None
     )
-    completed = set()
+    eligible_tasks = set()
     if server_db and server_db.exists():
         with _readonly(server_db) as db:
-            completed = _completed_tasks(db) - live_task_ids
-            for jid, tid, raw, updated in db.execute(
-                "SELECT id,task_id,result,updated FROM jobs WHERE result IS NOT NULL"
+            eligible_tasks = _retention_task_ids(db) - live_task_ids
+            candidate_jobs = []
+            for jid, tid, size, has_retention, updated in db.execute(
+                "SELECT id,task_id,length(CAST(result AS BLOB)),"
+                "CASE WHEN json_valid(result) THEN "
+                "json_type(result,'$.retention.payload_removed_at') IS NOT NULL END,"
+                "updated FROM jobs WHERE result IS NOT NULL"
             ):
-                original_size = len(raw.encode("utf-8"))
-                if tid not in completed:
+                if tid not in eligible_tasks:
+                    protected += size
+                elif not has_retention and size > 160:
+                    candidate_jobs.append((jid, tid, size, updated))
+            for jid, tid, original_size, updated in candidate_jobs:
+                row = db.execute("SELECT result FROM jobs WHERE id=?", (jid,)).fetchone()
+                if not row or not isinstance(row[0], str):
                     protected += original_size
                     continue
                 try:
-                    compact = _compact_payload(raw, now)
+                    compact = _compact_payload(row[0], now)
                 except (ValueError, TypeError):
                     protected += original_size
                     continue
@@ -479,7 +494,7 @@ def retention(
                 path = logs / (pid + ".log")
                 if not path.is_file() or is_link(path):
                     continue
-                if status == "running" or not finished or (server_db and tid not in completed):
+                if status == "running" or not finished or (server_db and tid not in eligible_tasks):
                     protected += path.stat().st_size
                     continue
                 candidates.append(
@@ -492,12 +507,12 @@ def retention(
                         "task_id": tid,
                     }
                 )
-    # Only artifacts owned by completed tasks. Profiles and installation files are excluded.
+    # Keep browser profiles and installation files.
     extensions = config.state_dir / "extensions"
     if extensions.exists() and not is_link(extensions):
         for artifacts in extensions.glob("*/sessions/*/*/*/artifacts"):
             tid = artifacts.parent.name
-            if tid not in completed or any(
+            if tid not in eligible_tasks or any(
                 is_link(parent)
                 for parent in [artifacts, *artifacts.parents]
                 if parent != config.state_dir.parent
@@ -535,9 +550,9 @@ def retention(
         if server_db and server_db.exists():
             with sqlite3.connect(server_db, timeout=5) as db:
                 db.execute("BEGIN IMMEDIATE")
-                current_completed = _completed_tasks(db)
+                current_eligible = _retention_task_ids(db)
                 for item in [c for c in chosen if c["kind"] == "job_payload"]:
-                    if item["task_id"] not in current_completed:
+                    if item["task_id"] not in current_eligible:
                         skipped.append(item["id"])
                         continue
                     row = db.execute("SELECT result FROM jobs WHERE id=?", (item["id"],)).fetchone()
@@ -565,7 +580,7 @@ def retention(
         for item in [c for c in chosen if c["kind"] != "job_payload"]:
             if server_db and server_db.exists():
                 with _readonly(server_db) as db:
-                    if item["task_id"] not in _completed_tasks(db):
+                    if item["task_id"] not in _retention_task_ids(db):
                         skipped.append(item["id"])
                         continue
             if item["kind"] == "process_output":

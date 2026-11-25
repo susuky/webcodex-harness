@@ -14,6 +14,10 @@ from .config import StrictModel, identifier, private_dir
 
 PROCESS_STATUSES = {"running", "completed", "failed", "timed_out", "interrupted", "cancelled"}
 INTERNAL_OBSERVATION_PREFIXES = ("card-observe:", "manage-observe:", "watch:")
+LEGACY_JOB_DEFAULTS = {
+    "exec_command": {"timeout_seconds": 3600, "yield_time_ms": 500},
+    "computer_screenshot": {"max_dimension": 1600},
+}
 _ACTIVITY_COLUMNS = """
     task_id TEXT NOT NULL REFERENCES tasks(id), trace_id TEXT NOT NULL,
     tool TEXT NOT NULL, started_at REAL NOT NULL, finished_at REAL,
@@ -92,6 +96,8 @@ def reject_json_constant(value: str):
 
 class Store:
     def __init__(self, directory: Path):
+        self._on_enqueue = None
+        self._on_job_change = None
         self.db = sqlite3.connect(private_dir(directory) / "state.sqlite3")
         self.db.row_factory = sqlite3.Row
         self.db.executescript("""
@@ -377,6 +383,7 @@ class Store:
             raise ValueError(
                 "Another Runner instance is still connected; retry after its lease expires"
             )
+        changed_jobs = []
         with self.db:
             if previous and not refresh_inventory:
                 for job in self.rows(
@@ -390,12 +397,16 @@ class Store:
                         (now, job["id"]),
                     )
                     self.event(job["task_id"], "job.unknown", {"job_id": job["id"]})
+                    changed_jobs.append(job["id"])
             self.db.execute(
                 "INSERT INTO runners(id,instance,projects,seen,project_roots) VALUES (?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET instance=excluded.instance,projects=excluded.projects,"
                 "seen=excluded.seen,project_roots=excluded.project_roots",
                 (runner, instance, json.dumps(projects), now, json.dumps(project_roots or {})),
             )
+        if self._on_job_change:
+            for job_id in changed_jobs:
+                self._on_job_change(job_id)
 
     def inventory(self, *, roots: bool = False) -> list[dict]:
         result = []
@@ -485,75 +496,90 @@ class Store:
         limit: int,
         *,
         allow_completed: bool = False,
+        defaulted_arguments: frozenset[str] = frozenset(),
     ) -> dict:
-        current = self.one(
-            "SELECT archived_at,status FROM tasks WHERE id=? AND owner=?",
-            (task["id"], task["owner"]),
-        )
-        if current is None:
-            raise ValueError("Task not found")
-        require_unarchived(current)
         encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
-        if request_id:
-            old = self.one(
-                "SELECT * FROM jobs WHERE owner=? AND task_id=? AND request_id=?",
-                (task["owner"], task["id"], request_id),
+        existing_job_id = None
+        new_job_id = None
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            current = self.one(
+                "SELECT archived_at,status FROM tasks WHERE id=? AND owner=?",
+                (task["id"], task["owner"]),
             )
-            if old:
-                previous = old["arguments"]
-                if (
-                    tool == old["tool"] == "exec_command"
-                    and "timeout_seconds" not in arguments
-                    and previous.get("timeout_seconds") == 3600
-                ):
-                    # Legacy Servers stored the one-hour default for omitted timeouts.
-                    del previous["timeout_seconds"]
-                if old["tool"] != tool or previous != arguments:
-                    raise ValueError("request_id already belongs to a different call")
-                return self.job(old["id"], task["owner"])
-        if current["status"] == "completed" and not allow_completed:
-            raise ValueError("Task is completed; use task_update to reopen it first")
-        runner = self.one("SELECT * FROM runners WHERE id=?", (task["runner"],))
-        binding = (
-            runner["project_roots"].get(task["project"], {}).get("binding")
-            if runner and task["kind"] == "project"
-            else runner["projects"].get(task["project"])
-            if runner
-            else None
-        )
-        if binding != task["binding"]:
-            raise ValueError("Project root changed; create a new task for the new root")
-        count = self.db.execute(
-            "SELECT count(*) FROM jobs JOIN tasks ON tasks.id=jobs.task_id WHERE jobs.owner=? "
-            "AND jobs.status IN ('queued','pending_approval','running') "
-            "AND (jobs.status='running' OR tasks.archived_at IS NULL)",
-            (task["owner"],),
-        ).fetchone()[0]
-        if count >= limit:
-            raise ValueError("Too many unfinished jobs; finish or cancel existing jobs first")
-        job, now = new_id(), time.time()
-        status = "queued"
-        with self.db:
-            self.db.execute(
-                "INSERT INTO jobs(id,task_id,owner,runner,project,binding,tool,arguments,status,"
-                "request_id,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    job,
-                    task["id"],
-                    task["owner"],
-                    task["runner"],
-                    task["project"],
-                    task["binding"],
-                    tool,
-                    encoded,
-                    status,
-                    request_id,
-                    now,
-                    now,
-                ),
-            )
-            self.event(task["id"], "job." + status, {"job_id": job, "tool": tool})
-        return self.job(job, task["owner"])
+            if current is None:
+                raise ValueError("Task not found")
+            require_unarchived(current)
+            if request_id:
+                old = self.one(
+                    "SELECT id,tool,arguments FROM jobs WHERE owner=? AND task_id=? AND request_id=?",
+                    (task["owner"], task["id"], request_id),
+                )
+                if old:
+                    previous = old["arguments"]
+                    if old["tool"] == tool:
+                        for key, value in LEGACY_JOB_DEFAULTS.get(tool, {}).items():
+                            if previous.get(key) == value:
+                                if key not in arguments:
+                                    del previous[key]
+                                elif key in defaulted_arguments:
+                                    previous[key] = arguments[key]
+                    if old["tool"] != tool or previous != arguments:
+                        raise ValueError("request_id already belongs to a different call")
+                    existing_job_id = old["id"]
+            if existing_job_id is None:
+                if current["status"] == "completed" and not allow_completed:
+                    raise ValueError("Task is completed; use task_update to reopen it first")
+                runner = self.one("SELECT * FROM runners WHERE id=?", (task["runner"],))
+                binding = (
+                    runner["project_roots"].get(task["project"], {}).get("binding")
+                    if runner and task["kind"] == "project"
+                    else runner["projects"].get(task["project"])
+                    if runner
+                    else None
+                )
+                if binding != task["binding"]:
+                    raise ValueError("Project root changed; create a new task for the new root")
+                count = self.db.execute(
+                    "SELECT count(*) FROM jobs JOIN tasks ON tasks.id=jobs.task_id WHERE jobs.owner=? "
+                    "AND jobs.status IN ('queued','pending_approval','running') "
+                    "AND (jobs.status='running' OR tasks.archived_at IS NULL)",
+                    (task["owner"],),
+                ).fetchone()[0]
+                if count >= limit:
+                    raise ValueError(
+                        "Too many unfinished jobs; finish or cancel existing jobs first"
+                    )
+                new_job_id, now = new_id(), time.time()
+                status = "queued"
+                self.db.execute(
+                    "INSERT INTO jobs(id,task_id,owner,runner,project,binding,tool,arguments,status,"
+                    "request_id,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        new_job_id,
+                        task["id"],
+                        task["owner"],
+                        task["runner"],
+                        task["project"],
+                        task["binding"],
+                        tool,
+                        encoded,
+                        status,
+                        request_id,
+                        now,
+                        now,
+                    ),
+                )
+                self.event(task["id"], "job." + status, {"job_id": new_job_id, "tool": tool})
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+        if existing_job_id is not None:
+            return self.job(existing_job_id, task["owner"])
+        if self._on_enqueue:
+            self._on_enqueue(task["runner"])
+        return self.job(new_job_id, task["owner"])
 
     def process_output_cursors(self, task_id: str, process_id: str) -> dict:
         """Keep UI observations separate from output returned by model tool calls."""
@@ -585,28 +611,25 @@ class Store:
             runner = self.one("SELECT seen FROM runners WHERE id=?", (row["runner"],))
             row["runner_online"] = bool(runner and time.time() - runner["seen"] < 15)
             row["next_step"] = (
-                "The Runner has no recent heartbeat. Report that this job is waiting for the Runner; "
-                "do not resubmit it."
+                "Runner offline; wait and do not resubmit."
                 if not row["runner_online"]
-                else "Continue observing this job in the current turn; do not ask the user to say continue."
+                else "Keep calling next_action in this turn until finished; do not end the turn while waiting."
             )
             row["next_action"] = {
                 "tool": "job_get",
                 "arguments": {"job_id": job_id, "wait_seconds": 20},
             }
         elif row["status"] == "unknown":
-            row["next_step"] = (
-                "Execution outcome is uncertain. Inspect repo/process state before starting a replacement."
-            )
+            row["next_step"] = "Outcome uncertain; inspect repo/process state before retrying."
         try:
             absent = row["result"] is None and row["status"] not in {"succeeded", "failed"}
             RunnerResult.model_validate({} if absent else row["result"], strict=True)
         except ValidationError:
             row["result"] = {
-                "error": "The saved result is unavailable; inspect the original execution before retrying.",
+                "error": "Saved result unavailable; inspect original execution before retrying.",
                 "error_type": "InvalidStoredResult",
             }
-            row["next_step"] = "The saved result is unavailable. This job will not be replayed."
+            row["next_step"] = "Saved result unavailable; do not replay."
             return row
         result = row["result"] or {}
         if row["status"] == "succeeded" and result.get("registered") is True:
@@ -618,17 +641,9 @@ class Store:
                     "request_id": "start:" + job_id,
                 },
             }
-            row["next_step"] = (
-                "The project is registered. Follow next_action to start coding; the project-management "
-                "task_id above is not a coding task."
-            )
+            row["next_step"] = "Project registered; follow next_action to start coding."
         if row["status"] == "succeeded" and result.get("process_id") and "status" in result:
             row["outcome"] = result["status"]
-            row["next_step"] = (
-                "This is the saved process observation. Job succeeded means the tool returned, "
-                "not that the command or tests passed. Check outcome, exit_code and output. "
-                "Continue observing the original process until its result is available."
-            )
             cursor = result.get("next_cursor", 0)
             unread = bool(result.get("has_more"))
             if (row.get("request_id") or "").startswith(INTERNAL_OBSERVATION_PREFIXES):
@@ -649,15 +664,15 @@ class Store:
                         "wait_seconds": 1 if unread else 20,
                     },
                 }
-                row["next_step"] += (
-                    " Follow next_action in this turn; never restart to obtain output."
+                row["next_step"] = (
+                    "Keep calling next_action in this turn until finished "
+                    "(do not end the turn while waiting); check outcome/exit_code/output."
                 )
+            elif result["status"] != "completed" or result.get("exit_code") not in (None, 0):
+                row["next_step"] = "Command did not succeed; inspect outcome, exit_code and output."
         if row["status"] == "succeeded" and result.get("agent_id"):
             row["outcome"] = result["status"]
-            row["next_step"] = (
-                "This is a saved legacy worker observation. Collect final and inspect error/status; "
-                "a successful spawn job does not mean the worker finished."
-            )
+            row["next_step"] = "Legacy worker observation; check status and collect final output."
             if result["status"] == "running":
                 row["next_action"] = {
                     "tool": "read_process",
@@ -748,6 +763,7 @@ class Store:
         if not runner or runner["instance"] != instance:
             raise ValueError("Runner must register this instance before polling")
         result = []
+        changed_jobs = []
         now = time.time()
         with self.db:
             # Long-poll checks run every 100 ms; persist only the five-second heartbeat.
@@ -778,6 +794,7 @@ class Store:
                             job["id"],
                         ),
                     )
+                    changed_jobs.append(job["id"])
                     continue
                 self.db.execute(
                     "UPDATE jobs SET status='running',instance=?,updated=? WHERE id=? AND status='queued'",
@@ -785,7 +802,11 @@ class Store:
                 )
                 self.event(job["task_id"], "job.running", {"job_id": job["id"]})
                 job["instance"] = instance
+                changed_jobs.append(job["id"])
                 result.append(job)
+        if self._on_job_change:
+            for job_id in changed_jobs:
+                self._on_job_change(job_id)
         return result
 
     def complete(self, runner: str, job_id: str, instance: str, status: str, result: dict):
@@ -859,6 +880,8 @@ class Store:
                     observed,
                 )
             self.event(job["task_id"], "job." + status, {"job_id": job_id})
+        if self._on_job_change:
+            self._on_job_change(job_id)
 
     def cancel(self, job_id: str, owner: str) -> dict:
         self.job(job_id, owner)
@@ -867,6 +890,8 @@ class Store:
                 "UPDATE jobs SET status='cancelled',updated=? WHERE id=? AND status IN ('queued','pending_approval')",
                 (time.time(), job_id),
             )
+        if self._on_job_change:
+            self._on_job_change(job_id)
         return self.job(job_id, owner)
 
     def close(self):

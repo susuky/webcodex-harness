@@ -6,6 +6,7 @@ import asyncio
 import math
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 import httpx
 from starlette.responses import JSONResponse
@@ -21,6 +22,19 @@ class SourceUnavailable(Exception):
     def __init__(self, message, reason="source_invalid_response", **details):
         super().__init__(message)
         self.reason, self.details = reason, details
+
+    @property
+    def transport_failure(self) -> bool:
+        return (
+            self.reason
+            in {
+                "source_connect_timeout",
+                "source_read_timeout",
+                "source_timeout",
+                "source_unreachable",
+            }
+            or self.details.get("exception_type") == "RemoteProtocolError"
+        )
 
     @classmethod
     def transport(cls, error, message, timeout_seconds=15):
@@ -310,7 +324,7 @@ class Sources:
                 },
             }
             try:
-                async with self.remote_client(owner, source_id) as client:
+                async with asyncio.timeout(2), self.remote_client(owner, source_id) as client:
                     response = await client.get(
                         "/api/manage/sources/local/connections",
                         params={"evidence": "1"} if include_evidence else None,
@@ -342,12 +356,14 @@ class Sources:
                             raise ValueError("Invalid connection incident")
                         started, recovered = row.get("started_at"), row.get("recovered_at")
                         closed = row.get("closed_at")
+                        last_seen = row.get("last_seen_at")
                         if any(
                             type(value) not in (int, float) or not math.isfinite(value)
                             for value in [
                                 started,
                                 *([recovered] if recovered is not None else []),
                                 *([closed] if closed is not None else []),
+                                *([last_seen] if last_seen is not None else []),
                             ]
                         ):
                             raise ValueError("Invalid connection incident time")
@@ -371,7 +387,7 @@ class Sources:
                                     if closed is not None
                                     else {}
                                 ),
-                                "last_seen_at": started,
+                                "last_seen_at": started if last_seen is None else last_seen,
                                 "reason": reason,
                                 "reason_label": REASONS[reason],
                                 "details": details,
@@ -409,7 +425,7 @@ class Sources:
                 result["source"]["reason"] = "source_connect_timeout"
             except httpx.ReadTimeout:
                 result["source"]["reason"] = "source_read_timeout"
-            except httpx.TimeoutException:
+            except (httpx.TimeoutException, TimeoutError):
                 result["source"]["reason"] = "source_timeout"
             except httpx.HTTPError:
                 result["source"]["reason"] = "source_unreachable"
@@ -706,10 +722,25 @@ class Sources:
         source = self.source(owner, source_id)
         params = dict(params)
         environment = params.pop("environment", "")
-        if environment and not params.get("runner") and environment != self.label(owner, source_id):
-            matching = [key for key, label in source.runner_labels.items() if label == environment]
-            if len(matching) == 1:
-                params["runner"] = matching[0]
+        runner = params.get("runner")
+        if environment:
+            if runner:
+                if self.environment_label(owner, source_id, runner) != environment:
+                    params["runner_in"] = ""
+            elif environment == self.label(owner, source_id):
+                excluded = [
+                    key for key, label in source.runner_labels.items() if label != environment
+                ]
+                if excluded:
+                    params["runner_not_in"] = ",".join(excluded)
+            else:
+                matching = [
+                    key for key, label in source.runner_labels.items() if label == environment
+                ]
+                if len(matching) == 1:
+                    params["runner"] = matching[0]
+                else:
+                    params["runner_in"] = ",".join(matching)
 
         try:
             async with asyncio.timeout(30), self.remote_client(owner, source_id) as client:
@@ -717,15 +748,7 @@ class Sources:
                 try:
                     data = await self.remote_request(client, "GET", path, params=params)
                 except SourceUnavailable as error:
-                    if (
-                        error.reason
-                        not in {
-                            "source_connect_timeout",
-                            "source_read_timeout",
-                            "source_unreachable",
-                        }
-                        and error.details.get("exception_type") != "RemoteProtocolError"
-                    ):
+                    if not error.transport_failure or error.reason == "source_timeout":
                         raise
                     data = await self.remote_request(
                         client, "GET", path, params=params, headers={"Connection": "close"}
@@ -766,16 +789,8 @@ class Sources:
             for row in data["projects"]
         ]
         tasks = [self.tag(owner, source_id, task) for task in data["tasks"]]
-        if environment and any(
-            row["environment_label"] != environment
-            for row in projects
-            if (not params.get("runner") or params["runner"] == row["runner"])
-            and (not params.get("project") or params["project"] == row["project"])
-        ):
-            if len(tasks) < total:
-                return None  # An environment can combine multiple Runners into one page.
-            tasks = [task for task in tasks if task["environment_label"] == environment]
-            total = len(tasks)
+        if environment and any(task["environment_label"] != environment for task in tasks):
+            raise SourceUnavailable("來源回傳了無效的任務清單")
         await self.source_recovered(owner, source_id, "state")
         return {
             "source_id": source_id,
@@ -845,7 +860,7 @@ class Sources:
         source_id = request.path_params["source_id"]
         source = self.source(owner, source_id)
         params = request.query_params
-        if set(params) - {
+        allowed_params = {
             "q",
             "offset",
             "limit",
@@ -855,7 +870,10 @@ class Sources:
             "project",
             "environment",
             "archived",
-        }:
+        }
+        if source is None:
+            allowed_params.update(("runner_in", "runner_not_in"))
+        if set(params) - allowed_params:
             raise ValueError("Unknown management query parameter")
         offset, limit = int(params.get("offset", 0)), int(params.get("limit", 60))
         window = int(params["window"]) if "window" in params else None
@@ -879,10 +897,22 @@ class Sources:
             raise ValueError("Invalid archive filter")
         if runner:
             identifier(runner)
+        runner_in = (
+            {identifier(value) for value in params["runner_in"].split(",") if value}
+            if "runner_in" in params
+            else None
+        )
+        runner_not_in = {
+            identifier(value) for value in params.get("runner_not_in", "").split(",") if value
+        }
         if project:
             identifier(project)
         if len(environment) > 100:
             raise ValueError("Invalid environment filter")
+        if source:
+            url = urlsplit(source.url)
+            if url.scheme == "http" and url.hostname == "127.0.0.1" and url.port is not None:
+                request.state.source_loopback_port = url.port
         started = time.monotonic()
         try:
             if source and window is not None and not self.archived_ids(owner, source_id):
@@ -945,6 +975,8 @@ class Sources:
                 task
                 for task in catalog
                 if (not runner or task.get("runner") == runner)
+                and (runner_in is None or task["runner"] in runner_in)
+                and task["runner"] not in runner_not_in
                 and (not project or task["project"] == project)
                 and (
                     not environment
@@ -1024,6 +1056,7 @@ class Sources:
                 }
             )
         except SourceUnavailable as error:
+            request.state.source_transport_error = error.transport_failure
             await self.source_failed(owner, source_id, "state", error, started)
             return self.response({"source_id": source_id, "error": str(error)}, 502)
 

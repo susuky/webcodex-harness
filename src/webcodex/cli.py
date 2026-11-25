@@ -194,6 +194,7 @@ def main():
                     response = client.post(
                         "/api/call",
                         json={"name": args.name, "arguments": arguments(args.arguments)},
+                        timeout=httpx.Timeout(30, read=60),
                     )
                 elif args.command == "tools":
                     response = client.get("/api/tools")

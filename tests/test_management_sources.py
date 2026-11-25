@@ -585,9 +585,90 @@ async def test_task_center_window_retries_and_only_reads_matching_work(harness, 
         portal.state.service.diagnostics.close()
 
 
+async def test_task_center_filters_multi_runner_environments_before_window(harness, tmp_path):
+    service = harness.app.state.service
+    store = service.store
+    for runner in ("course-hub", "wsl-a", "wsl-b"):
+        harness.config.clients["owner"].projects.append(f"{runner}/project")
+        store.register(runner, "test-instance", {"project": "b" * 64})
+    for index in range(60):
+        store.create_task("owner", "local/project", f"Release {index}")
+    course = store.create_task("owner", "course-hub/project", "Release course")
+    for runner in ("wsl-a", "wsl-b"):
+        store.create_task("owner", f"{runner}/project", f"Release {runner}")
+    archived = store.create_task("owner", "wsl-a/project", "Release archived")
+    service.set_task_archive("owner", archived["id"], time.time())
+
+    source = ManagementSource(
+        url=harness.url,
+        token="c" * 40,
+        label="Windows",
+        runner_labels={"wsl-a": "WSL", "wsl-b": "WSL"},
+    )
+    portal = create_app(portal_config(tmp_path / "portal", {"windows": source}))
+    manager = portal.state.management_sources
+    requests = []
+
+    async def track(request):
+        requests.append(request)
+
+    manager.clients[("owner", "windows", source.url, source.token)] = httpx.AsyncClient(
+        base_url=source.url,
+        headers={"Authorization": "Bearer " + source.token},
+        event_hooks={"request": [track]},
+    )
+    async with (
+        portal.router.lifespan_context(portal),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=portal),
+            base_url="http://127.0.0.1",
+            headers={"Authorization": "Bearer " + "portal" * 8},
+        ) as client,
+    ):
+        path = "/api/manage/sources/windows/state"
+        native = (await client.get(path, params={"window": 60, "environment": "Windows"})).json()
+        assert native["total_count"] == 61 and native["next_offset"] == 60
+        assert len(native["tasks"]) == 60
+        assert {task["environment_label"] for task in native["tasks"]} == {"Windows"}
+        assert requests[-1].url.params["runner_not_in"] == "wsl-a,wsl-b"
+
+        wsl = (await client.get(path, params={"window": 1, "environment": "WSL"})).json()
+        assert wsl["total_count"] == 2 and wsl["next_offset"] == 1
+        assert [task["environment_label"] for task in wsl["tasks"]] == ["WSL"]
+        assert requests[-1].url.params["runner_in"] == "wsl-a,wsl-b"
+
+        filtered = (
+            await client.get(
+                path,
+                params={
+                    "window": 60,
+                    "environment": "Windows",
+                    "q": "course",
+                    "project": "project",
+                },
+            )
+        ).json()
+        assert [task["id"] for task in filtered["tasks"]] == [course["id"]]
+        history = (
+            await client.get(
+                path, params={"window": 1, "environment": "WSL", "archived": "archived"}
+            )
+        ).json()
+        assert [task["id"] for task in history["tasks"]] == [archived["id"]]
+        mismatch = (
+            await client.get(
+                path, params={"window": 1, "environment": "Windows", "runner": "wsl-a"}
+            )
+        ).json()
+        assert mismatch["total_count"] == 0 and mismatch["tasks"] == []
+        assert [request.url.path for request in requests] == ["/api/manage/sources/local/state"] * 5
+
+
 async def test_task_center_window_falls_back_for_older_source(activity_service, monkeypatch):
     service, task = activity_service
-    source = ManagementSource(url="https://windows.example", token="s" * 40)
+    source = ManagementSource(
+        url="https://windows.example", token="s" * 40, label="Windows", runner_labels={"wsl": "WSL"}
+    )
     service.config.clients["owner"].management_sources = {"windows": source}
     manager = Sources(Management(service))
     requests = []
@@ -595,6 +676,7 @@ async def test_task_center_window_falls_back_for_older_source(activity_service, 
     async def legacy_source(request):
         requests.append(request.url.path)
         if request.url.path == "/api/manage/sources/local/state":
+            assert request.url.params["runner_not_in"] == "wsl"
             return httpx.Response(400, json={"error": "Unknown management query parameter"})
         return httpx.Response(
             200,
@@ -612,7 +694,9 @@ async def test_task_center_window_falls_back_for_older_source(activity_service, 
             base_url=source.url, transport=httpx.MockTransport(legacy_source)
         ),
     )
-    data = json.loads((await manager.state(scoped_request("windows", "window=60"))).body)
+    data = json.loads(
+        (await manager.state(scoped_request("windows", "window=60&environment=Windows"))).body
+    )
     assert [row["id"] for row in data["tasks"]] == [task["id"]]
     assert requests == ["/api/manage/sources/local/state", "/api/manage/state"]
 

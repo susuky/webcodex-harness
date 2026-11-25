@@ -15,12 +15,6 @@ from pathlib import Path
 FORWARD_PORT = 18769
 LOG_TAIL_BYTES = 64 * 1024
 FAILURE_WINDOW = 120
-TRANSPORT_FAILURES = {
-    "source_connect_timeout",
-    "source_read_timeout",
-    "source_timeout",
-    "source_unreachable",
-}
 
 
 def recent_records(path):
@@ -40,7 +34,7 @@ def recent_records(path):
         return
 
 
-def catalog_needs_reconnect(diagnostics, incidents, attempted, started_at):
+def catalog_needs_reconnect(diagnostics, attempted, started_at):
     now = time.time()
     try:
         attempted_at = attempted.stat().st_mtime
@@ -51,7 +45,7 @@ def catalog_needs_reconnect(diagnostics, incidents, attempted, started_at):
         if (
             row.get("event") != "http.completed"
             or row.get("route") != "/api/manage/sources/:source_id/state"
-            or row.get("source_id") != "windows"
+            or row.get("source_loopback_port") != FORWARD_PORT
             or row.get("method") != "GET"
         ):
             continue
@@ -66,7 +60,7 @@ def catalog_needs_reconnect(diagnostics, incidents, attempted, started_at):
         if began < started_at or not now - FAILURE_WINDOW <= observed <= now:
             continue
         status = row.get("http_status")
-        if status == 502:
+        if status == 502 and row.get("source_transport_error") is True:
             failures.append(observed)
         else:
             failures.clear()
@@ -74,43 +68,12 @@ def catalog_needs_reconnect(diagnostics, incidents, attempted, started_at):
                 attempted.unlink(missing_ok=True)
                 attempted_at = None
 
-    if (
-        len(failures) < 2
-        or failures[-1] - failures[0] < 10
-        or now - failures[-1] > 30
-        or attempted_at is not None
-    ):
-        return False
-
-    # The HTTP log counts fresh attempts. The incident log classifies each outcome.
-    history = [
-        row
-        for row in recent_records(incidents)
-        if row.get("component") == "source"
-        and row.get("source_id") == "windows"
-        and row.get("key") == "state"
-        and isinstance(row.get("started_at"), (int, float))
-    ]
-    for observed in reversed(failures):
-        incident = next(
-            (
-                row
-                for row in reversed(history)
-                if row["started_at"] - 0.001
-                <= observed
-                < (row.get("recovered_at") or row.get("closed_at") or now + 1)
-            ),
-            {},
-        )
-        reason = incident.get("reason")
-        if reason not in TRANSPORT_FAILURES and not (
-            reason == "source_invalid_response"
-            and (incident.get("details") or {}).get("exception_type") == "RemoteProtocolError"
-        ):
-            break
-        if failures[-1] - observed >= 10:
-            return True
-    return False
+    return (
+        len(failures) >= 2
+        and failures[-1] - failures[0] >= 10
+        and now - failures[-1] <= 30
+        and attempted_at is None
+    )
 
 
 def owns_forward(parent):
@@ -166,7 +129,6 @@ def main():
             raise RuntimeError("The SSH session ended during watchdog setup.")
         state = Path(__file__).resolve().parent / "state"
         diagnostics = state / "diagnostics/server.jsonl"
-        incidents = state / "connections/events.jsonl"
         attempted = state / "connections/windows-ssh-reconnected"
         started_at = time.time()
         last_write = None
@@ -179,14 +141,12 @@ def main():
                 if changed_at == last_write:
                     continue
                 last_write = changed_at
-                if not catalog_needs_reconnect(diagnostics, incidents, attempted, started_at):
+                if not catalog_needs_reconnect(diagnostics, attempted, started_at):
                     continue
                 if not owns_forward(parent):
                     continue
                 origin = check_origin()
-                if origin and catalog_needs_reconnect(
-                    diagnostics, incidents, attempted, started_at
-                ):
+                if origin and catalog_needs_reconnect(diagnostics, attempted, started_at):
                     attempted.touch(mode=0o600, exist_ok=False)
                     print(
                         f"Reconnecting task-center SSH after catalog failures ({origin})",

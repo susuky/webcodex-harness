@@ -186,7 +186,7 @@ WebCodex 依 Server 中的用戶端身分隔離任務。stdio bridge 使用 `cli
 
 ## 任務卡片與跨回合續接
 
-一般長命令留在原回合等待。Server 指引、工具描述與 `next_action` 都使用 `job_get`／`read_process` 觀察原 job／process；收到結果後繼續工作。`task_wait` 用於明確選擇的工作監看，呼叫它不會開啟自動發訊，也不要求模型結束回合。
+一般長命令留在原回合等待。Server 指引、工具描述與 `next_action` 都明確要求在原回合持續呼叫 `job_get`／`read_process`（搭配較長的 `wait_seconds`，例如 20–30 秒）觀察原 job／process 直到完成，絕不因等待而結束回合或要求使用者傳送「繼續」訊息。`task_wait` 用於明確選擇的工作監看，呼叫它不會開啟自動發訊，也不要求模型結束回合。
 
 `work_on_project(project, title, request_id)` 建立任務並讀取工作目錄。跨對話時用 `task_takeover` 接續。每個使用者發起、開始或恢復長工作的回合，依回傳動作呼叫一次 `task_present(task_id)` 顯示任務卡片。同回合及 `task_resume` 自動接續沿用已有卡片。
 
@@ -231,7 +231,7 @@ Runner 連線、工作狀態、本對話工具呼叫及卡片控制權各自顯�
 
 卡片資源位址含 HTML 內容雜湊，Server 更新後會產生新位址。ChatGPT 連線設定按 Refresh／Reload，重新開啟卡片即可載入新版。bridge 在啟動時載入初始化指引；修改指引時重啟 bridge／tunnel 並重新整理用戶端 metadata。[OpenAI 更新流程](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata)
 
-Server、bridge 可獨立更新。Runner 更新前執行 `webcodex update-check`；仍有命令時保留 Runner。新對話可透過原任務 ID 取得輸出。
+Server、bridge 可獨立更新。Runner 更新前執行 `webcodex update-check`，仍有命令時先保留 Runner。Server 派送 `exec_command` 給舊版 Runner 時，初次等候最多兩秒，後續可用 `read_process` 追蹤原程序。新對話可透過原任務 ID 取得輸出。
 
 `exec_command` 可用 `timeout_seconds` 指定單一命令的時限。省略時預設不限時。若在 Runner 設定 `max_process_seconds`，該值會限制單一命令的最長時間。舊設定檔若帶有 `max_process_seconds: 3600`，移除此欄位即可取消一小時上限。
 
